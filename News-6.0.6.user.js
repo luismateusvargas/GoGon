@@ -97,6 +97,7 @@ const RETRY_DELAY = 1000; //Delay between retry attempts for network requests
     // Exemplo de uso:
     //addLine("Linha 2");
 
+
     async function secureFetch(url, options = {}, retries = 3) {
         const defaultHeaders = {
             'Accept': '*/*',
@@ -177,6 +178,43 @@ const RETRY_DELAY = 1000; //Delay between retry attempts for network requests
                 });
             }
             attempt(retries);
+
+    async function secureFetch(url, options = {}) {
+        try {
+            const response = await fetch(url, options);
+            if (response.status === 200) {
+                return response;
+            }
+            if (response.status === 502 || response.status === 504) {
+                throw new Error(`Server error: ${response.status}`);
+            }
+            throw new Error(`Request failed: ${response.status}`);
+        } catch (err) {
+            console.error('secureFetch error:', err);
+            throw err;
+        }
+    }
+
+    function securePost(url, payload) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url,
+                headers: { 'Content-Type': 'application/json' },
+                data: JSON.stringify(payload),
+                onload: function(response) {
+                    if (response.status === 200) {
+                        resolve(response);
+                    } else if (response.status === 502 || response.status === 504) {
+                        reject(new Error(`Server unavailable: ${response.status}`));
+                    } else {
+                        reject(new Error(`HTTP error: ${response.status}`));
+                    }
+                },
+                onerror: function() {
+                    reject(new Error('Network error'));
+                }
+            });
         });
     }
 
@@ -189,7 +227,17 @@ const RETRY_DELAY = 1000; //Delay between retry attempts for network requests
                 text: footerText
             }
         };
+
         queueDiscordMessage(webhook, { content: group, embeds: [embed] });
+
+        securePost(webhook, { content: group, embeds: [embed] })
+            .catch(err => console.error('sendDiscordMessage error:', err));
+    }
+
+    function sendSimpleMessage(message, webhook){
+        securePost(webhook, { content: message })
+            .catch(err => console.error('sendSimpleMessage error:', err));
+
     }
     function sendExtraDiscordMessage(message, wTitle, colorCode, footerText, group, webhook, thumbUrl, thumb) {
         const embed = {
@@ -206,7 +254,12 @@ const RETRY_DELAY = 1000; //Delay between retry attempts for network requests
                 text: footerText
             }
         };
+
         queueDiscordMessage(webhook, { content: group, embeds: [embed] });
+
+        securePost(webhook, { content: group, embeds: [embed] })
+            .catch(err => console.error('sendExtraDiscordMessage error:', err));
+
     }
 
     function sendExtraDiscordMessageNODROP(message, wTitle, colorCode, footerText, group, webhook, thumbUrl) {
@@ -221,7 +274,12 @@ const RETRY_DELAY = 1000; //Delay between retry attempts for network requests
                 text: footerText
             }
         };
+
         queueDiscordMessage(webhook, { content: group, embeds: [embed] });
+
+        securePost(webhook, { content: group, embeds: [embed] })
+            .catch(err => console.error('sendExtraDiscordMessageNODROP error:', err));
+
     }
     async function getGoldInHand(targetLink) {
         let completeLink = targetLink;
