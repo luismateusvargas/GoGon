@@ -2,6 +2,7 @@
 
 Logs into the Fallen Sword website using credentials stored in the
 ``FS_EMAIL`` and ``FS_PASSWORD`` environment variables, then keeps the
+
 session alive. Every hour it refreshes the home page and, if the session has
 expired (the game logs accounts out roughly every seven days), it re‑logs in
 and reinjects the optional notification script.
@@ -16,6 +17,7 @@ from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
+
 
 LOGIN_URL = "https://account.huntedcow.com/auth?game=6"
 HOME_URL = "https://www.fallensword.com/"
