@@ -7,6 +7,10 @@ session alive. Every hour it refreshes the home page and, if the session has
 expired (the game logs accounts out roughly every seven days), it re‑logs in
 and reinjects the optional notification script.
 
+If the ``GECKODRIVER_PATH`` environment variable is set, it will be used to
+locate the ``geckodriver`` binary. This is helpful on systems where the driver
+is not on ``PATH`` such as a fresh Windows installation.
+
 The CSS selectors used in ``login`` may require updating if the site changes.
 """
 
@@ -17,6 +21,7 @@ from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.service import Service
 
 
 LOGIN_URL = "https://account.huntedcow.com/auth?game=6"
@@ -25,6 +30,7 @@ SCRIPT_PATH = Path("newsFeatures.js")
 
 EMAIL = os.environ.get("FS_EMAIL")
 PASSWORD = os.environ.get("FS_PASSWORD")
+GECKODRIVER_PATH = os.environ.get("GECKODRIVER_PATH")
 
 
 def login(driver: webdriver.Firefox) -> None:
@@ -55,7 +61,8 @@ def keep_alive(driver: webdriver.Firefox) -> None:
 def main() -> None:
     options = Options()
     options.add_argument("-headless")
-    with webdriver.Firefox(options=options) as driver:
+    service = Service(GECKODRIVER_PATH) if GECKODRIVER_PATH else Service()
+    with webdriver.Firefox(service=service, options=options) as driver:
         login(driver)
         keep_alive(driver)
 
