@@ -99,6 +99,8 @@ def inject_script(driver: webdriver.Firefox) -> None:
     logger.info("Injecting notification script into page")
     source = "\n".join(_read_script(p) for p in SCRIPT_DEPENDENCIES if p.exists())
     driver.execute_script(source)
+    # kick off the notification loop if available
+    driver.execute_script("if (typeof initNews === 'function') initNews();")
 
 
 def keep_alive(driver: webdriver.Firefox) -> None:
