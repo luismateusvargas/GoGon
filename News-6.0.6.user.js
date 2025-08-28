@@ -178,6 +178,8 @@ const RETRY_DELAY = 1000; //Delay between retry attempts for network requests
                 });
             }
             attempt(retries);
+        });
+    }
 
     async function secureFetch(url, options = {}) {
         try {
