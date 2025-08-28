@@ -28,6 +28,7 @@ import {
 } from './utils.js';
 
 'use strict';
+console.log('newsFeatures.js loaded');
 
 const logURL = 'https://www.fallensword.com/index.php?cmd=guild&subcmd=log';
 const conflictsURL = 'https://www.fallensword.com/index.php?cmd=guild&subcmd=conflicts';
@@ -721,21 +722,32 @@ async function handleLadderNotification() {
   }
 
 export function initNews() {
-  checkGuildLog();
-  monitorIncomingAttacks();
-  const now = new Date();
-  const timeToNextHour = (60 - now.getMinutes()) * 60 * 1000;
-  setTimeout(() => {
-    checkForTitanNotifications();
-    setInterval(checkForTitanNotifications, 1000 * 60 * 60);
-  }, timeToNextHour);
-  setInterval(checkForPvPNotifications, 1000 * 60 * 2);
-  setInterval(monitorIncomingAttacks, 1000 * 60 * 6);
-  setInterval(checkGuildLog, 60 * 1000);
-  setInterval(checkForNewBounty, 7000);
-  setInterval(checkForSuperEliteKills, 15 * 1000);
-  setInterval(checkForCratesFound, 60 * 1000);
-  setInterval(checkForShoutbox, 300 * 1000);
-  setInterval(checkForUpdatesArchive, 300 * 1000);
-  setInterval(autoJoinAllGroups, 5 * 60000);
+  console.log('initNews invoked');
+  try {
+    checkGuildLog();
+    monitorIncomingAttacks();
+    const now = new Date();
+    const timeToNextHour = (60 - now.getMinutes()) * 60 * 1000;
+    setTimeout(() => {
+      checkForTitanNotifications();
+      setInterval(checkForTitanNotifications, 1000 * 60 * 60);
+    }, timeToNextHour);
+    setInterval(checkForPvPNotifications, 1000 * 60 * 2);
+    setInterval(monitorIncomingAttacks, 1000 * 60 * 6);
+    setInterval(checkGuildLog, 60 * 1000);
+    setInterval(checkForNewBounty, 7000);
+    setInterval(checkForSuperEliteKills, 15 * 1000);
+    setInterval(checkForCratesFound, 60 * 1000);
+    setInterval(checkForShoutbox, 300 * 1000);
+    setInterval(checkForUpdatesArchive, 300 * 1000);
+    setInterval(autoJoinAllGroups, 5 * 60000);
+  } catch (err) {
+    console.error('initNews failed', err);
+  }
+}
+if (typeof window !== 'undefined') {
+  window.initNews = initNews;
+  console.log('initNews attached to window');
+} else {
+  console.warn('window is undefined; initNews not attached');
 }

@@ -100,7 +100,17 @@ def inject_script(driver: webdriver.Firefox) -> None:
     source = "\n".join(_read_script(p) for p in SCRIPT_DEPENDENCIES if p.exists())
     driver.execute_script(source)
     # kick off the notification loop if available
-    driver.execute_script("if (typeof initNews === 'function') initNews();")
+    logger.info("Attempting to invoke initNews in browser")
+    driver.execute_script(
+        """
+        if (typeof window.initNews === 'function') {
+            console.log('sws.py: initNews invoked');
+            window.initNews();
+        } else {
+            console.warn('sws.py: initNews not found');
+        }
+        """
+    )
 
 
 def keep_alive(driver: webdriver.Firefox) -> None:
