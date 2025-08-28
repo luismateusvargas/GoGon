@@ -8,6 +8,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @connect      https://www.fallensword.com
+// @connect      https://discord.com
 // ==/UserScript==
 
 const logURL = 'https://www.fallensword.com/index.php?cmd=guild&subcmd=log';
@@ -29,9 +30,40 @@ const TitanGroup = `<@&1111676811982667776>`;
 const LadderGroup = `<@&1111676962067456091>`;
 
 const DELAY_BETWEEN_MESSAGES = 1500; //Define o atraso entre as mensagens em milissegundos
+const RETRY_DELAY = 1000; //Delay between retry attempts for network requests
 
 (function() {
     'use strict';
+
+    const messageQueue = [];
+    let processingQueue = false;
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    function queueDiscordMessage(webhook, payload) {
+        messageQueue.push({ webhook, payload });
+        processQueue();
+    }
+
+    async function processQueue() {
+        if (processingQueue) return;
+        processingQueue = true;
+        while (messageQueue.length) {
+            const { webhook, payload } = messageQueue[0];
+            try {
+                await securePost(webhook, payload);
+                messageQueue.shift();
+                await sleep(DELAY_BETWEEN_MESSAGES);
+            } catch (err) {
+                if (err.status === 429) {
+                    await sleep(err.retryAfter || DELAY_BETWEEN_MESSAGES);
+                } else {
+                    console.error('queueDiscordMessage error:', err);
+                    messageQueue.shift();
+                }
+            }
+        }
+        processingQueue = false;
+    }
 
     // Função para adicionar uma nova linha ao "arquivo"
     function getContent(where) {
@@ -40,10 +72,6 @@ const DELAY_BETWEEN_MESSAGES = 1500; //Define o atraso entre as mensagens em mil
 
     function setContent(where, content){
         GM_setValue(where, content);
-    }
-
-    function showContent(where){
-        console.log(getContent(where))
     }
 
     function addLine(newLine, where) {
@@ -69,8 +97,90 @@ const DELAY_BETWEEN_MESSAGES = 1500; //Define o atraso entre as mensagens em mil
     // Exemplo de uso:
     //addLine("Linha 2");
 
+    async function secureFetch(url, options = {}, retries = 3) {
+        const defaultHeaders = {
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.8,pt-BR;q=0.5,pt;q=0.3'
+        };
+        const merged = {
+            credentials: 'include',
+            ...options,
+            headers: { ...defaultHeaders, ...(options.headers || {}) }
+        };
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+                const response = await fetch(url, merged);
+                if (response.status === 200 || response.status === 204) {
+                    return response;
+                }
+                if (response.status === 502 || response.status === 504) {
+                    if (attempt < retries) {
+                        await sleep(RETRY_DELAY);
+                        continue;
+                    }
+                    throw new Error(`Server error: ${response.status}`);
+                }
+                throw new Error(`Request failed: ${response.status}`);
+            } catch (err) {
+                if (attempt < retries) {
+                    await sleep(RETRY_DELAY);
+                } else {
+                    console.error('secureFetch error:', err);
+                    throw err;
+                }
+            }
+        }
+    }
+
+    function securePost(url, payload, retries = 3) {
+        const defaultHeaders = {
+            'Content-Type': 'application/json',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.8,pt-BR;q=0.5,pt;q=0.3'
+        };
+        return new Promise((resolve, reject) => {
+            function attempt(remaining) {
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url,
+                    headers: defaultHeaders,
+                    data: JSON.stringify(payload),
+                    onload: function(response) {
+                        if (response.status === 200 || response.status === 204) {
+                            resolve(response);
+                        } else if (response.status === 429) {
+                            const match = /retry-after:\s*(\d+)/i.exec(response.responseHeaders || '');
+                            const retryAfter = match ? parseInt(match[1], 10) * 1000 : null;
+                            const err = new Error('Rate limited');
+                            err.status = 429;
+                            err.retryAfter = retryAfter;
+                            reject(err);
+                        } else if ((response.status === 502 || response.status === 504) && remaining > 0) {
+                            setTimeout(() => attempt(remaining - 1), RETRY_DELAY);
+                        } else if (response.status === 502 || response.status === 504) {
+                            const err = new Error(`Server unavailable: ${response.status}`);
+                            err.status = response.status;
+                            reject(err);
+                        } else {
+                            const err = new Error(`HTTP error: ${response.status}`);
+                            err.status = response.status;
+                            reject(err);
+                        }
+                    },
+                    onerror: function() {
+                        if (remaining > 0) {
+                            setTimeout(() => attempt(remaining - 1), RETRY_DELAY);
+                        } else {
+                            reject(new Error('Network error'));
+                        }
+                    }
+                });
+            }
+            attempt(retries);
+        });
+    }
+
     function sendDiscordMessage(message, wTitle, colorCode, footerText, group, webhook) {
-        //console.log('Enviando mensagem para o Discord:', message);
         const embed = {
             title: wTitle,
             description: message,
@@ -78,37 +188,10 @@ const DELAY_BETWEEN_MESSAGES = 1500; //Define o atraso entre as mensagens em mil
             footer: {
                 text: footerText
             }
-        }
-        GM_xmlhttpRequest({
-            method: "POST",
-            url: webhook,
-            headers: {
-                "Content-Type": "application/json"
-            },
-            data: JSON.stringify({
-                content: group,
-                embeds: [embed]
-            }),/*
-            onload: function(response) {
-            console.log('Resposta do Discord:', response.responseText);
-        }*/
-        });
-    }
-
-    function sendSimpleMessage(message, webhook){
-        GM_xmlhttpRequest({
-            method: "POST",
-            url: webhook,
-            headers: {
-                "Content-Type": "application/json"
-            },
-            data: JSON.stringify({
-                content: message
-            }),
-        });
+        };
+        queueDiscordMessage(webhook, { content: group, embeds: [embed] });
     }
     function sendExtraDiscordMessage(message, wTitle, colorCode, footerText, group, webhook, thumbUrl, thumb) {
-        //console.log('Enviando mensagem para o Discord:', message);
         const embed = {
             title: wTitle,
             description: message,
@@ -122,25 +205,11 @@ const DELAY_BETWEEN_MESSAGES = 1500; //Define o atraso entre as mensagens em mil
             footer: {
                 text: footerText
             }
-        }
-        GM_xmlhttpRequest({
-            method: "POST",
-            url: webhook,
-            headers: {
-                "Content-Type": "application/json"
-            },
-            data: JSON.stringify({
-                content: group,
-                embeds: [embed]
-            }),
-            /*onload: function(response) {
-            console.log('Resposta do Discord:', response.responseText);
-        }*/
-        });
+        };
+        queueDiscordMessage(webhook, { content: group, embeds: [embed] });
     }
 
     function sendExtraDiscordMessageNODROP(message, wTitle, colorCode, footerText, group, webhook, thumbUrl) {
-        //console.log('Enviando mensagem para o Discord:', message);
         const embed = {
             title: wTitle,
             description: message,
@@ -151,41 +220,12 @@ const DELAY_BETWEEN_MESSAGES = 1500; //Define o atraso entre as mensagens em mil
             footer: {
                 text: footerText
             }
-        }
-        GM_xmlhttpRequest({
-            method: "POST",
-            url: webhook,
-            headers: {
-                "Content-Type": "application/json"
-            },
-            data: JSON.stringify({
-                content: group,
-                embeds: [embed]
-            }),
-            /*onload: function(response) {
-            console.log('Resposta do Discord:', response.responseText);
-        }*/
-        });
+        };
+        queueDiscordMessage(webhook, { content: group, embeds: [embed] });
     }
-
-// Modifica a função sendExtraDiscordMessage para adicionar um atraso entre as chamadas
-function sendExtraDiscordMessageWithDelay(message, wTitle, colorCode, footerText, group, webhook, thumbUrl, thumb) {
-  // Agenda a chamada para a função sendExtraDiscordMessage com um atraso
-  setTimeout(() => {
-    sendExtraDiscordMessage(message, wTitle, colorCode, footerText, group, webhook, thumbUrl, thumb);
-  }, DELAY_BETWEEN_MESSAGES);
-
-}
-
-function sendExtraDiscordMessageWithDelayNODROP(message, wTitle, colorCode, footerText, group, webhook, thumbUrl) {
-  // Agenda a chamada para a função sendExtraDiscordMessage com um atraso
-  setTimeout(() => {
-    sendExtraDiscordMessageNODROP(message, wTitle, colorCode, footerText, group, webhook, thumbUrl);
-  }, DELAY_BETWEEN_MESSAGES);
-}
     async function getGoldInHand(targetLink) {
         let completeLink = targetLink;
-        let response = await fetch(completeLink);
+        let response = await secureFetch(completeLink);
         let text = await response.text();
         let tempElement = document.createElement('div');
         tempElement.innerHTML = text;
@@ -201,7 +241,7 @@ function sendExtraDiscordMessageWithDelayNODROP(message, wTitle, colorCode, foot
 
       async function getBuffs(targetLink) {
         let completeLink = targetLink;
-        let response = await fetch(completeLink);
+        let response = await secureFetch(completeLink);
         let text = await response.text();
         let tempElement = document.createElement('div');
         tempElement.innerHTML = text;
@@ -242,7 +282,7 @@ function sendExtraDiscordMessageWithDelayNODROP(message, wTitle, colorCode, foot
 async function checkForNewBounty() {
   try {
     // 1) Carrega a página
-    const resp = await fetch('/index.php?cmd=bounty');
+    const resp = await secureFetch('/index.php?cmd=bounty');
     if (resp.status !== 200) {
       console.error(`HTTP ${resp.status} ao carregar bounties`);
       return;
@@ -339,7 +379,7 @@ async function checkForNewBounty() {
 
     // Function to check for Titan notifications
     function checkForTitanNotifications() {
-        fetch('https://www.fallensword.com/index.php?cmd=&subcmd=viewarchive')
+        secureFetch('https://www.fallensword.com/index.php?cmd=&subcmd=viewarchive')
             .then(response => response.text())
             .then(text => {
             const parser = new DOMParser();
@@ -369,7 +409,7 @@ ${titanTime}
     }
 // === PvP Ladder Notifications ===
   function checkForPvPNotifications() {
-    fetch('https://www.fallensword.com/index.php?cmd=&subcmd=viewarchive', {
+    secureFetch('https://www.fallensword.com/index.php?cmd=&subcmd=viewarchive', {
       credentials: 'include',
       cache: 'no-cache'
     })
@@ -412,7 +452,7 @@ ${titanTime}
 
 function checkForSuperEliteKills() {
   // Obtém o conteúdo da página da web
-  fetch('https://www.fallensword.com/index.php?cmd=superelite')
+  secureFetch('https://www.fallensword.com/index.php?cmd=superelite')
     .then(response => response.text())
     .then(text => {
       // Analisa o conteúdo da página da web
@@ -460,7 +500,7 @@ function checkForSuperEliteKills() {
             },
             drop: tds[3].textContent.includes('[no drop]') ? '[no drop]' : tds[3].querySelector('img').src
           };
-          let line = `${killInfo.dateTime} ${killInfo.location}`
+          let line = `${killInfo.dateTime} ${killInfo.player.location}`
           // Verifica se as informações já foram enviadas anteriormente
           if (!checkInfo(line, "SEdata")) {
             // Armazena as informações em cache usando o GM
@@ -469,7 +509,7 @@ function checkForSuperEliteKills() {
               // Verifica se killInfo.drop é um link válido
 if (killInfo.drop.startsWith('http://') || killInfo.drop.startsWith('https://')) {
   // killInfo.drop é um link válido, então pode ser usado como um link para uma imagem
-  sendExtraDiscordMessageWithDelay(`
+  sendExtraDiscordMessage(`
 ${killInfo.dateTime}
 ${killInfo.superElite.name}
 ${killInfo.player.name}
@@ -477,7 +517,7 @@ ${killInfo.player.location}
 `, "Super Elite", "15466240", "It Dropped!", "", SuperEliteWebhook, killInfo.superElite.image, killInfo.drop);
 } else {
   // killInfo.drop não é um link válido, então deve ser omitido ou substituído por um valor padrão
-  sendExtraDiscordMessageWithDelayNODROP(`
+  sendExtraDiscordMessageNODROP(`
 ${killInfo.dateTime}
 ${killInfo.superElite.name}
 ${killInfo.player.name}
@@ -492,7 +532,7 @@ ${killInfo.player.location}
 }
     function checkForCratesFound() {
   // Obtém o conteúdo da página da web
-  fetch('https://www.fallensword.com/index.php?cmd=crates')
+  secureFetch('https://www.fallensword.com/index.php?cmd=crates')
     .then(response => response.text())
     .then(text => {
       // Analisa o conteúdo da página da web
@@ -526,12 +566,12 @@ ${killInfo.player.location}
             },
             drop: tds[3].querySelector('img').src
           };
-          let line = `${crateInfo.dateTime} ${crateInfo.location}`
+            let line = `${crateInfo.dateTime} ${crateInfo.player.location}`
           // Verifica se as informações já foram enviadas anteriormente
           if (!checkInfo(line, "crateData")) {
             // Armazena as informações em cache usando o GM
             addLine(line, "crateData");
-  sendExtraDiscordMessageWithDelay(`
+  sendExtraDiscordMessage(`
 ${crateInfo.dateTime}
 ${crateInfo.crateName.name}
 ${crateInfo.player.name}
@@ -544,7 +584,7 @@ ${crateInfo.player.location}
     });
 }
     function checkForUpdatesArchive(){
-        fetch('https://www.fallensword.com/index.php?cmd=&subcmd=viewupdatearchive')
+        secureFetch('https://www.fallensword.com/index.php?cmd=&subcmd=viewupdatearchive')
             .then(response => response.text())
             .then(text => {
             let tempElement = document.createElement('div');
@@ -607,7 +647,7 @@ ${crateInfo.player.location}
     }
 
     function checkForShoutbox(){
-        fetch('https://www.fallensword.com/index.php?cmd=news')
+        secureFetch('https://www.fallensword.com/index.php?cmd=news')
             .then(response => response.text())
             .then(text => {
             let tempElement = document.createElement('div');
@@ -635,7 +675,7 @@ ${crateInfo.player.location}
 :calendar: Date: ${messageDate}
 :page_facing_up: Message: ${messageContent}
 `;
-                        sendExtraDiscordMessageWithDelay(discordMessage, "Shoutbox", "16711680", "Report it now!", "", shoutboxWebhook, "", "");
+                        sendExtraDiscordMessage(discordMessage, "Shoutbox", "16711680", "Report it now!", "", shoutboxWebhook, "", "");
                     }
                 }
             }
@@ -644,7 +684,7 @@ ${crateInfo.player.location}
 
    async function autoJoinAllGroups() {
     try {
-      const response = await fetch('https://www.fallensword.com/index.php?cmd=guild&subcmd=groups&subcmd2=joinall', {
+      const response = await secureFetch('https://www.fallensword.com/index.php?cmd=guild&subcmd=groups&subcmd2=joinall', {
         credentials: 'include', // ensures cookies/session are sent
         cache: 'no-cache'       // force fresh request
       });
@@ -664,7 +704,7 @@ ${crateInfo.player.location}
 
 async function checkConflictsAndSwapGear() {
   try {
-    const resp = await fetch(CONFLICTS_URL, {
+    const resp = await secureFetch(CONFLICTS_URL, {
       credentials: 'include',
       cache: 'no-cache'
     });
@@ -690,7 +730,7 @@ async function checkConflictsAndSwapGear() {
 
     if (desiredSet !== lastCombatSetId) {
       const gearUrl = `https://www.fallensword.com/index.php?cmd=profile&subcmd=managecombatset&combatSetId=${desiredSet}&submit=Use`;
-      await fetch(gearUrl, {
+      await secureFetch(gearUrl, {
         credentials: 'include',
         cache: 'no-cache'
       });
@@ -708,7 +748,7 @@ async function checkConflictsAndSwapGear() {
 async function fetchPreviousPvPLadder(bandId) {
   const url = `https://www.fallensword.com/index.php?cmd=pvpladder&viewing_band_id=${bandId}`;
   try {
-    const response = await fetch(url, {
+    const response = await secureFetch(url, {
       credentials: 'include',
       cache: 'no-cache'
     });
@@ -798,7 +838,7 @@ async function handleLadderNotification() {
 
   async function checkGuildLog() {
     try {
-      const resp = await fetch(logURL);
+      const resp = await secureFetch(logURL);
       if (!resp.ok) return console.warn(`Log request failed: ${resp.status}`);
       const html = await resp.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -887,7 +927,7 @@ async function handleLadderNotification() {
 
  async function monitorIncomingAttacks() {
     try {
-      const resp = await fetch(conflictsURL);
+      const resp = await secureFetch(conflictsURL);
       if (!resp.ok) return console.warn(`Conflict page failed: ${resp.status}`);
       const html = await resp.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
