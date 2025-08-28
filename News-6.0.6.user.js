@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         News
-// @version      6.1.5
+// @version      6.1.6
 // @author       Zucomate
 // @description  but I'm not done yet!
 // @match        https://www.fallensword.com/index.php?cmd=points&subcmd=redeem
@@ -14,7 +14,17 @@
 
 (async function () {
   'use strict';
-  const { initNews } = await import(
-    'https://raw.githubusercontent.com/Zucomate/fallenswordstuff/main/newsFeatures.js'
+  const scriptUrl =
+    'https://raw.githubusercontent.com/Zucomate/fallenswordstuff/main/newsFeatures.js';
+  const response = await fetch(scriptUrl);
+  const scriptText = await response.text();
+  const moduleUrl = URL.createObjectURL(
+    new Blob([scriptText], { type: 'text/javascript' })
   );
+  try {
+    const { initNews } = await import(moduleUrl);
+    initNews();
+  } finally {
+    URL.revokeObjectURL(moduleUrl);
+  }
 })();
