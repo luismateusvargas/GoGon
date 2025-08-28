@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         News
-// @version      6.0.6
+// @version      6.1.5
 // @author       Zucomate
 // @description  but I'm not done yet!
 // @match        https://www.fallensword.com/index.php?cmd=points&subcmd=redeem
@@ -17,5 +17,4 @@
   const { initNews } = await import(
     'https://raw.githubusercontent.com/Zucomate/fallenswordstuff/main/newsFeatures.js'
   );
-  initNews();
 })();
