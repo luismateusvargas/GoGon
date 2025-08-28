@@ -43,17 +43,41 @@ def login(driver: webdriver.Firefox) -> None:
     driver.find_element(By.ID, "auth-submit").click()
 
 
+SCRIPT_DEPENDENCIES = [Path("webhooks.js"), Path("utils.js"), SCRIPT_PATH]
+
+
+def _read_script(path: Path) -> str:
+    """Read a script file, removing import/export statements."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:  # pragma: no cover - unlikely
+        raise SystemExit(
+            f"Failed to read {path} as UTF-8: {exc}. Ensure the file is UTF-8 encoded."
+        ) from exc
+
+    cleaned: list[str] = []
+    in_import = False
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if in_import:
+            if ";" in line:
+                in_import = False
+            continue
+        if stripped.startswith("import"):
+            in_import = ";" not in line
+            continue
+        if stripped.startswith("export "):
+            line = line.replace("export ", "", 1)
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+
 def inject_script(driver: webdriver.Firefox) -> None:
     """Inject the local notification script into the current page."""
     if not SCRIPT_PATH.exists():
         return
-    try:
-        source = SCRIPT_PATH.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise SystemExit(
-            f"Failed to read {SCRIPT_PATH} as UTF-8: {exc}. "
-            "Ensure the file is UTF-8 encoded."
-        ) from exc
+
+    source = "\n".join(_read_script(p) for p in SCRIPT_DEPENDENCIES if p.exists())
     driver.execute_script(source)
 
 
