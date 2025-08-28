@@ -39,4 +39,5 @@ This script does not contain any invasive feature and only notifies about the sa
    ```
 
    The script will open a headless Firefox instance, log in to the game and
-   refresh the session hourly.
+   refresh the session hourly. Ensure that `newsFeatures.js` is saved with
+   UTF-8 encoding so it can be injected without errors.
