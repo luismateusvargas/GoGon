@@ -7,7 +7,13 @@ session alive. Every hour it refreshes the home page and, if the session has
 expired (the game logs accounts out roughly every seven days), it re‑logs in
 and reinjects the optional notification script.
 
-The CSS selectors used in ``login`` may require updating if the site changes.
+If the ``GECKODRIVER_PATH`` environment variable is set, it will be used to
+locate the ``geckodriver`` binary. This is helpful on systems where the driver
+is not on ``PATH`` such as a fresh Windows installation.
+
+The script exits with a clear error if ``geckodriver`` cannot be launched or if
+``newsFeatures.js`` is not UTF-8 encoded. The CSS selectors used in ``login``
+may require updating if the site changes.
 """
 
 import os
@@ -17,6 +23,7 @@ from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.service import Service
 
 
 LOGIN_URL = "https://account.huntedcow.com/auth?game=6"
@@ -25,6 +32,7 @@ SCRIPT_PATH = Path("newsFeatures.js")
 
 EMAIL = os.environ.get("FS_EMAIL")
 PASSWORD = os.environ.get("FS_PASSWORD")
+GECKODRIVER_PATH = os.environ.get("GECKODRIVER_PATH")
 
 
 def login(driver: webdriver.Firefox) -> None:
@@ -37,8 +45,16 @@ def login(driver: webdriver.Firefox) -> None:
 
 def inject_script(driver: webdriver.Firefox) -> None:
     """Inject the local notification script into the current page."""
-    if SCRIPT_PATH.exists():
-        driver.execute_script(SCRIPT_PATH.read_text())
+    if not SCRIPT_PATH.exists():
+        return
+    try:
+        source = SCRIPT_PATH.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(
+            f"Failed to read {SCRIPT_PATH} as UTF-8: {exc}. "
+            "Ensure the file is UTF-8 encoded."
+        ) from exc
+    driver.execute_script(source)
 
 
 def keep_alive(driver: webdriver.Firefox) -> None:
@@ -55,9 +71,17 @@ def keep_alive(driver: webdriver.Firefox) -> None:
 def main() -> None:
     options = Options()
     options.add_argument("-headless")
-    with webdriver.Firefox(options=options) as driver:
-        login(driver)
-        keep_alive(driver)
+    service = Service(GECKODRIVER_PATH) if GECKODRIVER_PATH else Service()
+    try:
+        with webdriver.Firefox(service=service, options=options) as driver:
+            login(driver)
+            keep_alive(driver)
+    except OSError as exc:
+        path = GECKODRIVER_PATH or "PATH"
+        raise SystemExit(
+            f"Failed to launch geckodriver from {path}: {exc}. "
+            "Ensure the driver matches your OS architecture."
+        ) from exc
 
 
 if __name__ == "__main__":
