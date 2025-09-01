@@ -1,0 +1,21 @@
+{
+  "name": "shivs-wall-of-sayings",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node app.mjs"
+  },
+  "description": "Headless Firefox Browser to run Fallensword notifications and commands on discord",
+  "main": "engine.js",
+  "keywords": [],
+  "author": "CrazyWest Notifications INC",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.22.1",
+    "dotenv": "^17.2.1",
+    "fetch-cookie": "^3.1.0",
+    "linkedom": "^0.18.12",
+    "tough-cookie": "^6.0.0"
+  },
+  "devDependencies": {}
+}
