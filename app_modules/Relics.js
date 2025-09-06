@@ -1,152 +1,178 @@
-// app_modules/Relics.js
+// app_modules/Relics.js (robust + LOST/OUR CAPTURE diferenciados + trim de frase)
 import { LOG, WARN, ERR, ensurePCC } from './core.js';
-import { secureFetch, queueDiscordMessage } from '../utils.js';
+import { secureFetch, queueDiscordMessage, getContent, setContent } from '../utils.js';
 import { RELIC_WEBHOOK } from '../webhooks.js';
 
 const LOG_URL = 'https://www.fallensword.com/index.php?cmd=guild&subcmd=log';
 
-/**
- * Fallen Sword guild log timestamps appear as "HH:MM DD/Mon/YYYY" (no seconds).
- * To avoid missing multiple relic events within the same minute,
- * we combine {minuteBucket, relicName} as the dedup key.
- */
+/** Util: parse "14:37 03/Sep/2025" -> { date, minuteKey } */
 function parseTimestamp(ts) {
-  if (!ts || !ts.includes(' ')) return null;
-  const [time, date] = ts.split(' ');
-  if (!date) return null;
-  const [day, monStr, year] = date.split('/');
-  if (!day || !monStr || !year) return null;
-  const months = {
-    Jan: '01', Feb: '02', Mar: '03', Apr: '04',
-    May: '05', Jun: '06', Jul: '07', Aug: '08',
-    Sep: '09', Oct: '10', Nov: '11', Dec: '12'
-  };
-  const month = months[monStr];
-  if (!month) return null;
-  // Build an ISO-like string without seconds for the minute bucket
-  const isoMinute = `${year}-${month}-${day}T${time}`; // HH:MM
-  const isoFull = `${isoMinute}:00`;
-  return { date: new Date(isoFull), minuteKey: isoMinute };
+  try {
+    if (!ts) return null;
+    const parts = ts.trim().split(/\s+/); // ["HH:MM", "DD/Mon/YYYY"]
+    if (parts.length < 2) return null;
+    const [hm, dmy] = parts;
+    const [hh, mm] = hm.split(':').map(n => parseInt(n, 10));
+    const m = /^(\d{1,2})\/([A-Za-z]{3})\/(\d{4})$/.exec(dmy);
+    if (!m) return null;
+    const d = parseInt(m[1], 10);
+    const mon = m[2].toLowerCase().slice(0,3);
+    const y = parseInt(m[3], 10);
+    const months = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+    const monthIdx = months[mon];
+    if (monthIdx == null || Number.isNaN(hh) || Number.isNaN(mm)) return null;
+    const date = new Date(y, monthIdx, d, hh, mm, 0);
+    const pad = (n) => String(n).padStart(2,'0');
+    const minuteKey = `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    return { date, minuteKey };
+  } catch {
+    return null;
+  }
 }
 
-function extractRelicName(cell) {
-  if (!cell) return null;
-  // 1) Prefer link text that likely points to a relic
-  const link = cell.querySelector('a[href*="relic"], a[href*="Relic"], a[href*="relics"], a[href*="Relics"]');
-  const linkText = link?.textContent?.trim();
-  if (linkText) return linkText;
-
-  const text = cell.textContent || '';
-  // 2) Try quoted 'relic "Name"' or "relic 'Name'"
-  let m = text.match(/relic\s*['"]([^'"]+)['"]/i);
-  if (m && m[1]) return m[1].trim();
-  // 3) Try ending after 'relic ' until punctuation
-  m = text.match(/relic\s+([A-Za-z0-9 _\-:()\[\]{}.,]+?)(?:[.!?]|$)/i);
-  if (m && m[1]) return m[1].trim();
-  // 4) Nothing reliable
-  return null;
+/** Util: pega só a 1ª frase (até o primeiro ponto final). */
+function firstSentence(text) {
+  const s = (text || '').trim();
+  if (!s) return '';
+  const idx = s.indexOf('.');
+  return idx >= 0 ? s.slice(0, idx + 1).trim() : s;
 }
 
+/**
+ * Detecta tipo de evento e extrai a Relic nomeando:
+ * - CAPTURED (NOSSA guild) => "has captured the relic ... from [ <Guild> ]"
+ * - LOST (OUTRA guild)     => "has captured your relic ..."  OU  "Your guild members have lost the bonuses"
+ * - DEFENDED               => "defend/repel/held off/held the relic"
+ * Retorna { kind: 'CAPTURED'|'LOST'|'DEFENDED'|'OTHER', relicName, label, color, shortText }
+ */
+function parseRelicMessage(msg) {
+  const text = (msg || '').trim();
+  if (!/relic/i.test(text)) return null;
+
+  // padrões
+  const OUR_CAPTURE = /has\s+captured\s+the\s+relic\b/i; // nossa guild capturou DE alguém
+  const LOST_YOUR   = /has\s+captured\s+your\s+relic\b/i; // outra guild capturou DA gente
+  const LOST_BONUS  = /your\s+guild\s+members\s+have\s+lost\s+the\s+bonuses/i;
+  const DEFEND      = /(defend|defended|repel|repelled|held\s+off|held\s+the\s+relic)/i;
+
+  let kind = 'OTHER', label = 'Relic Update', color = 15105570;
+  if (LOST_YOUR.test(text) || LOST_BONUS.test(text)) {
+    kind = 'LOST'; label = 'Relic Lost'; color = 15158332; // vermelho
+  } else if (DEFEND.test(text)) {
+    kind = 'DEFENDED'; label = 'Relic Defended'; color = 3447003; // azul
+  } else if (OUR_CAPTURE.test(text)) {
+    kind = 'CAPTURED'; label = 'Relic Captured'; color = 3066993; // verde
+  }
+
+  // Extrair nome da relic
+  let relicName = '';
+  let m = /relic\s*[:\-]\s*([^,.;\n]+)/i.exec(text);
+  if (m) relicName = m[1].trim();
+  if (!relicName) {
+    m = /the\s+([^,.;\n]+?)\s+relic/i.exec(text);
+    if (m) relicName = m[1].trim();
+  }
+  if (!relicName) {
+    m = /["“”'`](.+?)["“”'`]/.exec(text);
+    if (m) relicName = m[1].trim();
+  }
+  if (!relicName) {
+    m = /([A-Z][A-Za-z0-9 '()\-]+)\s+relic/i.exec(text);
+    if (m) relicName = m[1].trim();
+  }
+  relicName = relicName.replace(/\s+/g,' ').trim();
+
+  // 1ª frase apenas
+  const shortText = firstSentence(text);
+
+  return { kind, relicName, label, color, shortText };
+}
+
+/** Storage */
 function getProcessedSet() {
   try {
-    const raw = localStorage.getItem('relics_processed_set');
-    if (!raw) return new Set();
+    const raw = getContent('relics_processed') || '[]';
     const arr = JSON.parse(raw);
-    return new Set(Array.isArray(arr) ? arr : []);
-  } catch {
-    return new Set();
-  }
+    if (Array.isArray(arr)) return new Set(arr);
+  } catch {}
+  return new Set();
 }
 function saveProcessedSet(set) {
   try {
     const arr = Array.from(set);
-    localStorage.setItem('relics_processed_set', JSON.stringify(arr));
+    if (arr.length > 400) arr.splice(0, arr.length - 400);
+    setContent('relics_processed', JSON.stringify(arr));
   } catch {}
 }
 
+/** Principal */
 export async function checkRelics() {
   try {
-    const resp = await secureFetch(LOG_URL, { credentials: 'include', cache: 'no-cache' });
-    if (!resp.ok) { WARN('relics', `Log request failed: ${resp.status}`); return; }
+    const resp = await secureFetch(LOG_URL);
+    if (!resp || !resp.ok) {
+      WARN('relics', `Log request failed: ${resp ? resp.status : '??'}`);
+      return;
+    }
     const html = await resp.text();
     const doc = new DOMParser().parseFromString(html, 'text/html');
-
     const pCC = ensurePCC(doc, html, 'checkRelics');
     if (!pCC) return;
 
-    const rows = Array.from(pCC.querySelectorAll('table.width_full tbody tr'));
+    pCC.querySelectorAll('script, style').forEach(n => n.remove());
 
-    // State used for dedup across restarts
+    let rows = Array.from(pCC.querySelectorAll('table.width_full tbody tr'));
+    if (!rows.length) rows = Array.from(pCC.querySelectorAll('tr')).filter(tr => tr.querySelectorAll(':scope > td').length >= 3);
+
     const processed = getProcessedSet();
-    const lastMinuteKey = localStorage.getItem('relics_last_minute') || null;
-
-    // Track new state as we go
+    const lastMinuteKey = getContent('relics_last_minute') || null;
     let newLastMinuteKey = lastMinuteKey;
     const touchedKeys = new Set();
 
     for (const row of rows) {
-      const tds = row.querySelectorAll('td');
+      const tds = row.querySelectorAll(':scope > td');
       if (tds.length < 3) continue;
 
-      const timestampRaw = tds[1].textContent.trim();
+      const timestampRaw = (tds[1].textContent || '').trim();
       const parsed = parseTimestamp(timestampRaw);
       if (!parsed) continue;
-
       const { date, minuteKey } = parsed;
-      const messageCell = tds[2];
-      const plainMessage = messageCell.textContent.trim();
 
-      // Only care about relic-related messages
-      let label = null;
-      let color = null;
-      if (plainMessage.includes('has captured the relic')) {
-        label = '**RELIC TAKEN**';
-        color = 15844367; // yellow
-      } else if (plainMessage.includes('has captured your relic')) {
-        label = '**RELIC LOST**';
-        color = 16711680; // red
-      } else {
-        continue;
-      }
+      const plainMessage = (tds[2].textContent || '').replace(/\u00A0/g, ' ').replace(/\s+/g,' ').trim();
+      if (!plainMessage) continue;
 
-      // Extract relic name and build dedup key
-      const relicName = extractRelicName(messageCell) || plainMessage; // fallback: message itself
-      const dedupKey = `${minuteKey}|${relicName}`;
+      const info = parseRelicMessage(plainMessage);
+      if (!info) continue;
 
-      // If minute is older than last processed minute, we can stop (assuming newest-first).
-      if (lastMinuteKey && minuteKey < lastMinuteKey) {
-        break;
-      }
+      const { kind, relicName, label, color, shortText } = info;
+      const nameKey = relicName || plainMessage.slice(0,60);
+      const dedupKey = `${minuteKey} :: ${kind} :: ${nameKey}`;
 
-      // Skip if already processed
       if (processed.has(dedupKey)) continue;
 
-      // Send notification
+      // Embed curto (apenas 1ª frase)
       const payload = {
         content: '',
         embeds: [{
           title: 'Relic Notification',
-          description: `${label}\n${plainMessage}`,
+          description: `${label}\n${shortText}`,
           color,
           timestamp: date.toISOString()
         }]
       };
-      queueDiscordMessage(RELIC_WEBHOOK, payload);
-      LOG('relics', `${label} :: ${relicName} @ ${minuteKey}`);
+      try {
+        queueDiscordMessage(RELIC_WEBHOOK, payload);
+        LOG('relics', `${label} :: ${relicName || '(unknown)'} @ ${minuteKey}`);
+      } catch (e) {
+        ERR('relics', 'Falha ao enviar relic notification', e);
+      }
 
-      // Mark processed
       processed.add(dedupKey);
       touchedKeys.add(minuteKey);
-
-      // Track the newest minute key seen
-      if (!newLastMinuteKey || minuteKey > newLastMinuteKey) {
-        newLastMinuteKey = minuteKey;
-      }
+      if (!newLastMinuteKey || minuteKey > newLastMinuteKey) newLastMinuteKey = minuteKey;
     }
 
-    // Persist dedup state
     if (newLastMinuteKey && newLastMinuteKey !== lastMinuteKey) {
-      localStorage.setItem('relics_last_minute', newLastMinuteKey);
+      setContent('relics_last_minute', newLastMinuteKey);
     }
     if (touchedKeys.size > 0) {
       saveProcessedSet(processed);

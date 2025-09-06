@@ -1,6 +1,7 @@
 // app_modules/SuperElite.js
 import { LOG, WARN, ERR, waitForPCC, ensurePCC, selectRowsResilient, dumpHtml } from './core.js';
-import { secureFetch, sendExtraDiscordMessage, sendExtraDiscordMessageNODROP } from '../utils.js';
+import { secureFetch, sendExtraDiscordMessage, sendExtraDiscordMessageNODROP, checkInfo, addLine } from '../utils.js';
+import { SuperEliteWebhook } from '../webhooks.js';
 
 
 export function checkForSuperEliteKills() {
@@ -12,17 +13,64 @@ export function checkForSuperEliteKills() {
       const parser = new DOMParser();
       const doc = parser.parseFromString(text, 'text/html');
 
-  const pCC = ensurePCC(doc, (typeof html !== 'undefined' ? html : (doc?.documentElement?.outerHTML ?? null)), 'checkForSuperEliteKills');
-  if (!pCC) { return; }
+	  const pCC = ensurePCC(doc, (typeof html !== 'undefined' ? html : (doc?.documentElement?.outerHTML ?? null)), 'checkForSuperEliteKills');
+	  if (!pCC) { return; }
 
-      // Obtém todos os elementos tr dentro do div
-      const trs = pCC.querySelectorAll('table > tbody > tr:nth-child(6) > td > table > tbody > tr');
+      // Localiza a tabela de Super Elite de forma robusta (por cabeçalhos/padrões visuais)
+      const pcc = pCC;
+      const tables = Array.from(pcc.querySelectorAll('table'));
+      function isSETable(tbl) {
+        // 1) Se tiver cabeçalhos, use palavras-chave
+        const headerRow = tbl.querySelector('tr');
+        if (headerRow) {
+          const headers = Array.from(headerRow.querySelectorAll('td.header, th.header')).map(td => td.textContent.trim().toLowerCase());
+          if (headers.length >= 3) {
+            const hasCreature = headers.some(h => h.includes('creature') || h.includes('super elite'));
+            const hasPlayer   = headers.some(h => h.includes('player'));
+            const hasDrop     = headers.some(h => h.includes('drop'));
+            const hasDateTime = headers.some(h => h.includes('date') || h.includes('time'));
+            if ((hasCreature || hasDrop) && hasPlayer) return true;
+            if (hasDateTime && (hasCreature || hasDrop)) return true;
+          }
+        }
+        // 2) Caso não tenha cabeçalho claro, procure linhas com padrão visual típico:
+        //    - 4+ colunas, a segunda coluna contém <img> e <center> (nome do SE)
+        //    - a terceira contém <a> (jogador) e texto extra (localização)
+        const probe = tbl.querySelectorAll('tr');
+        for (const tr of probe) {
+          const tds = tr.querySelectorAll('td');
+          if (tds.length >= 4) {
+            const hasImgIn2 = !!tds[1]?.querySelector('img');
+            const hasCenterName = !!tds[1]?.querySelector('center');
+            const hasPlayerLink = !!tds[2]?.querySelector('a');
+            if (hasImgIn2 && hasCenterName && hasPlayerLink) return true;
+          }
+        }
+        return false;
+      }
+      const seTable = tables.find(isSETable);
+      if (!seTable) {
+        console.error('⚠️ Tabela de Super Elite não encontrada (DOM mudou?)');
+        return;
+      }
 
-      // Percorre os elementos tr de 2 em 2
-      for (let i = 1; i < trs.length; i += 2) {
+      // Coleta as linhas úteis (ignora cabeçalhos e separadores)
+      const rawRows = Array.from(seTable.querySelectorAll('tr'));
+      // Alguns layouts intercalam linhas; aqui filtramos por linhas com pelo menos 4 <td> relevantes.
+      const trs = rawRows.filter(tr => {
+        const tds = tr.querySelectorAll(':scope > td');
+        if (tds.length < 4) return false;
+        if ([...tds].some(td => td.classList.contains('header'))) return false;
+        const txt = tr.textContent.trim().toLowerCase();
+        if (!txt) return false;
+        // Evita mensagens genéricas tipo "no entries"
+        if (txt.includes('no') && txt.includes('entries')) return false;
+        return true;
+      });
+
+      // Percorre as linhas diretamente (sem pular de 2 em 2)
+      for (let i = 0; i < trs.length; i++) {
         const tr = trs[i];
-
-        // Obtém os elementos td dentro do tr
         const tds = tr.querySelectorAll('td');
 
         // Verifica se existem elementos td suficientes
@@ -80,6 +128,7 @@ ${killInfo.player.location}
 
           }
         }
-      }
-    });
+      
+	  }
+	});
 }

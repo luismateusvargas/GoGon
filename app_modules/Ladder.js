@@ -1,129 +1,121 @@
-// app_modules/Ladder.js
-import { LOG, WARN, ERR, waitForPCC, ensurePCC, selectRowsResilient, dumpHtml } from './core.js';
-import { secureFetch, sendDiscordMessage } from '../utils.js';
+// app_modules/Ladder.js (detecção de reset da PvP Ladder via News Archive)
+// - Procura por entradas com <span class="NEWS_SUBJECT"><b>PvP Ladder</b></span>
+// - Extrai a data de <span class="NEWS_DATE">Posted: ...</span> do mesmo <tr>
+// - Dedupe persistente (GM_): evita repetição entre execuções
+// - Envia uma única notificação formatada ao Discord
+import { LOG, WARN, ERR, ensurePCC } from './core.js';
+import { secureFetch, checkInfo, addLine, sendDiscordMessage } from '../utils.js';
+import { ladderWebhook, LadderGroup } from '../webhooks.js';
 
+const NEWS_URLS = [
+  'https://www.fallensword.com/index.php?cmd=news&subcmd=viewarchive',
+  'https://www.fallensword.com/index.php?cmd=news&subcmd=view',
+  'https://www.fallensword.com/index.php?cmd=news',
+];
 
-export async function fetchPreviousPvPLadder(bandId) {
-  const url = `https://www.fallensword.com/index.php?cmd=pvpladder&viewing_band_id=${bandId}`;
-  try {
-    const response = await secureFetch(url, {
-      credentials: 'include',
-      cache: 'no-cache'
-    });
-    const html = await response.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
+function toDoc(html) {
+  if (typeof DOMParser !== 'undefined') {
+    try { return new DOMParser().parseFromString(html, 'text/html'); } catch {}
+  }
+  if (typeof document !== 'undefined' && document.implementation?.createHTMLDocument) {
+    const doc = document.implementation.createHTMLDocument('');
+    doc.documentElement.innerHTML = html;
+    return doc;
+  }
+  throw new Error('Ambiente sem DOMParser/document.');
+}
 
-	  const pCC = ensurePCC(doc, (typeof html !== 'undefined' ? html : (doc?.documentElement?.outerHTML ?? null)), 'fetchPreviousPvPLadder');
-	  if (!pCC) { return; }
+function normTxt(s) {
+  return (s || '').replace(/\r/g,'').replace(/\u00A0/g,' ').replace(/[ \t]+/g,' ').replace(/ *\n */g,'\n').trim();
+}
+function getTxt(el) {
+  if (!el) return '';
+  el.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+  return normTxt(el.textContent || '');
+}
 
-
-    // Select the second <td> containing "Previous PvP Ladder"
-    const previousLadderTable = doc.querySelector('td[valign="top"]:nth-of-type(2) table');
-
-    if (!previousLadderTable) {
-      console.warn(`[PvP Ladder] No previous ladder found for band ${bandId}`);
-      return [];
+function findPvPLadderRows(pCC) {
+  // Procura todos os SUBJECTs e filtra os que tenham "PvP Ladder" (case-insensitive)
+  const subjects = Array.from(pCC.querySelectorAll('span.NEWS_SUBJECT b'));
+  const hits = [];
+  for (const b of subjects) {
+    const title = getTxt(b);
+    if (!/pvp\s*ladder/i.test(title)) continue;
+    const row = b.closest('tr');
+    if (!row) continue;
+    const dateEl = row.querySelector('.NEWS_DATE');
+    const posted = getTxt(dateEl);
+    // Conteúdo (body) geralmente no próximo <tr> com td[colspan="2"]
+    let body = '';
+    let sib = row.nextElementSibling;
+    if (sib && sib.querySelector('td[colspan="2"]')) {
+      body = getTxt(sib.querySelector('td[colspan="2"]'));
     }
-
-    const rows = previousLadderTable.querySelectorAll('tbody tr');
-    const ladderData = [];
-
-    rows.forEach(row => {
-      const cols = row.querySelectorAll('td');
-      if (cols.length === 3 && !cols[0].classList.contains('header')) {
-        const ranking = cols[0].textContent.trim();
-        const player = cols[1].textContent.trim();
-        const rating = cols[2].textContent.trim();
-        ladderData.push({ ranking, player, rating });
-      }
-    });
-
-    console.log(`[PvP Ladder Band ${bandId}]`, ladderData);
-    return ladderData;
-  } catch (error) {
-    console.error(`[PvP Ladder] Error fetching band ${bandId}:`, error);
-    return [];
+    hits.push({ row, title, posted, body });
   }
+  return hits;
 }
 
-export async function fetchAllPreviousPvPLadders() {
-  const allBands = {};
-  for (let bandId = 1; bandId <= 19; bandId++) {
-    allBands[bandId] = await fetchPreviousPvPLadder(bandId);
-  }
-  return allBands;
+function trimFirstSentence(s) {
+  if (!s) return '';
+  const idx = s.indexOf('.');
+  return idx >= 0 ? s.slice(0, idx + 1).trim() : s.trim();
 }
 
-export async function handleLadderNotification() {
-  const allBands = await fetchAllPreviousPvPLadders();
+export async function checkLadderReset() {
+  for (const url of NEWS_URLS) {
+    try {
+      const resp = await secureFetch(url);
+      if (!resp || resp.status !== 200) { WARN('ladder', `HTTP ${resp?.status ?? '??'} em ${url}`); continue; }
+      const html = await resp.text();
+      const doc = toDoc(html);
+      const pCC = ensurePCC(doc, html, 'checkLadderReset');
+      if (!pCC) { WARN('ladder', 'pCC não encontrado.'); continue; }
 
-  for (let bandId = 1; bandId <= 19; bandId++) {
-    const bandData = allBands[bandId];
-    if (!bandData || bandData.length === 0) continue;
+      // Varre a página e pega o(s) blocos "PvP Ladder"
+      const items = findPvPLadderRows(pCC);
+      if (!items.length) { LOG('ladder', `Nenhum bloco "PvP Ladder" em ${url}`); continue; }
 
-    const formatted = bandData
-      .map(item => `${item.ranking} - ${item.player} (${item.rating})`)
-      .join('\n');
+      // Processa o mais recente primeiro
+      for (const item of items.slice(0, 3)) {
+        const title = item.title || 'PvP Ladder';
+        const dateTxt = item.posted || '';
+        const messageBody = trimFirstSentence(item.body);
 
-    const message = `**Previous PvP Ladder (Band ${bandId}):**\n${formatted}`;
+        // chave de dedupe: data + título normalizado
+        const normTitle = title.replace(/^\s*\d+\s+/,'').trim();
+        const key = `${dateTxt} ${normTitle}`.trim();
 
-    sendDiscordMessage(
-      message,
-      'PvP Ladder Report',
-      '15466240',
-      'Ladder Stats',
-      LadderGroup,
-      ladderRankingWebhook
-    );
+        let isNew = true;
+        try {
+          isNew = !checkInfo(key, 'ladderResets');
+          if (isNew) addLine(key, 'ladderResets');
+        } catch {}
 
-    // Delay between messages to avoid flooding Discord (e.g., 2 seconds)
-    await new Promise(resolve => setTimeout(resolve, 2000));
-  }
-}
+        if (!isNew) { LOG('ladder', `Duplicado ignorado: ${key}`); continue; }
 
-export function checkForPvPNotifications() {
-    secureFetch('https://www.fallensword.com/index.php?cmd=&subcmd=viewarchive', {
-      credentials: 'include',
-      cache: 'no-cache'
-    })
-      .then(response => response.text())
-      .then(text => {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(text, 'text/html');
+        let content = `
+:crossed_swords: **PvP Ladder Reset**
+:calendar: ${dateTxt || '-'}
+`;
+        if (messageBody) {
+          content += `\n:page_facing_up: ${messageBody}`;
+        }
 
-  const pCC = ensurePCC(doc, (typeof html !== 'undefined' ? html : (doc?.documentElement?.outerHTML ?? null)), 'checkForPvPNotifications');
-  if (!pCC) { return; }
-
-        const rows = doc.querySelectorAll(
-          'table > tbody > tr:nth-child(5) > td > table > tbody > tr'
+        // Envia
+        sendDiscordMessage(
+          content.trim(),
+          'PvP Ladder',
+          '16711680',
+          'Dominating!',
+          LadderGroup,
+          ladderWebhook
         );
-
-        rows.forEach(row => {
-          const cell = row.querySelector('td:nth-child(2)');
-          if (cell) {
-            const cellData = cell.textContent;
-            if (cellData.includes('PvP Ladder')) {
-              const ladderInfo = row.nextElementSibling?.nextElementSibling?.querySelector('td')?.textContent?.trim() || '';
-              const ladderTime = row.querySelector('.NEWS_DATE')?.textContent?.trim() || '';
-              const line = `${ladderInfo} ${ladderTime}`;
-
-              if (!checkInfo(line, 'ladderData')) {
-                addLine(line, 'ladderData');
-
-                sendDiscordMessage(
-                  `**${ladderInfo}**\n${ladderTime}`,
-                  'Ladder Reset',
-                  '15466240', // Icon ID
-                  'Dominating!',
-                  LadderGroup,
-                  ladderWebhook
-                );
-                handleLadderNotification();
-              }
-            }
-          }
-        });
-      })
-      .catch(err => console.error('[PvP Notification] Fetch error:', err));
+        LOG('ladder', `Notificado: ${key}`);
+        return; // apenas um por execução
+      }
+    } catch (e) {
+      ERR('ladder', 'Falha ao processar Ladder', e);
+    }
   }
+}

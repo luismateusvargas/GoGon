@@ -1,58 +1,112 @@
-// app_modules/GameUpdates.js (corrigido)
-import { LOG, WARN, ERR, ensurePCC, dumpHtml } from './core.js';
-import { secureFetch, queueDiscordMessage } from '../utils.js';
-import { parseHTML } from 'linkedom';
+// app_modules/GameUpdates.js (fix: dedupe por título normalizado + formatação emoji + links/imagens)
+import { LOG, WARN, ERR, ensurePCC } from './core.js';
+import { secureFetch, checkInfo, addLine, sendDiscordMessage } from '../utils.js';
 import { newsWebhook } from '../webhooks.js';
 
-/**
- * Lê o arquivo de "Game Updates" (arquivo de notícias/patch notes) em
- * /index.php?cmd=&subcmd=viewupdatearchive e envia resumo ao Discord.
- * 
- * Robustez:
- * - Usa parseHTML do linkedom (nada de document.createElement).
- * - Garante #pCC via ensurePCC antes de querySelector.
- * - Envolve tudo em try/catch e loga snapshots quando #pCC faltar.
- */
+function toDoc(html) {
+  const parser = new DOMParser();
+  return parser.parseFromString(html, 'text/html');
+}
+function cleanNode(node) {
+  if (!node) return node;
+  node.querySelectorAll('script, style').forEach(n => n.remove());
+  return node;
+}
+function textify(node) {
+  if (!node) return '';
+  node.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+  return (node.textContent || '')
+    .replace(/\u00A0/g,' ')
+    .replace(/\s+\n/g,'\n')
+    .replace(/[ \t]+/g,' ')
+    .trim();
+}
+function normalizeTitle(title) {
+  // remove contadores/prefixos numéricos do início, ex: "13 Rise of ..." -> "Rise of ..."
+  return (title || '').replace(/^\s*\d+\s+/, '').trim();
+}
+function extractDateFromHead(head) {
+  const dateEl = head.querySelector('.NEWS_DATE, i, .date, .news-date');
+  const t = dateEl ? dateEl.textContent.trim() : '';
+  if (t) return t;
+  const htxt = (head.textContent || '').trim();
+  const m = /(\d{1,2}:\d{2}\s+\d{1,2}\s+[A-Za-z]{3}\s+\d{4})/.exec(htxt);
+  return m ? m[1] : '';
+}
+function pickBody(head) {
+  let sib = head?.nextElementSibling || null;
+  while (sib && !sib.classList?.contains('news_body') && !sib.classList?.contains('news_body_tavern')) {
+    sib = sib.nextElementSibling;
+  }
+  return sib || null;
+}
+
 export async function checkForUpdatesArchive() {
-  try {
-    const res = await secureFetch('index.php?cmd=&subcmd=viewupdatearchive');
-    const html = await res.text();
+  const urls = [
+    'https://www.fallensword.com/index.php?cmd=updatearchive&subcmd=view',
+    'https://www.fallensword.com/index.php?cmd=updatearchive',
+    'https://www.fallensword.com/index.php?cmd=news&subcmd=view',
+    'https://www.fallensword.com/index.php?cmd=news',
+  ];
+  for (const url of urls) {
+    try {
+      const resp = await secureFetch(url);
+      if (!resp || resp.status !== 200) continue;
+      const html = await resp.text();
+      const doc = toDoc(html);
+      const pCC = ensurePCC(doc, html, 'checkForUpdatesArchive');
+      if (!pCC) continue;
+      cleanNode(pCC);
 
-    const { document } = parseHTML(html);
-    const pCC = ensurePCC(document, html, 'checkForUpdatesArchive');
-    if (!pCC) return;
+      const heads = Array.from(pCC.querySelectorAll('.news_head, .news_head_tavern'));
+      if (!heads.length) continue;
+      const head = heads[0];
+      const body = pickBody(head);
+      cleanNode(head);
+      cleanNode(body);
 
-    // Seleção original ancorada em #pCC (ajuste fino pode ser necessário conforme HTML real)
-    const tbody = pCC.querySelector('table tbody tr:nth-of-type(5) td table tbody');
-    if (!tbody) {
-      WARN('[GameUpdates] Tabela principal não encontrada');
-      await dumpHtml('GameUpdates_noTable', html);
+      const h1 = head.querySelector('.news-heading');
+      const h2 = head.querySelector('.news-subheading');
+      const titleRaw = [h1?.textContent?.trim(), h2?.textContent?.trim()].filter(Boolean).join(' ') || textify(head);
+      const title = titleRaw || 'Game Updates';
+      const normTitle = normalizeTitle(title);
+      const date = extractDateFromHead(head);
+      const message = textify(body) || '';
+
+      const imgElements = Array.from((body || head).querySelectorAll('img'));
+      const aElements = Array.from((body || head).querySelectorAll('a'));
+      const imgSrcs = imgElements.map(img => img.getAttribute('src') || img.src).filter(Boolean);
+      const aHrefs = aElements.map(a => a.getAttribute('href') || a.href).filter(Boolean);
+
+      // chave de dedupe: usa data + título *normalizado*
+      const line = `${date} ${normTitle}`.trim();
+      let shouldSend = true;
+      try {
+        shouldSend = !checkInfo(line, 'updatesData');
+        if (shouldSend) addLine(line, 'updatesData');
+      } catch {}
+
+      if (!shouldSend) { LOG('news', `Duplicado ignorado: ${line}`); return; }
+
+      // formatação solicitada
+      let discordMessage = `
+:envelope_with_arrow: Title: ${title}
+:calendar: Date: ${date || '-'}
+:page_facing_up: Message: ${message}
+`.trim();
+
+      if (imgSrcs.length > 0) {
+        discordMessage += `\n\n:camera_with_flash: Images Links:\n` + imgSrcs.join('\n');
+      }
+      if (aHrefs.length > 0) {
+        discordMessage += `\n\n:link: External Links:\n` + aHrefs.join('\n');
+      }
+
+      sendDiscordMessage(discordMessage, "Update Archive", "16711680", "New Content ?", "", newsWebhook);
+      LOG('news', `Enviado: ${line}`);
       return;
+    } catch (e) {
+      ERR('news', 'Falha ao processar Updates', e);
     }
-
-    // Pega as primeiras linhas (título e conteúdo do update mais recente)
-    const firstTr = tbody.querySelector('tr:first-of-type');
-    const thirdTr = tbody.querySelector('tr:nth-of-type(3)');
-    if (!firstTr || !thirdTr) {
-      WARN('[GameUpdates] Linhas esperadas (1 e 3) não encontradas');
-      await dumpHtml('GameUpdates_badRows', html);
-      return;
-    }
-
-    const titleTd = firstTr.querySelector('td b');
-    const messageTd = thirdTr.querySelector('td');
-    const title = titleTd ? titleTd.textContent.trim() : 'Game Update';
-    const message = messageTd ? messageTd.textContent.trim() : '';
-
-    if (!message) {
-      WARN('[GameUpdates] Conteúdo vazio, nada a enviar');
-      return;
-    }
-
-    const content = `🛠️ **${title}**\n${message}`;
-    sendDiscordMessage(newsWebhook, { content });
-    LOG('[GameUpdates] Update enviado ao Discord');
-  } catch (e) {
-    ERR('GameUpdates error', e);
   }
 }
