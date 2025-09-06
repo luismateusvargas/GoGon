@@ -1,6 +1,6 @@
 // session.mjs — SSO robusto + cookie bootstrap + logs opcionais
 // Node 20/22 ESM
-
+import { LOG } from './app_modules/core.js';
 import { CookieJar } from 'tough-cookie';
 import * as fetchCookieNS from 'fetch-cookie';
 const fetchCookie = fetchCookieNS.default ?? fetchCookieNS;
@@ -147,7 +147,7 @@ export async function login(email = process.env.SWS_EMAIL || process.env.FS_EMAI
 
   // 0) Tenta bootstrap de cookies (se existir)
   await loadCookieBootstrap().catch(() => {});
-  if (await isLoggedIn()) return true;
+  if (await isLoggedIn()) return console.log('Account logged in');;
 
   // 1) Abre a home
   let curUrl = abs('/index.php');
@@ -224,7 +224,7 @@ export async function login(email = process.env.SWS_EMAIL || process.env.FS_EMAI
       }, 'sso-relay');
       if (/id\s*=\s*['"]pCC['"]/.test(fin.html)) return true;
     }
-    if (await isLoggedIn()) return true;
+    if (await isLoggedIn()) return console.log('login successful');
   }
   return false;
 }
@@ -234,6 +234,6 @@ export async function ensureLogin(
   password = process.env.SWS_PASSWORD || process.env.FS_PASSWORD
 ) {
   const ok = await isLoggedIn();
-  if (ok) return false;
+  if (ok) return LOG('login', `Account logged in`);
   return await login(email, password);
 }

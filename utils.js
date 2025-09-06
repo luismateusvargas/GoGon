@@ -1,6 +1,104 @@
 import { DELAY_BETWEEN_MESSAGES, RETRY_DELAY } from './webhooks.js';
-import { FS_BASE, authedFetch } from './session.mjs';
-let LAST_GOOD_REFERER = null;
+
+// === GM_* Polyfill for Node.js (Tampermonkey-like storage) ==================
+try {
+  // Only define if not provided by the runtime (e.g., not running in TM)
+  if (typeof globalThis.GM_getValue !== 'function') {
+    const { default: fs } = await import('node:fs');
+	const { default: path } = await import('node:path');
+    const __SWS_GM_STORE = process.env.SWS_GM_STORE || './_sws_data/gm_store.json';
+
+    function __swsReadStore() {
+      try {
+        return JSON.parse(fs.readFileSync(__SWS_GM_STORE, 'utf8'));
+      } catch {
+        return {};
+      }
+    }
+    function __swsWriteStore(obj) {
+      try {
+        fs.mkdirSync(path.dirname(__SWS_GM_STORE), { recursive: true });
+        fs.writeFileSync(__SWS_GM_STORE, JSON.stringify(obj, null, 2), 'utf8');
+      } catch (e) {
+        try { console.warn('[SWS_DEBUG] GM polyfill write failed:', e?.message || e); } catch {}
+      }
+    }
+
+    globalThis.GM_getValue = function(key, defVal) {
+      const store = __swsReadStore();
+      return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : defVal;
+    };
+    globalThis.GM_setValue = function(key, val) {
+      const store = __swsReadStore();
+      store[key] = val;
+      __swsWriteStore(store);
+    };
+    globalThis.GM_deleteValue = function(key) {
+      const store = __swsReadStore();
+      if (Object.prototype.hasOwnProperty.call(store, key)) {
+        delete store[key];
+        __swsWriteStore(store);
+      }
+    };
+    globalThis.GM_listValues = function() {
+      const store = __swsReadStore();
+      return Object.keys(store);
+    };
+
+    console.log('[SWS_DEBUG] GM_* polyfill ativo. Arquivo:', __SWS_GM_STORE);
+  }
+} catch (e) {
+  try { console.warn('[SWS_DEBUG] Falha ao ativar GM polyfill:', e?.message || e); } catch {}
+}
+// === End GM_* Polyfill =======================================================
+import { FS_BASE, authedFetch, ensureLogin, isLoggedIn } from './session.mjs';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+
+function normalizeFsUrl(u, base) {
+  try {
+    const url = new URL(u, base);
+    if (url.pathname.endsWith('/index.php')) {
+      const cmd = url.searchParams.get('cmd');
+      const subcmd = url.searchParams.get('subcmd');
+      if ((!cmd || cmd === '') && subcmd) {
+        url.searchParams.set('cmd', 'news');
+      }
+    }
+    return url.toString();
+  } catch {
+    return u;
+  }
+}
+
+let LAST_GOOD_REFERER = (new URL('index.php?cmd=news', new URL(FS_BASE || 'https://www.fallensword.com/'))).toString();
+
+function __swsDebugLog(...args) {
+  const dbg = (process.env.SWS_DEBUG || '').toString().trim();
+  if (!dbg || dbg === '0' || dbg.toLowerCase() === 'false') return;
+  try { console.log('[SWS_DEBUG]', ...args); } catch {}
+}
+
+function __swsDumpHtml(tag, url, html) {
+  try {
+    const dbg = (process.env.SWS_DEBUG || '').toString().trim();
+    if (!dbg || dbg === '0' || dbg.toLowerCase() === 'false') return;
+    const dumpDir = (process.env.SWS_DEBUG_DUMP_DIR || './_sws_dumps').toString().trim();
+    const data = (typeof html === 'string') ? html : (html ? String(html) : '');
+    const safeTag = String(tag || 'dump').replace(/[^a-z0-9_\-\.]/gi, '_');
+    const safeName = String(url || 'unknown').replace(/[^a-z0-9_\-\.]/gi, '_').slice(0, 120);
+    const timestamp = new Date().toISOString().replace(/[:\.]/g, '-');
+    const file = path.join(dumpDir, `${timestamp}_${safeTag}_${safeName}.html`);
+    const latest = path.join(dumpDir, `secureFetch-last.html`);
+    fs.mkdirSync(dumpDir, { recursive: true });
+    fs.writeFileSync(file, data, 'utf8');
+    fs.writeFileSync(latest, data, 'utf8');
+    console.log('[SWS_DEBUG] HTML dump salvo em:', file, 'URL:', url);
+  } catch (e) {
+    try { console.log('[SWS_DEBUG] Falha ao salvar dump HTML:', e?.message || e); } catch {}
+  }
+}
 
 const messageQueue = [];
 let processingQueue = false;
@@ -70,120 +168,176 @@ async function setRefererIfPCC(response, usedUrl) {
       LAST_GOOD_REFERER = usedUrl;
     }
   } catch {}
-}
+} 
+
 export async function secureFetch(url, options = {}, retries = 3) {
-  const base = new URL(FS_BASE.endsWith('/') ? FS_BASE : FS_BASE + '/');
-const forcedProto = (process.env.SWS_FORCE_PROTOCOL || '').toLowerCase();
-if (forcedProto === 'http' || forcedProto === 'https') {
-  try { base.protocol = forcedProto + ':'; } catch {}
-}
-const finalUrl = (() => {
-    try { return new URL(url, base).toString(); } catch { return String(url); }
-  })();
+  // Node/headless. Fallen Sword SEMPRE em https://www.fallensword.com/ (host com www)
+  const base = new URL(FS_BASE || 'https://www.fallensword.com/');
+  base.protocol = 'https:';
+  base.hostname = 'www.fallensword.com';
+
+  const finalUrl = (() => { try { return new URL(url, base).toString(); } catch { return String(url); } })();
   const isGameUrl = finalUrl.startsWith(base.toString());
 
-  const canToggleScheme = !(forcedProto === 'http' || forcedProto === 'https');
-if (isGameUrl && typeof globalThis.ensureLogin === 'function' && !options.__skipEnsureLogin) {
-    try { await globalThis.ensureLogin(); } catch (e) { console.warn('ensureLogin guard falhou:', e?.message || e); }
+  // Normaliza a URL do FS sem tentar login aqui (evita dupla chamada)
+  if (isGameUrl) {
+    try {
+      const norm = normalizeFsUrl(finalUrl, base);
+      if (norm !== finalUrl) {
+        url = norm; // atualiza origem da requisição
+      }
+    } catch {}
   }
 
-  const browseryHeaders = {
-    'user-agent': process.env.SWS_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'accept-language': process.env.SWS_LANG || 'en-US,en;q=0.9,pt-BR;q=0.8',
-    'cache-control': 'no-cache',
-    'pragma': 'no-cache'
-  };
-    function toggleScheme(u) {
-    try { const x = new URL(u); x.protocol = (x.protocol === 'https:') ? 'http:' : 'https:'; return x.toString(); }
-    catch { return u; }
+  if (typeof __swsDebugLog === 'function') {
+    __swsDebugLog('secureFetch:start', { url: finalUrl, isGameUrl, retries });
   }
 
-const merged = {
-    method: (options && options.method) || 'GET',
-    redirect: 'follow',
-    credentials: 'include',
-    ...options,
-    headers: { ...(browseryHeaders), ...(options && options.headers ? options.headers : {}) }
+  // Usar SEMPRE authedFetch para URLs do jogo
+  const f = isGameUrl && typeof authedFetch === 'function' ? authedFetch : globalThis.fetch;
+  if (typeof __swsDebugLog === 'function') {
+    __swsDebugLog('secureFetch:fetchSelected', isGameUrl ? (typeof authedFetch === 'function' ? 'authedFetch' : 'global.fetch') : 'global.fetch');
+  }
+
+  // Warm-up de stickiness (cookie LB) se ausente
+  if (isGameUrl) {
+    try {
+      const sess = await import('./session.mjs');
+      if (typeof sess.dumpDomainCookies === 'function' && typeof authedFetch === 'function') {
+        const cookies = await sess.dumpDomainCookies('fallensword.com');
+        const hasLB = Array.isArray(cookies) && cookies.some(c => (c.key || c.name) === 'LB' && String(c.domain||'').includes('www.fallensword.com'));
+        if (!hasLB) {
+          if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:warmupLB', { action: 'GET /', reason: 'LB ausente' });
+          try { await authedFetch(base.toString(), { redirect: 'follow' }); } catch {}
+        }
+      }
+    } catch (e) {
+      if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:warmupLB:error', e?.message || e);
+    }
+  }
+
+  const defaultHeaders = {
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'User-Agent': (process.env.SWS_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'),
+    'Origin': 'https://www.fallensword.com',
+    'Referer': (LAST_GOOD_REFERER || 'https://www.fallensword.com/index.php?'),
   };
+  const optsTemplate = { method: 'GET', redirect: 'follow', cache: 'no-store' };
+
+  // Guard de login (único ponto pró-ativo)
+  if (isGameUrl && typeof globalThis.ensureLogin === 'function' && !options.__skipEnsureLogin) {
+    try { await globalThis.ensureLogin(); } catch (e) {
+      if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:ensureLoginWarn', e?.message || e);
+    }
+  }
+
+  // Helper: detecta página de login por #hc-account-link (determinístico)
+  async function isLoginHtml(response) {
+    try {
+      const ct = response.headers.get('content-type') || '';
+      if (!/text\/html/i.test(ct)) return false;
+      const html = await response.clone().text();
+      // Checagem robusta ao id e opcionalmente ao href esperado
+      const hasId = /\bid\s*=\s*["']hc-account-link["']\b/i.test(html);
+      if (!hasId) return false;
+      // Endurece se quiser: exigir também o href do HuntedCow
+      return /href\s*=\s*["']https:\/\/account\.huntedcow\.com\/auth\?game=6["']/i.test(html) || hasId;
+    } catch {
+      return false;
+    }
+  }
+
+  // Garante flag global para evitar loop de reautenticação
+  if (typeof globalThis.__didLoginAttempt === 'undefined') {
+    globalThis.__didLoginAttempt = false;
+  }
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const res = await fetch(finalUrl, merged);
+      const opts = { ...optsTemplate, ...options, headers: { ...defaultHeaders, ...(options?.headers || {}) } };
+      let res = await f(finalUrl, opts);
 
-      try {
-        if (isGameUrl && res.ok && (res.headers.get('content-type') || '').includes('text/html') && !options.__retryLandingGuard) {
-          const clone = res.clone();
-          const html = await clone.text();
-          const hasPCC = /id\s*=\s*['"]pCC['"]/.test(html);
-          const looksLikeLanding = !hasPCC && /class=["']outer content["']/.test(html);
-          if (looksLikeLanding) {
-            console.warn('[secureFetch] Landing page detected. Forcing ensureLogin + retry…', finalUrl);
-            if (typeof globalThis.ensureLogin === 'function') {
-              try { await globalThis.ensureLogin(); } catch (e) { console.warn('ensureLogin (retry) falhou:', e?.message || e); }
-            }
-            const retryRes = await fetch(finalUrl, { ...merged, __retryLandingGuard: true });
-                        // Re-check HTML; if still landing, try scheme toggle once
-            try {
-              if ((retryRes.headers.get('content-type') || '').includes('text/html')) {
-                const retryClone = retryRes.clone();
-                const retryHtml = await retryClone.text();
-                const retryHasPCC = /id\s*=\s*['"]pCC['"]/.test(retryHtml);
-                const retryLooksLikeLanding = !retryHasPCC && /class=["']outer content["']/.test(retryHtml);
-                if (retryLooksLikeLanding && canToggleScheme && !options.__schemeSwitched) {
-                  const altUrl = toggleScheme(finalUrl);
-                  console.warn('[secureFetch] Still landing after retry. Toggling scheme and retrying…', altUrl);
-                  const altRes = await fetch(altUrl, { ...merged, __retryLandingGuard: true, __schemeSwitched: true });
-                  if (altRes.status === 200 || altRes.status === 204) return altRes;
-                  if (altRes.status === 429 || (altRes.status >= 500 && altRes.status < 600)) {
-                    if (attempt < retries) { await sleep(RETRY_DELAY); }
-                    else { throw new Error(`Server error: ${altRes.status}`); }
-                  } else {
-                    throw new Error(`Request failed: ${altRes.status}`);
-                  }
-                }
-              }
-            } catch {}
-if (retryRes.status === 200 || retryRes.status === 204) return retryRes;
-            if (retryRes.status === 429 || (retryRes.status >= 500 && retryRes.status < 600)) {
-              if (attempt < retries) { await sleep(RETRY_DELAY); continue; }
-              throw new Error(`Server error: ${retryRes.status}`);
-            }
-            throw new Error(`Request failed: ${retryRes.status}`);
-          }
-        }
-      } catch (e) {
-        console.warn('secureFetch landing-guard check failed:', e?.message || e);
+      if (typeof __swsDebugLog === 'function') {
+        __swsDebugLog('secureFetch:response', { url: finalUrl, status: res?.status, redirected: res?.redirected, final: res?.url });
       }
 
-      if (res.status === 200 || res.status === 204) {
+      if (isGameUrl && res.ok) { try { LAST_GOOD_REFERER = res.url || finalUrl; } catch {} }
+
+      // Detecta página de login (200 sem redirect) pelo marcador #hc-account-link
+      if (isGameUrl && res.ok && await isLoginHtml(res)) {
+        if (typeof __swsDebugLog === 'function') {
+          __swsDebugLog('secureFetch:loginDetected', { url: res.url || finalUrl });
+        }
+        if (typeof __swsDumpHtml === 'function') {
+          try {
+            const dump = await res.clone().text();
+            __swsDumpHtml('secureFetch_login_detected', res?.url || finalUrl, dump);
+          } catch {}
+        }
+
+        if (typeof ensureLogin === 'function' && !globalThis.__didLoginAttempt) {
+          globalThis.__didLoginAttempt = true;
+          try {
+            await ensureLogin();
+            const optsRetry = {
+              ...opts,
+              headers: { ...defaultHeaders, ...(options?.headers || {}) }, // mesma ordem (caller tem precedência)
+            };
+            res = await f(finalUrl, optsRetry);
+
+            if (res.ok && !(await isLoginHtml(res))) {
+              // OK após reautenticar
+              if (typeof __swsDumpHtml === 'function') {
+                try {
+                  const tOk = await res.clone().text();
+                  __swsDumpHtml('secureFetch_ok', res?.url || finalUrl, tOk);
+                } catch {}
+              }
+              return res;
+            }
+
+            // Ainda em login após tentar reautenticar
+            throw new Error('Sessão inválida após reautenticação.');
+          } catch (e) {
+            // Propaga com mensagem clara
+            throw (e instanceof Error ? e : new Error('Falha na reautenticação.'));
+          }
+        } else {
+          // Sem ensureLogin ou já tentado: falha imediata
+          throw new Error('Sessão inválida/expirada (página de login detectada).');
+        }
+      }
+
+      if (res.ok) {
+        try {
+          const tOk = await res.clone().text();
+          if (typeof __swsDumpHtml === 'function') __swsDumpHtml('secureFetch_ok', res?.url || finalUrl, tOk);
+          if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:okBodyPreview', tOk ? tOk.slice(0, 300) : '(sem corpo)');
+        } catch (e) {
+          if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:okBodyReadError', e?.message || e);
+        }
         return res;
       }
-      if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
-        if (attempt < retries) {
-          await sleep(RETRY_DELAY);
-          continue;
-        }
-        throw new Error(`Server error: ${res.status}`);
+
+      // Dump do corpo em erro (debug)
+      try {
+        const t = await res.clone().text();
+        if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:notOkBodyPreview', t ? t.slice(0, 300) : '(sem corpo)');
+        if (typeof __swsDumpHtml === 'function') __swsDumpHtml('secureFetch_not_ok', res?.url || finalUrl, t);
+      } catch (e) {
+        if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:notOkBodyReadError', e?.message || e);
       }
-      throw new Error(`Request failed: ${res.status}`);
+
+      const status = res.status || 0;
+      if (status >= 500 && attempt < retries) {
+        await sleep(RETRY_DELAY);
+        continue;
+      }
+      // ⚠️ Corrigido template string
+      throw new Error(`Request failed: ${status}`);
+
     } catch (err) {
-            try {
-        const msg = (err && (err.code || err.message || '') || '').toString().toLowerCase();
-        const tlsLike = msg.includes('ssl') || msg.includes('tls') || msg.includes('certificate') || msg.includes('und_err_connect') || msg.includes('fetch failed');
-        if (canToggleScheme && !options.__schemeSwitched && tlsLike) {
-          const altUrl = toggleScheme(finalUrl);
-          console.warn('[secureFetch] Network/TLS error. Toggling scheme and retrying once…', altUrl);
-          const altRes = await fetch(altUrl, { ...merged, __schemeSwitched: true });
-          if (altRes.status === 200 || altRes.status === 204) return altRes;
-          if (altRes.status === 429 || (altRes.status >= 500 && altRes.status < 600)) {
-            if (attempt < retries) { await sleep(RETRY_DELAY); } else { throw new Error(`Server error: ${altRes.status}`); }
-          } else {
-            throw new Error(`Request failed: ${altRes.status}`);
-          }
-        }
-      } catch {}
-if (attempt < retries) {
+      if (attempt < retries) {
         await sleep(RETRY_DELAY);
       } else {
         console.error('secureFetch error:', err);
@@ -192,7 +346,6 @@ if (attempt < retries) {
     }
   }
 }
-
 
 export async function securePost(url, form, options = {}, retries = 3) {
   const base = new URL(FS_BASE.endsWith('/') ? FS_BASE : FS_BASE + '/');
@@ -357,7 +510,26 @@ export function sendExtraDiscordMessageNODROP(
   ); */
 }
 
+/** (NOVO) Extrai Gold em mão do alvo */
 export async function getGoldInHand(targetLink) {
+  try {
+    const resp = await secureFetch(targetLink);
+    const html = await resp.text();
+    const doc = toDoc(html);
+    // Tenta #stat-gold primeiro; cai para qualquer id que contenha 'stat-gold'
+    const goldEl = doc.querySelector('#stat-gold') || doc.querySelector('[id*="stat-gold"]') || null;
+    if (goldEl) return txt(goldEl);
+    // Fallback: procurar label "Gold" na coluna esquerda do perfil
+    const maybe = Array.from(doc.querySelectorAll('#profileLeftColumn td, #profileLeftColumn div, #profileRightColumn td, #profileRightColumn div'))
+      .map(el => txt(el)).find(t => /^gold[:\s]/i.test(t));
+    if (maybe) return maybe.replace(/^gold[:\s]*/i, '').trim();
+  } catch (e) {
+    WARN('bounty', 'getGoldInHand falhou: ' + (e?.message || e));
+  }
+  return null;
+}
+
+/* export async function getGoldInHand(targetLink) {
   let response = await secureFetch(targetLink);
   let text = await response.text();
   let tempElement = document.createElement('div');
@@ -367,9 +539,45 @@ export async function getGoldInHand(targetLink) {
     return goldInHandElement.textContent;
   }
   return null;
+} */
+
+/** (NOVO) Extrai buffs ativos do alvo (Deflect / Cloak + contagem) */
+export async function getBuffs(targetLink) {
+  try {
+    const resp = await secureFetch(targetLink);
+    const html = await resp.text();
+    const doc = toDoc(html);
+
+    const imgs = Array.from(doc.querySelectorAll('img[data-tipped]'));
+    const buffNameAndLevel = [];
+    for (const img of imgs) {
+      const tipped = img.getAttribute('data-tipped') || '';
+      if (!tipped || !/Level:\s*\d+/i.test(tipped)) continue;
+      // data-tipped é HTML; parseamos para extrair <span><b>NAME</b> ... Level: N</span>
+      try {
+        const tipDoc = toDoc(tipped);
+        const name = txt(tipDoc.querySelector('span > b')) || '';
+        const levelSpan = txt(tipDoc.querySelector('span')) || '';
+        const m = /Level:\s*(\d+)/i.exec(levelSpan);
+        const level = m ? m[1] : '';
+        if (name) buffNameAndLevel.push({ name, level });
+      } catch {}
+    }
+
+    let hasDeflect = false, isCloaked = false;
+    for (const b of buffNameAndLevel) {
+      const n = (b.name || '').toLowerCase();
+      if (n === 'deflect') hasDeflect = true;
+      if (n === 'cloak') isCloaked = true;
+    }
+    return { hasDeflect, isCloaked, numberOfBuffs: buffNameAndLevel.length };
+  } catch (e) {
+    WARN('bounty', 'getBuffs falhou: ' + (e?.message || e));
+    return { hasDeflect: false, isCloaked: false, numberOfBuffs: 0 };
+  }
 }
 
-export async function getBuffs(targetLink) {
+/* export async function getBuffs(targetLink) {
   let response = await secureFetch(targetLink);
   let text = await response.text();
   let tempElement = document.createElement('div');
@@ -404,4 +612,4 @@ export async function getBuffs(targetLink) {
     }
   });
   return { hasDeflect: hasDeflect, isCloaked: isCloaked, numberOfBuffs: buffNameAndLevel.length };
-}
+} */

@@ -61,8 +61,12 @@ try {
   }
 
   // 4) start Discord bot (keeps process alive)
-  const { startDiscordBot } = await import('./discordBot.mjs');
-  await startDiscordBot();
+  const { setupDiscord } = await import('./discordBot.mjs');
+  const token  = process.env.DISCORD_TOKEN;
+  const appId  = process.env.DISCORD_APP_ID;
+  const guildId= process.env.DISCORD_GUILD_ID;
+  
+  await setupDiscord(token, appId, guildId);
 
 } catch (err) {
   console.error('Erro fatal no boot:', err?.stack || err);
