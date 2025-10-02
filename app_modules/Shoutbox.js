@@ -1,108 +1,108 @@
-// app_modules/Shoutbox.js (fix: busca em .news_shoutbox, 1 mensagem por shout, dedupe persistente)
+// app_modules/Shoutbox.js - Refactored for JSON API and SQLite integration
+
 import { LOG, WARN, ERR } from './core.js';
-import { secureFetch, checkInfo, addLine, sendDiscordMessage } from '../utils.js';
-import { shoutboxWebhook } from '../webhooks.js';
+import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
+import { shoutboxWebhook } from '../webhooks.js'; 
+import { apiEndpoints } from '../game_modules/API.js';
+import {
+    getContent,
+    setContent
+} from '../_sws_data/handler/sws_database.js';
 
-const SHOUT_SOURCE_URL = 'https://www.fallensword.com/index.php?cmd=news&subcmd=view';
-const TIME_RE = /\b\d{1,2}:\d{2}\s+\d{2}\/[A-Za-z]{3}\/\d{4}\b/;
+// --- CONFIGURATION & STATE ---
+const SHOUTBOX_STORAGE_KEY = 'processed_shoutbox_ids';
+const SHOUTBOX_HISTORY_LIMIT = 100; // Standard history limit
 
-function toDoc(html) {
-  // Usa DOMParser quando disponível; fallback usando createHTMLDocument.
-  if (typeof DOMParser !== 'undefined') {
-    try { return new DOMParser().parseFromString(html, 'text/html'); } catch {}
-  }
-  if (typeof document !== 'undefined' && document.implementation?.createHTMLDocument) {
-    const doc = document.implementation.createHTMLDocument('');
-    doc.documentElement.innerHTML = html;
-    return doc;
-  }
-  throw new Error('Ambiente sem DOMParser/document para parsear HTML.');
-}
-
-function normTxt(s) {
-  return (s || '')
-    .replace(/\r/g, '')
-    .replace(/\u00A0/g, ' ')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/ *\n */g, '\n')
-    .trim();
-}
-
-function getTxt(el) {
-  if (!el) return '';
-  el.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
-  return normTxt(el.textContent || '');
-}
-
-function findShoutboxRoot(doc) {
-  // 1) alvo principal (coluna direita do News)
-  let root = doc.querySelector('.news_shoutbox');
-  if (root) return root;
-  // 2) fallbacks
-  root = doc.querySelector('#pCR .news_shoutbox, .news_right_column .news_shoutbox');
-  if (root) return root;
-  // 3) fallback por heading "Shoutbox"
-  const h1 = Array.from(doc.querySelectorAll('h1, h2, .news-heading')).find(h => /shoutbox/i.test(h.textContent || ''));
-  if (h1) {
-    const cand = h1.closest('div');
-    if (cand && cand.querySelector('.shout')) return cand;
-  }
-  return null;
-}
-
-function parseShout(shoutEl) {
-  // Estrutura típica:
-  // <div class="shout">
-  //   <div class="shout_head">
-  //     <div class="shout_head_left"><a>WHO</a></div>
-  //     <div class="shout_head_right">13:31 04/Sep/2025</div>
-  //   </div>
-  //   <div class="shout_body">MSG...</div>
-  // </div>
-  const head = shoutEl.querySelector('.shout_head');
-  const who = getTxt(head?.querySelector('.shout_head_left a, .shout_head_left'));
-  const when = getTxt(head?.querySelector('.shout_head_right'));
-  const msg = getTxt(shoutEl.querySelector('.shout_body'));
-  if (!when || !TIME_RE.test(when) || !msg) return null;
-  const key = `${when} :: ${who} :: ${msg.slice(0,120)}`.trim();
-  return { who, when, msg, key };
-}
-
-export async function checkForShoutbox() {
-  try {
-    const resp = await secureFetch(SHOUT_SOURCE_URL);
-    if (!resp || resp.status !== 200) { WARN('shout', `HTTP ${resp?.status ?? '??'}`); return; }
-    const html = await resp.text();
-    const doc = toDoc(html);
-
-    const root = findShoutboxRoot(doc);
-    if (!root) { WARN('shout', 'Shoutbox not found in news page.'); return; }
-
-    const shouts = Array.from(root.querySelectorAll('.shout'));
-    if (!shouts.length) { WARN('shout', 'No .shout found.'); return; }
-
-    const seenRun = new Set();
-    for (const el of shouts.slice(0, 20)) { // limita às 20 mais recentes
-      const item = parseShout(el);
-      if (!item) continue;
-      const { who, when, msg, key } = item;
-
-      if (seenRun.has(key)) continue;
-      seenRun.add(key);
-
-      let isNew = true;
-      try {
-        isNew = !checkInfo(key, 'shoutboxData');
-        if (isNew) addLine(key, 'shoutboxData');
-      } catch {}
-
-      if (!isNew) continue;
-
-      const content = `**Shoutbox**\n${when ? `[${when}] ` : ''}${who ? `${who}: ` : ''}${msg}`.trim();
-      sendDiscordMessage(content, 'Shoutbox', '10494192', 'Report it!', '', shoutboxWebhook);
-      LOG('shout', `Sent: ${key}`);
+/**
+ * Loads the set of processed shoutbox message IDs from the SQLite key-value store.
+ * @returns {Set<number>} A Set containing the unique IDs of processed messages.
+ */
+function loadProcessedShouts() {
+    try {
+        const storedIdsJson = getContent(SHOUTBOX_STORAGE_KEY) || '[]';
+        const storedIdsArray = JSON.parse(storedIdsJson);
+        console.log(`[SWS_DB] Loaded ${storedIdsArray.length} processed shoutbox message IDs from database.`);
+        return new Set(storedIdsArray);
+    } catch (error) {
+        console.error('Failed to load processed shoutbox message IDs from database, starting fresh.', error);
+        return new Set();
     }
-  } catch (e) {
-    ERR('shout', 'checkForShoutbox failed', e);
-  }
+}
+
+/**
+ * The main function to check for and announce new shoutbox messages.
+ */
+export async function checkForShoutbox() {
+    console.log('Checking for new shoutbox messages...');
+    try {
+        const processedShoutIds = loadProcessedShouts();
+
+        const response = await secureFetch(apiEndpoints.game.shoutbox);
+        if (!response.ok) throw new Error(`Failed to fetch shoutbox data. Status: ${response.status}`);
+
+        const data = await response.json();
+        if (!data || !data.s) {
+            console.error('Shoutbox fetch was not successful:', data.e?.message || 'Unknown error');
+            return;
+        }
+        
+        // The API returns an object of messages, we need the values.
+        const messages = Object.values(data.r);
+        if (!messages || messages.length === 0) {
+            return;
+        }
+
+        let newShoutsFound = false;
+
+        for (const shout of messages.reverse()) {
+            const shoutId = shout.id;
+            if (processedShoutIds.has(shoutId)) {
+                continue;
+            }
+
+            newShoutsFound = true;
+            console.log(`New shoutbox message found! ID: ${shoutId}`);
+            
+            const dateTime = new Date(shout.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
+            
+            // Construct the player's profile image URL
+            const playerProfileImage = apiEndpoints.player.profileImg(shout.player.id);
+
+            const message = `
+:left_speech_bubble: **${shout.player.name}** (Lvl ${shout.player.level}):
+> ${shout.msg.text}`
+.trim();
+
+            try {
+                sendExtraDiscordMessage(
+                    message,
+                    "Shoutbox",
+                    "10494192", // A light blue color
+                    `Posted at ${dateTime}`,
+                    "",
+                    shoutboxWebhook,
+                    "", // No primary image
+                    playerProfileImage // Use the player's profile image as the thumbnail
+                );
+                LOG('shoutbox', `Notified: Message from ${shout.player.name} (ID: ${shoutId})`);
+            } catch (e) {
+                ERR('shoutbox', 'Failed to send shoutbox notification to Discord', e);
+            }
+
+            processedShoutIds.add(shoutId);
+        }
+
+        if (newShoutsFound) {
+            let idsToStore = Array.from(processedShoutIds);
+
+            if (idsToStore.length > SHOUTBOX_HISTORY_LIMIT) {
+                idsToStore = idsToStore.slice(idsToStore.length - SHOUTBOX_HISTORY_LIMIT);
+            }
+            
+            setContent(SHOUTBOX_STORAGE_KEY, JSON.stringify(idsToStore));
+            console.log(`[SWS_DB] Saved ${idsToStore.length} processed shoutbox message IDs to database.`);
+        }
+    } catch (error) {
+        console.error('An error occurred while checking the shoutbox:', error);
+    }
 }

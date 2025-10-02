@@ -1,176 +1,184 @@
-// app_modules/GuildConflicts.js (robust)
-import { LOG, WARN, ERR, ensurePCC } from './core.js';
-import { secureFetch, sendDiscordMessage, checkInfo, addLine, getContent, setContent } from '../utils.js';
-import { CONFLICT_WEBHOOK } from '../webhooks.js';
+// app_modules/GuildConflicts.js - Refactored for JSON API and SQLite integration
 
-const CONFLICTS_URL = 'https://www.fallensword.com/index.php?cmd=guild&subcmd=conflicts';
+import { LOG, WARN, ERR } from './core.js';
+// We need sendAndGetMessageId and editDiscordMessage from your utils for the live counter
+import { secureFetch, sendAndGetMessageId, editDiscordMessage } from '../utils.js'; 
+import { conflictWebhook } from '../webhooks.js'; // Assuming you have these
+import { apiEndpoints } from '../game_modules/API.js';
+import {
+    getContent,
+    setContent
+} from '../_sws_data/handler/sws_database.js';
+
+// --- CONFIGURATION & STATE ---
+const CONFLICT_STATE_KEY = 'active_guild_conflicts';
+const COOLDOWN_STATE_KEY = 'gvg_cooldowns';
+const SWS_GUILD_NAME = process.env.SWS_GUILD_NAME || 'My Guild'; // Your guild's name for score display
 
 /**
- * Monitor de conflitos/ataques de guilda.
- * - Robusto a mudanças de layout: sem nth-child, tudo por conteúdo.
- * - Deduplicação persistente (GM_* via utils): evita mensagens repetidas.
- * - Notifica mudanças em "Incoming Attacks" por conflito.
+ * Calculates the remaining time from seconds and formats it.
+ * @param {number} totalSeconds - The total seconds remaining.
+ * @returns {string} A formatted string e.g., "1d 2h 30m".
  */
-export async function monitorIncomingAttacks() {
-  try {
-    const resp = await secureFetch(CONFLICTS_URL);
-    if (!resp || !resp.ok) {
-      WARN(`[GuildConflicts] Falha ao carregar página de conflitos: HTTP ${resp ? resp.status : '??'}`);
-      return;
+function formatTime(totalSeconds) {
+    if (totalSeconds <= 0) return "Expired";
+    const days = Math.floor(totalSeconds / 86400);
+    totalSeconds %= 86400;
+    const hours = Math.floor(totalSeconds / 3600);
+    totalSeconds %= 3600;
+    const minutes = Math.floor(totalSeconds / 60);
+    
+    let parts = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+
+    return parts.join(' ');
+}
+
+/**
+ * Composes the Discord message payload (embed) for a conflict.
+ * @param {object} conflict - The conflict data object from the API.
+ * @param {boolean} isUpdate - True if this is an update to an existing message.
+ * @param {boolean} isFinished - True if the conflict has ended.
+ * @returns {object} The payload for the Discord webhook.
+ */
+function composeConflictMessage(conflict, isUpdate = false, isFinished = false) {
+    const isIncomingAttack = conflict.incoming < conflict.max_attacks;
+    let title = '⚔️ New Guild Conflict!';
+    let color = '15158332'; // Red for new conflict
+
+    if (isFinished) {
+        title = '✅ Guild Conflict Ended!';
+        color = '3066993'; // Green
+    } else if (isUpdate) {
+        title = '⚔️ Guild Conflict Update';
+        color = isIncomingAttack ? '15105570' : '16737095'; // Grey for our turn, Gold for their turn
     }
-    const html = await resp.text();
-    const doc = new DOMParser().parseFromString(html, 'text/html');
 
-    const pCC = ensurePCC(doc, html, 'monitorIncomingAttacks');
-    if (!pCC) return;
+    const description = `
+:busts_in_silhouette: **Members:** ${conflict.members.length} / ${conflict.max_members}
+:arrow_down: **Incoming:** ${conflict.incoming} / ${conflict.max_attacks}
+:arrow_up: **Outgoing:** ${conflict.outgoing} / ${conflict.max_attacks}
+:alarm_clock: **Expires:** ${formatTime(conflict.expires)}
+    `.trim();
+    
+    const scoreTitle = `${SWS_GUILD_NAME} vs ${conflict.guild.name}`;
+    const scoreValue = `**${conflict.score_a}** - **${conflict.score_b}**`;
+    
+    const memberNames = conflict.members.map(m => m.name).join(', ');
 
-    // Remover <script>/<style> para evitar lixo textual
-    pCC.querySelectorAll('script, style').forEach(n => n.remove());
+    const embed = {
+        title: title,
+        color: color,
+        description: description,
+        fields: [
+            { name: scoreTitle, value: scoreValue, inline: false },
+            { name: 'Our Participants', value: memberNames || 'None', inline: false }
+        ],
+        timestamp: new Date().toISOString()
+    };
+    
+    if (isFinished) {
+       embed.description = `The conflict with **${conflict.guild.name}** has concluded.`;
+       embed.fields = [{ name: scoreTitle, value: scoreValue, inline: false }];
+    }
 
-    // 1) Detectar mudanças de "Incoming Attacks" por linha (quando a página lista por guilda)
-    // Estratégia: procurar TRs com "Incoming Attacks" no texto e extrair guild e contagem.
-    const conflictRows = Array.from(pCC.querySelectorAll('tr')).filter(tr => {
-      const txt = (tr.textContent || '').toLowerCase();
-      return txt.includes('incoming attacks');
-    });
+    return { embeds: [embed] };
+}
 
-    // Carrega estado persistido (JSON) de contagens por guilda
-    const INCOMING_KEY = 'guildIncomingCounts';
-    let incomingState = {};
-    try { incomingState = JSON.parse(getContent(INCOMING_KEY) || '{}') || {}; } catch {}
 
-    for (const tr of conflictRows) {
-      const txt = (tr.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!txt) continue;
+/**
+ * The main function to check for and update guild conflicts.
+ */
+export async function checkGuildConflicts() {
+    console.log('Checking for guild conflicts...');
+    try {
+        const response = await secureFetch(apiEndpoints.guild.conflicts);
+        if (!response.ok) throw new Error(`Failed to fetch guild conflicts. Status: ${response.status}`);
 
-      // Extrai o nome da guilda (primeiro link da linha, fallback para início do texto)
-      let targetGuild = '';
-      const a = tr.querySelector('a');
-      if (a && a.textContent) targetGuild = a.textContent.trim();
-      if (!targetGuild) {
-        // fallback: tenta até os 40 primeiros chars antes de "Incoming Attacks"
-        const i = txt.toLowerCase().indexOf('incoming attacks');
-        targetGuild = i > 0 ? txt.slice(0, Math.min(i, 40)).trim() : 'Unknown Guild';
-      }
-
-      // Extrai a contagem "Incoming Attacks: N"
-      let incomingAtks = null;
-      const m = /incoming attacks[:\s]*([0-9]+)/i.exec(txt);
-      if (m) incomingAtks = parseInt(m[1], 10);
-      if (incomingAtks == null || Number.isNaN(incomingAtks)) continue;
-
-      const prev = (incomingState[targetGuild] ?? null);
-      if (prev === null || prev !== incomingAtks) {
-        // Notificar mudança
-        const msg = `Incoming Attacks changed for conflict '${targetGuild}': ${incomingAtks}`;
-        try {
-          sendDiscordMessage(
-            msg,
-            'Incoming Attack Update',
-            16776960,           // amarelo
-            new Date().toISOString(),
-            '**CONFLICT UPDATE**',
-            CONFLICT_WEBHOOK    // variável já existente no seu projeto
-          );
-        } catch (e) {
-          ERR('[GuildConflicts] Falha ao enviar Incoming Attacks', e);
+        const data = await response.json();
+        if (!data || !data.s) {
+            console.error('Guild conflicts fetch was not successful:', data.e?.message || 'Unknown error');
+            return;
         }
-        incomingState[targetGuild] = incomingAtks;
-      }
+        
+        const activeConflicts = data.r?.conflicts || [];
+        const activeConflictIds = new Set(activeConflicts.map(c => c.id));
+
+        // Load current state from DB
+        const storedStatesJson = getContent(CONFLICT_STATE_KEY) || '{}';
+        const conflictStates = JSON.parse(storedStatesJson);
+        const cooldownsJson = getContent(COOLDOWN_STATE_KEY) || '{}';
+        const cooldowns = JSON.parse(cooldownsJson);
+
+        let statesChanged = false;
+
+        // --- Process active conflicts ---
+        for (const conflict of activeConflicts) {
+            const conflictId = conflict.id;
+            const currentStateKey = `${conflict.score_a}-${conflict.score_b}|${conflict.incoming}-${conflict.outgoing}`;
+            const storedState = conflictStates[conflictId];
+
+            if (!storedState) { // New conflict
+                console.log(`New conflict detected with ${conflict.guild.name} (ID: ${conflictId})`);
+                const payload = composeConflictMessage(conflict, false);
+                const messageId = await sendAndGetMessageId(conflictWebhook, payload);
+                if (messageId) {
+                    conflictStates[conflictId] = {
+                        messageId: messageId,
+                        stateKey: currentStateKey,
+                        guildName: conflict.guild.name
+                    };
+                    statesChanged = true;
+                }
+            } else if (storedState.stateKey !== currentStateKey) { // Updated conflict
+                console.log(`Conflict with ${conflict.guild.name} (ID: ${conflictId}) has been updated.`);
+                const payload = composeConflictMessage(conflict, true);
+                await editDiscordMessage(conflictWebhook, storedState.messageId, payload);
+                conflictStates[conflictId].stateKey = currentStateKey;
+                statesChanged = true;
+            }
+        }
+        
+        // --- Process ended conflicts ---
+        for (const conflictId in conflictStates) {
+            if (!activeConflictIds.has(parseInt(conflictId))) {
+                console.log(`Conflict with ${conflictStates[conflictId].guildName} (ID: ${conflictId}) has ended.`);
+                
+                // We need the final state of the conflict, which is not in the current API call.
+                // We'll use the last known state to announce the end. A more advanced version could fetch final results.
+                const finalPayload = {
+                    embeds: [{
+                        title: '✅ Guild Conflict Ended!',
+                        description: `The conflict with **${conflictStates[conflictId].guildName}** is now over.`,
+                        color: '3066993', // Green
+                        timestamp: new Date().toISOString()
+                    }]
+                };
+
+                await editDiscordMessage(conflictWebhook, conflictStates[conflictId].messageId, finalPayload);
+                
+                // Set a 7-day cooldown
+                const cooldownEnd = Date.now() + 7 * 24 * 60 * 60 * 1000;
+                cooldowns[conflictId] = {
+                    guildName: conflictStates[conflictId].guildName,
+                    expires: cooldownEnd
+                };
+                
+                delete conflictStates[conflictId];
+                statesChanged = true;
+            }
+        }
+
+        // Save updated states if anything changed
+        if (statesChanged) {
+            setContent(CONFLICT_STATE_KEY, JSON.stringify(conflictStates));
+            setContent(COOLDOWN_STATE_KEY, JSON.stringify(cooldowns));
+            console.log('[SWS_DB] Saved updated conflict and cooldown states to database.');
+        }
+
+    } catch (error) {
+        console.error('An error occurred while checking guild conflicts:', error);
     }
-
-    // Persiste o estado de incoming
-    try { setContent(INCOMING_KEY, JSON.stringify(incomingState)); } catch {}
-
-    // 2) Ler feed de mensagens/textos de conflito dentro do #pCC (robusto: qualquer TR com 3+ TDs)
-    const allRows = Array.from(pCC.querySelectorAll('tr'));
-    const rows = allRows.filter(tr => tr.querySelectorAll(':scope > td').length >= 3);
-
-    // Padrões relevantes (case-insensitive)
-    const patt = [
-      /has just initiated a conflict with/i,
-      /your conflict with/i,
-      /^to arms!/i,
-      /incoming attacks/i,
-      /defend/i,
-      /attack/i,
-      /conflict/i,
-    ];
-
-    function looksRelevant(msg) {
-      const low = (msg || '').toLowerCase();
-      return patt.some(re => re.test(low));
-    }
-
-    // Função de parse de timestamp tolerante
-    function parseGuildTimestamp(raw) {
-      const s = (raw || '').trim();
-      if (!s) return null;
-      // Tenta padrões comuns:
-      // 1) DD/MM/YYYY HH:MM
-      let m = /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})[ ,T](\d{1,2}):(\d{2})(?::(\d{2}))?$/i.exec(s);
-      if (m) {
-        const [_, d, mo, y, h, mi, se] = m;
-        const yy = (+y < 100) ? 2000 + (+y) : +y;
-        return new Date(yy, (+mo - 1), +d, +h, +mi, se ? +se : 0);
-      }
-      // 2) YYYY-MM-DD HH:MM:SS
-      m = /^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})[ ,T](\d{1,2}):(\d{2})(?::(\d{2}))?$/i.exec(s);
-      if (m) {
-        const [_, yy, mo, d, h, mi, se] = m;
-        return new Date(+yy, (+mo - 1), +d, +h, +mi, se ? +se : 0);
-      }
-      // 3) Padrões com mês textual: "Sep 1 2025, 14:05"
-      m = /^([A-Za-z]{3,})\s+(\d{1,2})(?:st|nd|rd|th)?[ ,]+(\d{4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/i.exec(s);
-      if (m) {
-        const months = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
-        const [_, mon, d, yy, h, mi, se] = m;
-        const mm = months[mon.toLowerCase().slice(0,3)];
-        if (mm != null) return new Date(+yy, mm, +d, +h, +mi, se ? +se : 0);
-      }
-      // 4) Fallback Date.parse
-      const t = Date.parse(s);
-      if (!Number.isNaN(t)) return new Date(t);
-      return null;
-    }
-
-    // Deduplicação de mensagens de conflito
-    for (const tr of rows) {
-      const tds = Array.from(tr.querySelectorAll(':scope > td'));
-      if (tds.length < 3) continue;
-
-      const timestampRaw = (tds[1].textContent || '').trim();
-      const messageRaw   = (tds[2].textContent || '').trim();
-      if (!messageRaw) continue;
-
-      const relevant = looksRelevant(messageRaw);
-      if (!relevant) continue;
-
-      const ts = parseGuildTimestamp(timestampRaw) || new Date();
-      const key = `${ts.toISOString()} :: ${messageRaw.slice(0, 120)}`;
-
-      let shouldSend = true;
-      try {
-        shouldSend = !checkInfo(key, 'guildConflictData');
-        if (shouldSend) addLine(key, 'guildConflictData');
-      } catch {}
-
-      if (!shouldSend) continue;
-
-      try {
-        sendDiscordMessage(
-          `${timestampRaw} - ${messageRaw}`,
-          'Guild Conflict Update',
-          3447003, // azul
-          timestampRaw,
-          '**CONFLICT UPDATE**',
-          CONFLICT_WEBHOOK
-        );
-      } catch (e) {
-        ERR('[GuildConflicts] Falha ao enviar mensagem de conflito', e);
-      }
-    }
-  } catch (err) {
-    console.error('Guild Log Check Error:', err);
-  }
 }

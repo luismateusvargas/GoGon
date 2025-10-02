@@ -1,134 +1,144 @@
-// app_modules/SuperElite.js
-import { LOG, WARN, ERR, waitForPCC, ensurePCC, selectRowsResilient, dumpHtml } from './core.js';
-import { secureFetch, sendExtraDiscordMessage, sendExtraDiscordMessageNODROP, checkInfo, addLine } from '../utils.js';
+// --- MODULE IMPORTS ---
+// Core and utility imports (assuming these are correct)
+import { LOG, WARN, ERR } from './core.js';
+import { secureFetch, sendExtraDiscordMessage, sendExtraDiscordMessageNODROP } from '../utils.js';
 import { SuperEliteWebhook } from '../webhooks.js';
+import { apiEndpoints } from '../game_modules/API.js';
+
+// All database functions now come from the single, new SQLite module.
+// Make sure the path '../_sws_data/handler/sws_database.js' is correct for your project.
+import {
+    getContent,
+    setContent,
+    getCreatureById,
+    getItemById,
+    getRealmById // Import the new function
+} from '../_sws_data/handler/sws_database.js';
 
 
-export function checkForSuperEliteKills() {
-  // Obtém o conteúdo da página da web
-  secureFetch('https://www.fallensword.com/index.php?cmd=superelite')
-    .then(response => response.text())
-    .then(text => {
-      // Analisa o conteúdo da página da web
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(text, 'text/html');
+// --- CONFIGURATION & STATE ---
+const SE_KILLS_STORAGE_KEY = 'processed_se_kill_ids';
+const SE_KILL_HISTORY_LIMIT = 100;
 
-	  const pCC = ensurePCC(doc, (typeof html !== 'undefined' ? html : (doc?.documentElement?.outerHTML ?? null)), 'checkForSuperEliteKills');
-	  if (!pCC) { return; }
-
-      // Localiza a tabela de Super Elite de forma robusta (por cabeçalhos/padrões visuais)
-      const pcc = pCC;
-      const tables = Array.from(pcc.querySelectorAll('table'));
-      function isSETable(tbl) {
-        // 1) Se tiver cabeçalhos, use palavras-chave
-        const headerRow = tbl.querySelector('tr');
-        if (headerRow) {
-          const headers = Array.from(headerRow.querySelectorAll('td.header, th.header')).map(td => td.textContent.trim().toLowerCase());
-          if (headers.length >= 3) {
-            const hasCreature = headers.some(h => h.includes('creature') || h.includes('super elite'));
-            const hasPlayer   = headers.some(h => h.includes('player'));
-            const hasDrop     = headers.some(h => h.includes('drop'));
-            const hasDateTime = headers.some(h => h.includes('date') || h.includes('time'));
-            if ((hasCreature || hasDrop) && hasPlayer) return true;
-            if (hasDateTime && (hasCreature || hasDrop)) return true;
-          }
-        }
-        // 2) Caso não tenha cabeçalho claro, procure linhas com padrão visual típico:
-        //    - 4+ colunas, a segunda coluna contém <img> e <center> (nome do SE)
-        //    - a terceira contém <a> (jogador) e texto extra (localização)
-        const probe = tbl.querySelectorAll('tr');
-        for (const tr of probe) {
-          const tds = tr.querySelectorAll('td');
-          if (tds.length >= 4) {
-            const hasImgIn2 = !!tds[1]?.querySelector('img');
-            const hasCenterName = !!tds[1]?.querySelector('center');
-            const hasPlayerLink = !!tds[2]?.querySelector('a');
-            if (hasImgIn2 && hasCenterName && hasPlayerLink) return true;
-          }
-        }
-        return false;
-      }
-      const seTable = tables.find(isSETable);
-      if (!seTable) {
-        console.error('⚠️ Tabela de Super Elite não encontrada (DOM mudou?)');
-        return;
-      }
-
-      // Coleta as linhas úteis (ignora cabeçalhos e separadores)
-      const rawRows = Array.from(seTable.querySelectorAll('tr'));
-      // Alguns layouts intercalam linhas; aqui filtramos por linhas com pelo menos 4 <td> relevantes.
-      const trs = rawRows.filter(tr => {
-        const tds = tr.querySelectorAll(':scope > td');
-        if (tds.length < 4) return false;
-        if ([...tds].some(td => td.classList.contains('header'))) return false;
-        const txt = tr.textContent.trim().toLowerCase();
-        if (!txt) return false;
-        // Evita mensagens genéricas tipo "no entries"
-        if (txt.includes('no') && txt.includes('entries')) return false;
-        return true;
-      });
-
-      // Percorre as linhas diretamente (sem pular de 2 em 2)
-      for (let i = 0; i < trs.length; i++) {
-        const tr = trs[i];
-        const tds = tr.querySelectorAll('td');
-
-        // Verifica se existem elementos td suficientes
-        if (tds.length >= 4) {
-          // Extrai as informações dos elementos td
-          const killInfo = {
-            dateTime: (() => {
-                // Obtém o elemento td que contém a data e a hora
-                const td = tds[0];
-
-                // Cria uma cópia do elemento td
-                const tdCopy = td.cloneNode(true);
-
-                // Substitui a tag br por um caractere de espaço
-                const br = tdCopy.querySelector('br');
-                br.parentNode.replaceChild(document.createTextNode(' '), br);
-
-                // Extrai o conteúdo de texto do elemento td
-                return tdCopy.textContent.trim();
-            })(),
-            superElite: {
-              image: tds[1].querySelector('img').src,
-              name: tds[1].querySelector('center').textContent.trim()
-            },
-            player: {
-              name: tds[2].querySelector('a').textContent.trim(),
-              location: tds[2].childNodes[2].textContent.trim()
-            },
-            drop: tds[3].textContent.includes('[no drop]') ? '[no drop]' : tds[3].querySelector('img').src
-          };
-          let line = `${killInfo.dateTime} ${killInfo.player.location}`
-          // Verifica se as informações já foram enviadas anteriormente
-          if (!checkInfo(line, "SEdata")) {
-            // Armazena as informações em cache usando o GM
-            addLine(line, "SEdata");
-        // Envia as informações para o Discord
-              // Verifica se killInfo.drop é um link válido
-if (killInfo.drop.startsWith('http://') || killInfo.drop.startsWith('https://')) {
-  // killInfo.drop é um link válido, então pode ser usado como um link para uma imagem
-  sendExtraDiscordMessage(`
-${killInfo.dateTime}
-${killInfo.superElite.name}
-${killInfo.player.name}
-${killInfo.player.location}
-`, "Super Elite", "15466240", "It Dropped!", "", SuperEliteWebhook, killInfo.superElite.image, killInfo.drop);
-} else {
-  // killInfo.drop não é um link válido, então deve ser omitido ou substituído por um valor padrão
-  sendExtraDiscordMessageNODROP(`
-${killInfo.dateTime}
-${killInfo.superElite.name}
-${killInfo.player.name}
-${killInfo.player.location}
-`, "Super Elite", "15466240", killInfo.drop, "", SuperEliteWebhook, killInfo.superElite.image);
+/**
+ * Loads the set of processed SE kill IDs from the SQLite key-value store.
+ * @returns {Set<string>} A Set containing unique IDs of processed kills.
+ */
+function loadProcessedSeKills() {
+  try {
+    const storedIdsJson = getContent(SE_KILLS_STORAGE_KEY) || '[]';
+    const storedIdsArray = JSON.parse(storedIdsJson);
+    console.log(`[SWS_DB] Loaded ${storedIdsArray.length} processed SE kill IDs from database.`);
+    return new Set(storedIdsArray);
+  } catch (error) {
+    console.error('Failed to load processed SE kill IDs from database, starting fresh.', error);
+    return new Set();
+  }
 }
 
-          }
+/**
+ * The main function to check for and announce new Super Elite kills.
+ */
+export async function checkSuperElites() {
+    console.log('Checking for new Super Elite kills...');
+    try {
+        const processedSeKills = loadProcessedSeKills();
+
+        const response = await secureFetch(apiEndpoints.game.superEliteArchive);
+        if (!response.ok) throw new Error(`Failed to fetch SE data. Status: ${response.status}`);
+
+        const data = await response.json();
+        if (!data || !data.s) {
+            console.error('SE fetch was not successful:', data.e?.message || 'Unknown error');
+            return;
         }
-      
-	  }
-	});
+
+        const serverTimestamp = parseInt(data.t.split(' ')[1], 10);
+
+        const kills = Object.values(data.r);
+        if (kills.length === 0) {
+            console.log('No recent SE kills found.');
+            return;
+        }
+
+        let newKillsFound = false;
+
+        for (const kill of kills.reverse()) {
+            const actualKillTimestamp = serverTimestamp - kill.time;
+            
+            // FIX APPLIED HERE: Round timestamp down to the nearest minute to prevent 
+            // duplicates from logs that are only seconds apart.
+            const minuteRoundedTimestamp = Math.floor(actualKillTimestamp / 60) * 60;
+            const uniqueKillId = `${minuteRoundedTimestamp}-${kill.player.id}-${kill.creature}`;
+
+            if (processedSeKills.has(uniqueKillId)) {
+                continue;
+            }
+            
+            newKillsFound = true;
+            console.log(`New SE kill found: ${uniqueKillId}`);
+
+            const creature = getCreatureById(kill.creature);
+            if (!creature) {
+                console.warn(`Could not find creature with ID ${kill.creature} in the database. Skipping.`);
+                continue;
+            }
+
+            const realmId = kill.realm.realm;
+            const realm = getRealmById(realmId);
+            const realmName = realm ? realm.name : `Realm #${realmId}`;
+            
+            const killInfo = {
+                // Use the original actualKillTimestamp for display purposes to maintain precision
+                dateTime: new Date(actualKillTimestamp * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' }),
+                superElite: {
+                    name: `**${creature.name}**`,
+                    image: creature.imageUrl
+                },
+                player: {
+                    name: `Killed by: **${kill.player.name}**`,
+                    location: `at **${realmName}** (${kill.realm.x}, ${kill.realm.y})`
+                },
+                drop: "Nothing of value was found."
+            };
+
+            if (kill.item) {
+                const item = getItemById(kill.item);
+                if (item) {
+                    killInfo.drop = item.imageUrl;
+                    console.log(`Item dropped: ${item.name} (ID: ${item.id})`);
+                } else {
+                    console.warn(`Kill log contained item ID ${kill.item}, but it was not found in the database.`);
+                }
+            }
+
+            if (killInfo.drop.startsWith('http')) {
+                sendExtraDiscordMessage(
+                    `${killInfo.dateTime}\n${killInfo.superElite.name}\n${killInfo.player.name}\n${killInfo.player.location}`,
+                    "Super Elite", "15466240", "It Dropped!", "", SuperEliteWebhook, killInfo.superElite.image, killInfo.drop
+                );
+            } else {
+                sendExtraDiscordMessageNODROP(
+                    `${killInfo.dateTime}\n${killInfo.superElite.name}\n${killInfo.player.name}\n${killInfo.player.location}`,
+                    "Super Elite", "15466240", killInfo.drop, "", SuperEliteWebhook, killInfo.superElite.image
+                );
+            }
+
+            processedSeKills.add(uniqueKillId);
+        }
+
+        if (newKillsFound) {
+            let idsToStore = Array.from(processedSeKills);
+            
+            if (idsToStore.length > SE_KILL_HISTORY_LIMIT) {
+                idsToStore = idsToStore.slice(idsToStore.length - SE_KILL_HISTORY_LIMIT);
+            }
+
+            setContent(SE_KILLS_STORAGE_KEY, JSON.stringify(idsToStore));
+            console.log(`[SWS_DB] Saved ${idsToStore.length} processed SE kill IDs to database.`);
+        }
+
+    } catch (error) {
+        console.error('An error occurred while checking Super Elites:', error);
+    }
 }

@@ -1,179 +1,143 @@
-// app_modules/BountyBoard.js (robusto + Gold/Buffs + formatação original + sendExtraDiscordMessage)
-import { LOG, WARN, ERR, ensurePCC, dumpHtml } from './core.js';
-import { secureFetch, sendExtraDiscordMessage, getContent, setContent } from '../utils.js';
+// app_modules/BountyBoard.js revamped on 09/26/2025
+import { LOG, WARN, ERR } from './core.js';
+// Make sure all necessary functions are imported from your utils and database modules.
+import { secureFetch, sendExtraDiscordMessage, getGoldInHand, getBuffs } from '../utils.js';
 import { bountyWebhook, BountyGroup } from '../webhooks.js';
+import { apiEndpoints } from '../game_modules/API.js';
+import { getContent, setContent } from '../_sws_data/handler/sws_database.js';
 
-/** Texto limpo */
-function txt(n) {
-  return (n?.textContent || '').replace(/\u00A0/g, ' ').replace(/\s+/g,' ').trim();
-}
-/** Parser HTML */
-function toDoc(html) { return new DOMParser().parseFromString(html, 'text/html'); }
-/** Storage */
-function getPostedSet() {
-  try { const raw = getContent('bounty_posted_ids') || '[]'; const arr = JSON.parse(raw); if (Array.isArray(arr)) return new Set(arr); } catch {}
-  return new Set();
-}
-function savePostedSet(s) {
-  try { const arr = Array.from(s); if (arr.length > 500) arr.splice(0, arr.length - 500); setContent('bounty_posted_ids', JSON.stringify(arr)); } catch {}
-}
+// --- CONFIGURATION & STATE ---
+const BOUNTY_ID_STORAGE_KEY = 'processed_bounty_ids';
+const BOUNTY_HISTORY_LIMIT = 100; // Standard history limit
+const GOLD_IMG_URL = 'https://cdn2.fallensword.com/currency/0.png';
+const FSP_IMG_URL = 'https://cdn2.fallensword.com/currency/1.png';
 
-/** Gold em mão do alvo */
-export async function getGoldInHand(targetLink) {
-  try {
-    const resp = await secureFetch(targetLink);
-    const html = await resp.text();
-    const doc = toDoc(html);
-    const goldEl = doc.querySelector('#stat-gold') || doc.querySelector('[id*="stat-gold"]');
-    if (goldEl) return txt(goldEl);
-    const maybe = Array.from(doc.querySelectorAll('#profileLeftColumn td, #profileLeftColumn div, #profileRightColumn td, #profileRightColumn div'))
-      .map(el => txt(el)).find(t => /^gold[:\s]/i.test(t));
-    if (maybe) return maybe.replace(/^gold[:\s]*/i, '').trim();
-  } catch (e) { WARN('bounty', 'getGoldInHand falhou: ' + (e?.message || e)); }
-  return null;
-}
-
-/** Buffs do alvo */
-export async function getBuffs(targetLink) {
-  try {
-    const resp = await secureFetch(targetLink);
-    const html = await resp.text();
-    const doc = toDoc(html);
-
-    const imgs = Array.from(doc.querySelectorAll('img[data-tipped]'));
-    const buffNameAndLevel = [];
-    for (const img of imgs) {
-      const tipped = img.getAttribute('data-tipped') || '';
-      if (!tipped || !/Level:\s*\d+/i.test(tipped)) continue;
-      try {
-        const tipDoc = toDoc(tipped);
-        const name = txt(tipDoc.querySelector('span > b')) || '';
-        const levelSpan = txt(tipDoc.querySelector('span')) || '';
-        const m = /Level:\s*(\d+)/i.exec(levelSpan);
-        const level = m ? m[1] : '';
-        if (name) buffNameAndLevel.push({ name, level });
-      } catch {}
+/**
+ * Formats the bounty reward into a readable string and provides the correct image URL.
+ * @param {object} bounty - The bounty object from the API.
+ * @returns {{type: string, imageUrl: string}}
+ */
+function formatBountyReward(bounty) {
+    if (bounty.currency.type === 0 ) {
+        return {
+            type: `${new Intl.NumberFormat().format(bounty.currency.value)} Gold`,
+            imageUrl: GOLD_IMG_URL
+        };
     }
-    let hasDeflect = false, isCloaked = false;
-    for (const b of buffNameAndLevel) {
-      const n = (b.name || '').toLowerCase();
-      if (n === 'deflect') hasDeflect = true;
-      if (n === 'cloak') isCloaked = true;
+    if (bounty.currency.type === 1) {
+        return {
+            type: `${bounty.currency.value} FSP`,
+            imageUrl: FSP_IMG_URL
+        };
     }
-    return { hasDeflect, isCloaked, numberOfBuffs: buffNameAndLevel.length };
-  } catch (e) {
-    WARN('bounty', 'getBuffs falhou: ' + (e?.message || e));
-    return { hasDeflect: false, isCloaked: false, numberOfBuffs: 0 };
-  }
+    return {
+        type: 'N/A',
+        imageUrl: ''
+    };
 }
 
-/** Procura linhas com botão "Accept" */
-function parseBountyRows(pCC) {
-  const rows = Array.from(pCC.querySelectorAll('tr'));
-  const out = [];
-  for (const tr of rows) {
-    const acceptBtn = tr.querySelector('input[type="button"][value="Accept"]');
-    if (!acceptBtn) continue;
-    const tds = tr.querySelectorAll(':scope > td');
-    if (tds.length < 7) continue;
-
-    const targetCell  = tds[0];
-    const offererCell = tds[1];
-    const rewardCell  = tds[2];
-    const xpCell      = tds[3];
-    const timeCell    = tds[4];
-    const ticketsCell = tds[5];
-
-    const onclick = acceptBtn.getAttribute('onclick') || '';
-    const idMatch = /bounty_id=(\d+)/.exec(onclick);
-    const bountyId = idMatch ? idMatch[1] : null;
-
-    const targetLink = targetCell.querySelector('a[href*="cmd=profile"]');
-    const targetName = txt(targetLink);
-    const levelMatch = txt(targetCell).match(/\[([\d,]+)\]/); /* /\[([\d,]+)\]/.exec(txt(targetCell));*/
-    const targetLevel = levelMatch ? levelMatch[0] : '';
-
-    const offerer = txt(offererCell.querySelector('a[href*="cmd=profile"]') || offererCell);
-    const reward  = txt(rewardCell);
-    const xpLossRemaining = txt(xpCell);
-    const timeLeft  = txt(timeCell);
-    const ticketsReq = txt(ticketsCell);
-
-    // tentativa de imagem para o embed (primeira imagem da linha: alvo/recompensa)
-    const img = (targetCell.querySelector('img') || rewardCell.querySelector('img') || tr.querySelector('img'));
-    const imgSrc = img ? (img.getAttribute('src') || img.src || '') : '';
-
-    out.push({
-      bountyId, targetName, targetLevel, offerer, reward,
-      xpLossRemaining, timeLeft, ticketsReq, targetProfileUrl: targetLink?.href || null, imgSrc
-    });
-  }
-  return out;
+/**
+ * Loads the set of processed bounty IDs from the SQLite key-value store.
+ * @returns {Set<number>} A Set containing unique IDs of processed bounties.
+ */
+function loadProcessedBounties() {
+    try {
+        const storedIdsJson = getContent(BOUNTY_ID_STORAGE_KEY) || '[]';
+        const storedIdsArray = JSON.parse(storedIdsJson);
+        console.log(`[SWS_DB] Loaded ${storedIdsArray.length} processed bounty IDs from database.`);
+        return new Set(storedIdsArray);
+    } catch (error) {
+        console.error('Failed to load processed bounty IDs from database, starting fresh.', error);
+        return new Set();
+    }
 }
 
-export async function checkForNewBounty() {
-  try {
-    const url = 'https://www.fallensword.com/index.php?cmd=bounty';
-    const resp = await secureFetch(url);
-    if (!resp || !resp.ok) { WARN('bounty', `Falha HTTP: ${resp ? resp.status : '??'}`); return; }
-    const html = await resp.text();
-    const doc = toDoc(html);
-    const pCC = ensurePCC(doc, html, 'checkForNewBounty');
-    if (!pCC) return;
+/**
+ * The main function to check for and announce new bounties.
+ */
+export async function checkBounties() {
+    console.log('Checking for new bounties...');
+    try {
+        const processedBountyIds = loadProcessedBounties();
 
-    //dumpHtml && dumpHtml('bounty_board', url, html);
-    pCC.querySelectorAll('script, style').forEach(n => n.remove());
+        const response = await secureFetch(apiEndpoints.game.bountyBoard);
+        if (!response.ok) {
+            WARN('bounty', `Fail HTTP: ${response.status}`);
+            return;
+        }
 
-    const rows = parseBountyRows(pCC);
-    if (!rows.length) { LOG('bounty', 'Nenhuma bounty disponível.'); return; }
+        const data = await response.json();
+        if (!data || !data.s) {
+            console.error('Bounty fetch was not successful:', data.e?.message || 'Unknown error');
+            return;
+        }
 
-    const posted = getPostedSet();
-    let touched = false;
+        const bounties = data.r?.bounties;
+        if (!bounties || bounties.length === 0) {
+            console.log('No active bounties found.');
+            return;
+        }
 
-    for (const b of rows) {
-      const key = b.bountyId || `${b.targetName}|${b.offerer}|${b.reward}|${b.xpLossRemaining}`;
-      if (posted.has(key)) continue;
+        let newBountiesFound = false;
 
-      let goldInHand = null;
-      let buffs = { hasDeflect: false, isCloaked: false, numberOfBuffs: 0 };
-      if (b.targetProfileUrl) {
-        try {
-          [goldInHand, buffs] = await Promise.all([ getGoldInHand(b.targetProfileUrl), getBuffs(b.targetProfileUrl) ]);
-        } catch {}
-      }
+        for (const bounty of bounties) {
+            const bountyId = bounty.id;
+            if (processedBountyIds.has(bountyId)) {
+                continue;
+            }
 
-      const message = `
-:hammer: Target: ${b.targetName} ${b.targetLevel}
-:scales: Offerer: ${b.offerer}
-:moneybag: Reward: ${b.reward}
-:money_with_wings: Gold in hand: ${goldInHand ?? '-'}
-:shield: Deflect ? ${buffs.hasDeflect}
-:mage: Cloaked ? ${buffs.isCloaked}
-:crystal_ball: Buffs Number: ${buffs.numberOfBuffs}
-      `.trim();
+            newBountiesFound = true;
+            console.log(`New bounty found! ID: ${bountyId}, Target: ${bounty.target.name}`);
 
-      // Assinatura EXATA solicitada
-      try {
-        sendExtraDiscordMessage(
-          message,
-          "Bounty Board",
-          "16711680",
-          "Gotta Smash'em all!",
-          BountyGroup,
-          bountyWebhook,
-          "",
-          b.imgSrc || ""
-        );
-        LOG('bounty', `Notificado: ${b.targetName} (id=${b.bountyId || 'n/a'})`);
-        posted.add(key);
-        touched = true;
-      } catch (e) {
-        ERR('bounty', 'Falha ao enviar bounty para Discord', e);
-      }
+            // --- [FIXED] All processing logic is now INSIDE the loop ---
+            
+            // Assume getGoldInHand and getBuffs are async and must be awaited.
+            const goldInHand = await getGoldInHand(apiEndpoints.player.details(bounty.target.id));
+            const buffs = await getBuffs(apiEndpoints.player.activeBuffs(bounty.target.id), true);
+            const rewardInfo = formatBountyReward(bounty);
+
+            const message = `
+:hammer: Target: ${bounty.target.name} (Lvl ${bounty.target.level})
+:scales: Offerer: ${bounty.offerer.name}
+:moneybag: Reward: ${rewardInfo.type}
+:money_with_wings: Gold in Hand: ${goldInHand ?? '-'}
+:shield: Deflect? ${buffs?.hasDeflect ?? 'N/A'}
+:mage: Cloaked? ${buffs?.isCloaked ?? 'N/A'}
+:crystal_ball: Buffs: ${buffs?.numberOfBuffs ?? 'N/A'}
+            `.trim();
+
+            try {
+                // Assuming sendExtraDiscordMessage can handle the image URL parameter.
+                sendExtraDiscordMessage(
+                    message,
+                    "Bounty Board",
+                    "16711680",
+                    "Gotta Smash'em all!",
+                    BountyGroup,
+                    bountyWebhook,
+                    "", // No primary image for bounties
+                    rewardInfo.imageUrl || ""
+                );
+                LOG('bounty', `Notified: ${bounty.target.name} (id=${bountyId})`);
+            } catch (e) {
+                ERR('bounty', 'Failed to send bounty to Discord', e);
+            }
+
+            processedBountyIds.add(bountyId);
+        }
+
+        if (newBountiesFound) {
+            let idsToStore = Array.from(processedBountyIds);
+
+            // Trim the history if it exceeds the limit.
+            if (idsToStore.length > BOUNTY_HISTORY_LIMIT) {
+                idsToStore = idsToStore.slice(idsToStore.length - BOUNTY_HISTORY_LIMIT);
+            }
+            
+            setContent(BOUNTY_ID_STORAGE_KEY, JSON.stringify(idsToStore));
+            console.log(`[SWS_DB] Saved ${idsToStore.length} processed bounty IDs to database.`);
+        }
+    } catch (error) { // [FIXED] Added the missing catch block for the main try.
+        console.error('An error occurred while checking bounties:', error);
     }
-
-    if (touched) savePostedSet(posted);
-  } catch (err) {
-    console.error('checkForNewBounty falhou:', err);
-  }
 }

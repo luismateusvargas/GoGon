@@ -1,112 +1,192 @@
-// app_modules/GameUpdates.js (fix: dedupe por título normalizado + formatação emoji + links/imagens)
-import { LOG, WARN, ERR, ensurePCC } from './core.js';
-import { secureFetch, checkInfo, addLine, sendDiscordMessage } from '../utils.js';
-import { newsWebhook } from '../webhooks.js';
+// app_modules/GameUpdates.js - Refactored for JSON API and SQLite integration
 
-function toDoc(html) {
-  const parser = new DOMParser();
-  return parser.parseFromString(html, 'text/html');
-}
-function cleanNode(node) {
-  if (!node) return node;
-  node.querySelectorAll('script, style').forEach(n => n.remove());
-  return node;
-}
-function textify(node) {
-  if (!node) return '';
-  node.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
-  return (node.textContent || '')
-    .replace(/\u00A0/g,' ')
-    .replace(/\s+\n/g,'\n')
-    .replace(/[ \t]+/g,' ')
-    .trim();
-}
-function normalizeTitle(title) {
-  // remove contadores/prefixos numéricos do início, ex: "13 Rise of ..." -> "Rise of ..."
-  return (title || '').replace(/^\s*\d+\s+/, '').trim();
-}
-function extractDateFromHead(head) {
-  const dateEl = head.querySelector('.NEWS_DATE, i, .date, .news-date');
-  const t = dateEl ? dateEl.textContent.trim() : '';
-  if (t) return t;
-  const htxt = (head.textContent || '').trim();
-  const m = /(\d{1,2}:\d{2}\s+\d{1,2}\s+[A-Za-z]{3}\s+\d{4})/.exec(htxt);
-  return m ? m[1] : '';
-}
-function pickBody(head) {
-  let sib = head?.nextElementSibling || null;
-  while (sib && !sib.classList?.contains('news_body') && !sib.classList?.contains('news_body_tavern')) {
-    sib = sib.nextElementSibling;
-  }
-  return sib || null;
-}
+import { LOG, WARN, ERR } from './core.js';
+import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
+import { newsWebhook } from '../webhooks.js'; // Assuming you have these
+import { apiEndpoints } from '../game_modules/API.js';
+import {
+    getContent,
+    setContent
+} from '../_sws_data/handler/sws_database.js';
+import * as cheerio from 'cheerio'; // Import cheerio to parse HTML content
 
-export async function checkForUpdatesArchive() {
-  const urls = [
-    'https://www.fallensword.com/index.php?cmd=updatearchive&subcmd=view',
-    'https://www.fallensword.com/index.php?cmd=updatearchive',
-    'https://www.fallensword.com/index.php?cmd=news&subcmd=view',
-    'https://www.fallensword.com/index.php?cmd=news',
-  ];
-  for (const url of urls) {
+// --- CONFIGURATION & STATE ---
+const UPDATES_STORAGE_KEY = 'processed_update_archive_ids';
+const UPDATES_HISTORY_LIMIT = 100;
+const DISCORD_CHAR_LIMIT = 2000;
+
+/**
+ * Loads the set of processed update news IDs from the SQLite key-value store.
+ * @returns {Set<number>} A Set containing the unique IDs of processed news items.
+ */
+function loadProcessedUpdates() {
     try {
-      const resp = await secureFetch(url);
-      if (!resp || resp.status !== 200) continue;
-      const html = await resp.text();
-      const doc = toDoc(html);
-      const pCC = ensurePCC(doc, html, 'checkForUpdatesArchive');
-      if (!pCC) continue;
-      cleanNode(pCC);
-
-      const heads = Array.from(pCC.querySelectorAll('.news_head, .news_head_tavern'));
-      if (!heads.length) continue;
-      const head = heads[0];
-      const body = pickBody(head);
-      cleanNode(head);
-      cleanNode(body);
-
-      const h1 = head.querySelector('.news-heading');
-      const h2 = head.querySelector('.news-subheading');
-      const titleRaw = [h1?.textContent?.trim(), h2?.textContent?.trim()].filter(Boolean).join(' ') || textify(head);
-      const title = titleRaw || 'Game Updates';
-      const normTitle = normalizeTitle(title);
-      const date = extractDateFromHead(head);
-      const message = textify(body) || '';
-
-      const imgElements = Array.from((body || head).querySelectorAll('img'));
-      const aElements = Array.from((body || head).querySelectorAll('a'));
-      const imgSrcs = imgElements.map(img => img.getAttribute('src') || img.src).filter(Boolean);
-      const aHrefs = aElements.map(a => a.getAttribute('href') || a.href).filter(Boolean);
-
-      // chave de dedupe: usa data + título *normalizado*
-      const line = `${date} ${normTitle}`.trim();
-      let shouldSend = true;
-      try {
-        shouldSend = !checkInfo(line, 'updatesData');
-        if (shouldSend) addLine(line, 'updatesData');
-      } catch {}
-
-      if (!shouldSend) { LOG('news', `Duplicado ignorado: ${line}`); return; }
-
-      // formatação solicitada
-      let discordMessage = `
-:envelope_with_arrow: Title: ${title}
-:calendar: Date: ${date || '-'}
-:page_facing_up: Message: ${message}
-`.trim();
-
-      if (imgSrcs.length > 0) {
-        discordMessage += `\n\n:camera_with_flash: Images Links:\n` + imgSrcs.join('\n');
-      }
-      if (aHrefs.length > 0) {
-        discordMessage += `\n\n:link: External Links:\n` + aHrefs.join('\n');
-      }
-
-      sendDiscordMessage(discordMessage, "Update Archive", "16711680", "New Content ?", "", newsWebhook);
-      LOG('news', `Enviado: ${line}`);
-      return;
-    } catch (e) {
-      ERR('news', 'Falha ao processar Updates', e);
+        const storedIdsJson = getContent(UPDATES_STORAGE_KEY) || '[]';
+        const storedIdsArray = JSON.parse(storedIdsJson);
+        console.log(`[SWS_DB] Loaded ${storedIdsArray.length} processed update news IDs from database.`);
+        return new Set(storedIdsArray);
+    } catch (error) {
+        console.error('Failed to load processed update news IDs from database, starting fresh.', error);
+        return new Set();
     }
-  }
 }
+
+/**
+ * [MODIFIED] Formats the raw text from the game's news. It now parses HTML
+ * to extract clean text, image URLs, and external links separately.
+ * @param {string} text - The raw text content from the API, which may contain HTML.
+ * @returns {{cleanText: string, images: string[], links: string[]}}
+ */
+function formatNewsContent(text) {
+    if (!text) return { cleanText: '', images: [], links: [] };
+
+    // First, handle the game's custom formatting tags
+    let processedText = text
+        .replace(/\[list\]/g, '')
+        .replace(/\[\/list\]/g, '')
+        .replace(/\[\*\]/g, '\n• ')
+        .replace(/\\r\\n/g, '\n');
+
+    // Now, parse the result as HTML to handle tags like <div>, <img>, <a>
+    const $ = cheerio.load(processedText);
+
+    // Extract image URLs
+    const images = [];
+    $('img').each((i, el) => {
+        const src = $(el).attr('src');
+        if (src && !src.includes('a.fs-img.net')) { // Filter out tracker pixels
+            images.push(src);
+        }
+    });
+
+    // Extract external links
+    const links = [];
+    $('a').each((i, el) => {
+        const href = $(el).attr('href');
+        if (href) {
+            links.push(href);
+        }
+    });
+
+    // Convert <br> tags to newlines for proper text extraction
+    $('br').replaceWith('\n');
+    const cleanText = $('body').text().trim().replace(/\n\s*\n/g, '\n'); // Remove excess blank lines
+
+    return { cleanText, images, links };
+}
+
+
+/**
+ * Splits a long message into multiple chunks that respect Discord's character limit.
+ * @param {string} title - The title of the news, prefixed to each part.
+ * @param {string} content - The main body of the message.
+ * @returns {string[]} An array of message chunks.
+ */
+function splitMessage(title, content) {
+    const chunks = [];
+    const contentLines = content.split('\n');
+    let currentChunk = `${title}\n\n`;
+
+    for (const line of contentLines) {
+        if (currentChunk.length + line.length + 1 > DISCORD_CHAR_LIMIT) {
+            chunks.push(currentChunk);
+            currentChunk = `${title} (Cont.)\n\n`;
+        }
+        currentChunk += line + '\n';
+    }
+    chunks.push(currentChunk);
+    return chunks;
+}
+
+
+/**
+ * The main function to check for and announce new game updates.
+ */
+export async function checkForUpdatesArchive() {
+    console.log('Checking for new game updates...');
+    try {
+        const processedUpdateIds = loadProcessedUpdates();
+
+        const response = await secureFetch(apiEndpoints.game.updateArchive);
+        if (!response.ok) throw new Error(`Failed to fetch update archive data. Status: ${response.status}`);
+
+        const data = await response.json();
+        if (!data || !data.s) {
+            console.error('Update archive fetch was not successful:', data.e?.message || 'Unknown error');
+            return;
+        }
+        
+        const newsItems = data.r?.news;
+        if (!newsItems || newsItems.length === 0) {
+            return;
+        }
+
+        let newUpdatesFound = false;
+
+        for (const news of newsItems.reverse()) {
+            const newsId = news.id;
+            if (processedUpdateIds.has(newsId)) {
+                continue;
+            }
+
+            if (news.type !== 0) {
+                continue;
+            }
+
+            newUpdatesFound = true;
+            console.log(`New game update found! ID: ${newsId}, Subject: "${news.subject}"`);
+            
+            const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
+            const title = `:loudspeaker: **${news.subject}**`;
+            
+            // [MODIFIED] Process the content to separate text, images, and links.
+            const formattedContent = formatNewsContent(news.content.text);
+            
+            let fullMessageBody = formattedContent.cleanText;
+
+            if (formattedContent.images.length > 0) {
+                fullMessageBody += '\n\n:camera_with_flash: **Images Found:**\n' + formattedContent.images.join('\n');
+            }
+            if (formattedContent.links.length > 0) {
+                fullMessageBody += '\n\n:link: **Related Links:**\n' + formattedContent.links.join('\n');
+            }
+            
+            const messageChunks = splitMessage(title, fullMessageBody);
+
+            try {
+                for (const chunk of messageChunks) {
+                    await sendExtraDiscordMessage(
+                        chunk,
+                        "Game Update & Events",
+                        "5763719", // A green color
+                        `Posted at ${dateTime}`,
+                        "",
+                        newsWebhook
+                    );
+                    if (messageChunks.length > 1) {
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+                }
+                LOG('updates', `Notified: "${news.subject}" (ID: ${newsId})`);
+            } catch (e) {
+                ERR('updates', 'Failed to send update notification to Discord', e);
+            }
+
+            processedUpdateIds.add(newsId);
+        }
+
+        if (newUpdatesFound) {
+            let idsToStore = Array.from(processedUpdateIds);
+
+            if (idsToStore.length > UPDATES_HISTORY_LIMIT) {
+                idsToStore = idsToStore.slice(idsToStore.length - UPDATES_HISTORY_LIMIT);
+            }
+            
+            setContent(UPDATES_STORAGE_KEY, JSON.stringify(idsToStore));
+            console.log(`[SWS_DB] Saved ${idsToStore.length} processed update news IDs to database.`);
+        }
+    } catch (error) {
+        console.error('An error occurred while checking for game updates:', error);
+    }
+}
+

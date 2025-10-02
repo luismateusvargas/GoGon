@@ -1,121 +1,168 @@
-// app_modules/Ladder.js (detecção de reset da PvP Ladder via News Archive)
-// - Procura por entradas com <span class="NEWS_SUBJECT"><b>PvP Ladder</b></span>
-// - Extrai a data de <span class="NEWS_DATE">Posted: ...</span> do mesmo <tr>
-// - Dedupe persistente (GM_): evita repetição entre execuções
-// - Envia uma única notificação formatada ao Discord
-import { LOG, WARN, ERR, ensurePCC } from './core.js';
-import { secureFetch, checkInfo, addLine, sendDiscordMessage } from '../utils.js';
-import { ladderWebhook, LadderGroup } from '../webhooks.js';
+// app_modules/Ladder.js - Refactored for JSON API and SQLite integration
 
-const NEWS_URLS = [
-  'https://www.fallensword.com/index.php?cmd=news&subcmd=viewarchive',
-  'https://www.fallensword.com/index.php?cmd=news&subcmd=view',
-  'https://www.fallensword.com/index.php?cmd=news',
-];
+import { LOG, WARN, ERR } from './core.js';
+import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
+import { ladderWebhook, LadderGroup } from '../webhooks.js'; // Assuming you have these in webhooks.js
+import { apiEndpoints } from '../game_modules/API.js';
+import {
+    getContent,
+    setContent
+} from '../_sws_data/handler/sws_database.js';
 
-function toDoc(html) {
-  if (typeof DOMParser !== 'undefined') {
-    try { return new DOMParser().parseFromString(html, 'text/html'); } catch {}
-  }
-  if (typeof document !== 'undefined' && document.implementation?.createHTMLDocument) {
-    const doc = document.implementation.createHTMLDocument('');
-    doc.documentElement.innerHTML = html;
-    return doc;
-  }
-  throw new Error('Ambiente sem DOMParser/document.');
-}
+// --- CONFIGURATION & STATE ---
+const LADDER_NEWS_STORAGE_KEY = 'processed_ladder_news_ids';
+const LADDER_HISTORY_LIMIT = 100; // Standard history limit
 
-function normTxt(s) {
-  return (s || '').replace(/\r/g,'').replace(/\u00A0/g,' ').replace(/[ \t]+/g,' ').replace(/ *\n */g,'\n').trim();
-}
-function getTxt(el) {
-  if (!el) return '';
-  el.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
-  return normTxt(el.textContent || '');
-}
-
-function findPvPLadderRows(pCC) {
-  // Procura todos os SUBJECTs e filtra os que tenham "PvP Ladder" (case-insensitive)
-  const subjects = Array.from(pCC.querySelectorAll('span.NEWS_SUBJECT b'));
-  const hits = [];
-  for (const b of subjects) {
-    const title = getTxt(b);
-    if (!/pvp\s*ladder/i.test(title)) continue;
-    const row = b.closest('tr');
-    if (!row) continue;
-    const dateEl = row.querySelector('.NEWS_DATE');
-    const posted = getTxt(dateEl);
-    // Conteúdo (body) geralmente no próximo <tr> com td[colspan="2"]
-    let body = '';
-    let sib = row.nextElementSibling;
-    if (sib && sib.querySelector('td[colspan="2"]')) {
-      body = getTxt(sib.querySelector('td[colspan="2"]'));
-    }
-    hits.push({ row, title, posted, body });
-  }
-  return hits;
-}
-
-function trimFirstSentence(s) {
-  if (!s) return '';
-  const idx = s.indexOf('.');
-  return idx >= 0 ? s.slice(0, idx + 1).trim() : s.trim();
-}
-
-export async function checkLadderReset() {
-  for (const url of NEWS_URLS) {
+/**
+ * Loads the set of processed ladder news IDs from the SQLite key-value store.
+ * @returns {Set<number>} A Set containing the unique IDs of processed news items.
+ */
+function loadProcessedLadderNews() {
     try {
-      const resp = await secureFetch(url);
-      if (!resp || resp.status !== 200) { WARN('ladder', `HTTP ${resp?.status ?? '??'} em ${url}`); continue; }
-      const html = await resp.text();
-      const doc = toDoc(html);
-      const pCC = ensurePCC(doc, html, 'checkLadderReset');
-      if (!pCC) { WARN('ladder', 'pCC não encontrado.'); continue; }
+        const storedIdsJson = getContent(LADDER_NEWS_STORAGE_KEY) || '[]';
+        const storedIdsArray = JSON.parse(storedIdsJson);
+        console.log(`[SWS_DB] Loaded ${storedIdsArray.length} processed ladder news IDs from database.`);
+        return new Set(storedIdsArray);
+    } catch (error) {
+        console.error('Failed to load processed ladder news IDs from database, starting fresh.', error);
+        return new Set();
+    }
+}
 
-      // Varre a página e pega o(s) blocos "PvP Ladder"
-      const items = findPvPLadderRows(pCC);
-      if (!items.length) { LOG('ladder', `Nenhum bloco "PvP Ladder" em ${url}`); continue; }
+/**
+ * Fetches the results of the previous ladder for all available PvP bands.
+ */
+async function fetchAndAnnounceAllPreviousRankings() {
+    console.log('Fetching previous ladder rankings for all bands...');
+    try {
+        // Fetch the first band to get the list of all bands
+        const initialResponse = await secureFetch(apiEndpoints.game.ladderResetScoreboard(1));
+        const initialData = await initialResponse.json();
 
-      // Processa o mais recente primeiro
-      for (const item of items.slice(0, 3)) {
-        const title = item.title || 'PvP Ladder';
-        const dateTxt = item.posted || '';
-        const messageBody = trimFirstSentence(item.body);
-
-        // chave de dedupe: data + título normalizado
-        const normTitle = title.replace(/^\s*\d+\s+/,'').trim();
-        const key = `${dateTxt} ${normTitle}`.trim();
-
-        let isNew = true;
-        try {
-          isNew = !checkInfo(key, 'ladderResets');
-          if (isNew) addLine(key, 'ladderResets');
-        } catch {}
-
-        if (!isNew) { LOG('ladder', `Duplicado ignorado: ${key}`); continue; }
-
-        let content = `
-:crossed_swords: **PvP Ladder Reset**
-:calendar: ${dateTxt || '-'}
-`;
-        if (messageBody) {
-          content += `\n:page_facing_up: ${messageBody}`;
+        if (!initialData.s || !initialData.r.bands) {
+            WARN('ladder', 'Could not fetch the list of PvP bands.');
+            return;
         }
 
-        // Envia
-        sendDiscordMessage(
-          content.trim(),
-          'PvP Ladder',
-          '16711680',
-          'Dominating!',
-          LadderGroup,
-          ladderWebhook
-        );
-        LOG('ladder', `Notificado: ${key}`);
-        return; // apenas um por execução
-      }
-    } catch (e) {
-      ERR('ladder', 'Falha ao processar Ladder', e);
+        const bands = initialData.r.bands;
+        console.log(`Found ${bands.length} PvP bands to process.`);
+
+        for (const band of bands) {
+            const response = await secureFetch(apiEndpoints.game.ladderResetScoreboard(band.id));
+            const data = await response.json();
+
+            if (!data.s || !data.r.previous || data.r.previous.length === 0) {
+                continue; // Skip bands with no previous ladder data
+            }
+
+            const topPlayers = data.r.previous.slice(0, 3); // Get the top 3 players
+
+            let playerLines = topPlayers.map((p, index) => {
+                const medals = ['🥇', '🥈', '🥉'];
+                return `${medals[index]} **${p.player.name}** - Rating: ${p.rating}`;
+            }).join('\n');
+
+            const message = `
+**Band ${band.id} (Levels ${band.level_start}-${band.level_end})**
+${playerLines}
+            `.trim();
+
+            sendExtraDiscordMessage(
+                message,
+                "Previous PvP Ladder Results",
+                "16776960", // Bright yellow
+                `Top players for Band ${band.id}`,
+                "", // No group ping for individual results
+                ladderWebhook
+            );
+            
+            // Small delay to avoid rate-limiting on Discord hooks
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+    } catch (error) {
+        ERR('ladder', 'Failed to fetch or process previous ladder rankings', error);
     }
-  }
 }
+
+/**
+ * The main function to check for and announce PvP ladder resets.
+ */
+export async function checkLadderReset() {
+    console.log('Checking for PvP ladder reset...');
+    try {
+        const processedNewsIds = loadProcessedLadderNews();
+
+        const response = await secureFetch(apiEndpoints.game.newsArchive);
+        if (!response.ok) throw new Error(`Failed to fetch news archive data. Status: ${response.status}`);
+
+        const data = await response.json();
+        if (!data || !data.s) {
+            console.error('News archive fetch was not successful:', data.e?.message || 'Unknown error');
+            return;
+        }
+        
+        const newsItems = data.r?.news;
+        if (!newsItems || newsItems.length === 0) {
+            return;
+        }
+
+        let newLadderResetFound = false;
+
+        for (const news of newsItems.reverse()) {
+            if (news.type !== 3 || news.subject !== "PvP Ladder") {
+                continue;
+            }
+
+            const newsId = news.id;
+            if (processedNewsIds.has(newsId)) {
+                continue;
+            }
+
+            newLadderResetFound = true;
+            console.log(`New PvP ladder reset found! News ID: ${newsId}`);
+            
+            const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
+
+            const message = `
+:crossed_swords: **The PvP Ladder has been reset!**
+:calendar_spiral: ${dateTime}
+:trophy: Tokens have been allocated. Fetching previous ladder results...`
+.trim();
+
+            try {
+                sendExtraDiscordMessage(
+                    message,
+                    "PvP Ladder Reset",
+                    "16711680", // Orange
+                    "The battle begins anew!",
+                    LadderGroup,
+                    ladderWebhook
+                );
+                LOG('ladder', `Notified PvP Ladder Reset (ID: ${newsId})`);
+
+                // After announcing the reset, fetch and post the results.
+                await fetchAndAnnounceAllPreviousRankings();
+
+            } catch (e) {
+                ERR('ladder', 'Failed to send ladder notification to Discord', e);
+            }
+
+            processedNewsIds.add(newsId);
+        }
+
+        if (newLadderResetFound) {
+            let idsToStore = Array.from(processedNewsIds);
+
+            if (idsToStore.length > LADDER_HISTORY_LIMIT) {
+                idsToStore = idsToStore.slice(idsToStore.length - LADDER_HISTORY_LIMIT);
+            }
+            
+            setContent(LADDER_NEWS_STORAGE_KEY, JSON.stringify(idsToStore));
+            console.log(`[SWS_DB] Saved ${idsToStore.length} processed ladder news IDs to database.`);
+        }
+    } catch (error) {
+        console.error('An error occurred while checking for ladder resets:', error);
+    }
+}
+

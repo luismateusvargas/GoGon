@@ -1,4 +1,5 @@
 // app_modules/core.js
+import * as cheerio from 'cheerio';
 export const SWS_DEBUG = (typeof process !== 'undefined' && process?.env?.SWS_DEBUG) ? process.env.SWS_DEBUG : '1';
 
 export function ts() {
@@ -18,29 +19,43 @@ export async function dumpHtml(feature, label, html) {
     fs.mkdirSync(dir, { recursive: true });
     const fname = path.join(dir, `${Date.now()}-${feature}-${label}.html`);
     fs.writeFileSync(fname, html);
-    WARN(feature, `Snapshot salvo em ${fname} (len=${html?.length||0})`);
+    WARN(feature, `Snapshot saved at ${fname} (len=${html?.length||0})`);
   } catch (e) {
-    WARN(feature, `Falhou dumpHtml`, e?.message || e);
+    WARN(feature, `Failed dumpHtml`, e?.message || e);
   }
 }
 export function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-export async function waitForPCC(fetchFn, url, { tries = 8, delay = 800, feature = 'page', logHtmlOnFail = true } = {}) {
-  let lastHtml = '';
-  for (let i = 1; i <= tries; i++) {
-    const res  = await fetchFn(url);
-    const html = await res.text();
-    lastHtml   = html;
-    const doc  = new DOMParser().parseFromString(html, 'text/html');
-    const pCC  = doc.getElementById('pCC');
-    if (pCC) { LOG(feature, `#pCC encontrado (tentativa ${i}/${tries})`); return { doc, pCC, html }; }
-    WARN(feature, `#pCC não encontrado (tentativa ${i}/${tries}), aguardando ${delay}ms...`, { url, htmlLen: html.length });
-    await sleep(delay);
-  }
-  ERR(feature, `Falha ao localizar #pCC após ${tries} tentativas`, { url, lastHtmlLen: lastHtml.length });
-  if (logHtmlOnFail) dumpHtml(feature, 'no_pCC', lastHtml);
-  const doc = new DOMParser().parseFromString(lastHtml || '<html></html>', 'text/html');
-  return { doc, pCC: null, html: lastHtml };
+export async function waitForPCC(fetchFn, retries = 8) {
+    if (retries <= 0) {
+        WARN('page', '#pCC not found after multiple retries');
+        return null;
+    }
+
+    try {
+        const response = await fetchFn();
+        if (!response || !response.ok) {
+            await new Promise(res => setTimeout(res, 500));
+            return waitForPCC(fetchFn, retries - 1);
+        }
+
+        const html = await response.text();
+        const $ = cheerio.load(html); // Create the Cheerio object
+
+        if ($('#pCC').length > 0) {
+            LOG('page', `#pCC found (attempt ${9 - retries}/8)`);
+            return $; // <<< FIX: Return the main Cheerio object
+        }
+
+        // If pCC is not found, wait and retry
+        await new Promise(res => setTimeout(res, 400));
+        return waitForPCC(fetchFn, retries - 1);
+
+    } catch (e) {
+        // Handle fetch errors and retry
+        await new Promise(res => setTimeout(res, 500));
+        return waitForPCC(fetchFn, retries - 1);
+    }
 }
 
 export function ensurePCC(doc, html, feature = 'page') {
@@ -68,6 +83,6 @@ export function selectRowsResilient(pCC, feature = 'table-scan') {
   rows = pCC.querySelectorAll('table table table tr');
   if (rows && rows.length) { LOG(feature, `selector B ok: ${rows.length} linhas`); return rows; }
   rows = pCC.querySelectorAll('tr');
-  LOG(feature, `selector C (amplo): ${rows.length} linhas`);
+  LOG(feature, `selector C (wide): ${rows.length} linhas`);
   return rows;
 }

@@ -1,165 +1,129 @@
-// app_modules/Titans.js (filtro estrito de spawn + correções)
-import { LOG, WARN, ERR, ensurePCC } from './core.js';
-import { secureFetch, sendDiscordMessage, checkInfo, addLine } from '../utils.js';
-import { TitanGroup, titanWebhook } from '../webhooks.js';
+// app_modules/Titans.js - Refactored for JSON API and SQLite integration
+
+import { LOG, WARN, ERR } from './core.js';
+import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
+import { titanWebhook, TitanGroup } from '../webhooks.js';
+import { apiEndpoints } from '../game_modules/API.js';
+import {
+    getContent,
+    setContent,
+    getCreatureById
+} from '../_sws_data/handler/sws_database.js';
+
+// --- CONFIGURATION & STATE ---
+const TITAN_NEWS_STORAGE_KEY = 'processed_titan_news_ids';
+const TITAN_HISTORY_LIMIT = 100; // Standard history limit of 100
 
 /**
- * Publica APENAS notícias reais de "Titan Spotted / Spawn" vindas de News/Archive.
- * - Ancorado em .news_head/.news_body e .news_head_tavern/.news_body_tavern
- * - Limpa <script>/<style>, converte <br> em \n
- * - Filtro **estrito** por verbos de aparição (inclui "has been spotted")
- * - Deduplicação persistente (GM_* via utils.js) usando storageKey 'titanData'
- * - Só encerra quando pelo menos UM envio ocorreu; caso contrário, tenta próximas URLs
- *
- * Requer no escopo: TitanGroup, titanWebhook
+ * Loads the set of processed titan news IDs from the SQLite key-value store.
+ * @returns {Set<number>} A Set containing the unique IDs of processed news items.
  */
-
-export async function checkForTitanNotifications() {
-  const urls = [
-    'https://www.fallensword.com/index.php?cmd=updatearchive&subcmd=view'
-  ];
-
-  // Aceita títulos "Titan Spotted/Spawned..." e corpos com "titan ... spotted" (ou invertido)
-  const HEAD_SPAWN = /titan\s+(spotted|spawn(?:ed|s)?|sighted|seen|appeared|emerged|roaming)/i;
-  const BODY_SPAWN = /(titan[^\\n]{0,80}(?:has\\s+been\\s+)?(spotted|spawn(?:ed|s)?|sighted|seen|appeared|emerged|roaming))|((spotted|spawn(?:ed|s)?|sighted|seen|appeared|emerged|roaming)[^\\n]{0,80}titan)/i;
-  // Bloqueios comuns de notícias que NÃO são spawn
-  const ANTI_NOISE = /(ladder|reset|patch|update|auction|season|sale|discount|offer|arena|bounty|super\\s*elite|double composing|bug\\s*fix)/i;
-
-  // helpers
-  function toDoc(html) {
+function loadProcessedTitanNews() {
     try {
-      const parser = new DOMParser();
-      return parser.parseFromString(html, 'text/html');
-    } catch (e) {
-      ERR('[Titans] DOMParser indisponível:', e?.message || e);
-      return null;
+        const storedIdsJson = getContent(TITAN_NEWS_STORAGE_KEY) || '[]';
+        const storedIdsArray = JSON.parse(storedIdsJson);
+        console.log(`[SWS_DB] Loaded ${storedIdsArray.length} processed titan news IDs from database.`);
+        return new Set(storedIdsArray);
+    } catch (error) {
+        console.error('Failed to load processed titan news IDs from database, starting fresh.', error);
+        return new Set();
     }
-  }
-
-  function cleanToText(node) {
-    if (!node) return '';
-    node.querySelectorAll('script, style').forEach(n => n.remove());
-    node.querySelectorAll('br').forEach(br => br.replaceWith('\\n'));
-    return (node.textContent || '')
-      .replace(/\\r/g, '')
-      .replace(/\\t/g, ' ')
-      .replace(/\\u00A0/g, ' ')
-      .split('\\n')
-      .map(s => s.replace(/\\s+/g, ' ').trim())
-      .filter(Boolean)
-      .join('\\n');
-  }
-
-  function bodyFromHead(head) {
-    let sib = head?.nextElementSibling || null;
-    while (sib && !sib.classList?.contains('news_body') && !sib.classList?.contains('news_body_tavern')) {
-      sib = sib.nextElementSibling;
-    }
-    return sib || null;
-  }
-
-  function extractSpawnLines(text) {
-    if (!text) return [];
-    const lines = text.split('\\n').map(s => s.trim()).filter(Boolean);
-    const hits = lines.filter(l => BODY_SPAWN.test(l));
-    if (!hits.length) return [];
-    // Complementa com a linha seguinte (geralmente localização)
-    const idxs = hits.map(h => lines.indexOf(h)).filter(i => i >= 0);
-    const out = new Set();
-    for (const i of idxs) {
-      out.add(lines[i]);
-      if (lines[i + 1]) out.add(lines[i + 1]);
-    }
-    return Array.from(out);
-  }
-
-  let sentAny = false;
-
-  for (const url of urls) {
-    try {
-      const resp = await secureFetch(url);
-      if (!resp || resp.status !== 200) {
-        WARN(`[Titans] HTTP ${resp?.status} em ${url}`);
-        continue;
-      }
-      const html = await resp.text();
-      const doc = toDoc(html);
-      if (!doc) continue;
-
-      const pCC = ensurePCC(doc, (typeof html !== 'undefined' ? html : (doc?.documentElement?.outerHTML ?? null)), 'checkForTitanNotifications');
-      if (!pCC) {
-        WARN(`[Titans] #pCC não encontrado em ${url}`);
-        continue;
-      }
-
-      const heads = Array.from(pCC.querySelectorAll('.news_head, .news_head_tavern'));
-      if (!heads.length) {
-        WARN(`[Titans] Nenhuma .news_head encontrada em ${url}`);
-        continue;
-      }
-
-      for (const head of heads) {
-        const h1 = head.querySelector('h1');
-        const titleText = (h1?.textContent || '').trim();
-        const headText = cleanToText(head);
-        const body = bodyFromHead(head);
-        const bodyText = cleanToText(body);
-
-        // Descarta ruído óbvio (mas só se também não combinar com spawn)
-        const fullText = [titleText, headText, bodyText].filter(Boolean).join('\\n');
-        const looksLikeSpawn = HEAD_SPAWN.test(titleText) || BODY_SPAWN.test(fullText);
-
-        if (!looksLikeSpawn) continue;
-        if (ANTI_NOISE.test(fullText) && !HEAD_SPAWN.test(titleText)) continue;
-
-        // Capta linhas fortes do corpo; se vazio, usa o título mesmo
-        let spawnLines = extractSpawnLines(bodyText);
-        if (!spawnLines.length && HEAD_SPAWN.test(titleText)) {
-          // tenta captar a linha do body que contém o nome do Titan ou a frase "has been spotted"
-          const nameLine = (bodyText.split('\\n').find(l => /titan/i.test(l) && /spott|spawn|sight|appear|emerg|roam/i.test(l)) || titleText).trim();
-          spawnLines = [nameLine];
-        }
-        if (!spawnLines.length) continue;
-
-        const dateEl = head.querySelector('i, .NEWS_DATE') || body?.querySelector('.NEWS_DATE');
-        const when = (dateEl?.textContent || '').trim();
-
-        const titanInfo = spawnLines.join('\\n');
-        const key = `${titleText} :: ${when}`;
-
-        let shouldSend = true;
-        try {
-          shouldSend = !checkInfo(key, 'titanData');
-          if (shouldSend) addLine(key, 'titanData');
-        } catch (e) {
-          // se storage falhar, ainda tentamos enviar uma vez
-          WARN('[Titans] Falha ao acessar storage para dedupe:', e?.message || e);
-        }
-
-        if (!shouldSend) continue;
-
-        const message = `New Titan Spotted:
-${titanInfo}
-${when}`.trim();
-
-        sendDiscordMessage(
-          message,
-          'Titan Spawn',
-          '21247',
-          "Don't forget TP and TD!",
-          TitanGroup,
-          titanWebhook
-        );
-        LOG('[Titans] Notificação de spawn enviada.');
-        sentAny = true;
-      }
-
-      if (sentAny) return; // encerra se pelo menos uma notificação foi enviada nesta URL
-      // senão, tenta a próxima URL
-    } catch (e) {
-      ERR(`[Titans] Falha ao processar ${url}`, e);
-    }
-  }
-
-  if (!sentAny) WARN('[Titans] Nenhuma notícia de Titan Spotted encontrada nas URLs testadas.');
 }
+
+/**
+ * The main function to check for and announce new titan sightings.
+ */
+export async function checkForTitanNotifications() {
+    console.log('Checking for new titan notifications...');
+    try {
+        const processedNewsIds = loadProcessedTitanNews();
+
+        const response = await secureFetch(apiEndpoints.game.newsArchive);
+        if (!response.ok) throw new Error(`Failed to fetch news archive data. Status: ${response.status}`);
+
+        const data = await response.json();
+        if (!data || !data.s) {
+            console.error('News archive fetch was not successful:', data.e?.message || 'Unknown error');
+            return;
+        }
+        
+        // [FIXED] Access the 'news' array directly from the response object.
+        const newsItems = data.r?.news;
+        if (!newsItems || newsItems.length === 0) {
+            console.log('No recent news items found.');
+            return;
+        }
+
+        let newTitansFound = false;
+
+        for (const news of newsItems.reverse()) {
+            // Use a much more reliable filter based on the news subject.
+            if (news.type !== 4 || news.subject !== "Titan Spotted!") {
+                continue;
+            }
+
+            const newsId = news.id;
+            if (processedNewsIds.has(newsId)) {
+                continue;
+            }
+
+            newTitansFound = true;
+            console.log(`New titan sighting found! News ID: ${newsId}`);
+
+            const titanId = news.content.attachments?.[0]?.data;
+            if (!titanId) {
+                WARN('titans', `Found a titan news item (ID: ${newsId}) but it was missing the creature ID attachment.`);
+                continue;
+            }
+
+            const titan = getCreatureById(titanId);
+            if (!titan) {
+                WARN('titans', `Could not find titan with ID ${titanId} in the database. Skipping news ID: ${newsId}.`);
+                continue;
+            }
+            
+            const locationMatch = news.content.text.match(/in (.*?)\!/);
+            const location = locationMatch ? locationMatch[1] : 'an unknown location';
+            
+            const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
+
+            const message = `
+:boar: **${titan.name}**
+:calendar_spiral: ${dateTime}
+:map: Spotted at: **${location}**`
+.trim();
+
+            try {
+                sendExtraDiscordMessage(
+                    message,
+                    "Titan Spotted!",
+                    "1127128", // A dark red color
+                    "A new titan has appeared in the realm!",
+                    TitanGroup,
+                    titanWebhook,
+                    "", // No primary image for titans
+                    titan.imageUrl || "" // Use the creature's image as the thumbnail
+                );
+                LOG('titans', `Notified: ${titan.name} spotted at ${location}`);
+            } catch (e) {
+                ERR('titans', 'Failed to send titan notification to Discord', e);
+            }
+
+            processedNewsIds.add(newsId);
+        }
+
+        if (newTitansFound) {
+            let idsToStore = Array.from(processedNewsIds);
+
+            if (idsToStore.length > TITAN_HISTORY_LIMIT) {
+                idsToStore = idsToStore.slice(idsToStore.length - TITAN_HISTORY_LIMIT);
+            }
+            
+            setContent(TITAN_NEWS_STORAGE_KEY, JSON.stringify(idsToStore));
+            console.log(`[SWS_DB] Saved ${idsToStore.length} processed titan news IDs to database.`);
+        }
+    } catch (error) {
+        console.error('An error occurred while checking for titan notifications:', error);
+    }
+}
+
