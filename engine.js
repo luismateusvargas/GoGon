@@ -1,55 +1,190 @@
-// newsFeatures.js (modular orchestrator)
+// --- APPLICATION ENGINE (engine.js) ---
+// This module acts as the central scheduler, orchestrating all the individual
+// worker modules at their specified intervals.
 
 import { LOG, WARN, ERR } from './app_modules/core.js';
-import { checkForNewBounty } from './app_modules/BountyBoard.js';
-import { checkForSuperEliteKills } from './app_modules/SuperElite.js';
-import { monitorIncomingAttacks } from './app_modules/GuildConflicts.js';
+
+// --- Module Imports ---
+// Currently, only SuperElites is active for testing.
+import { checkSuperElites } from './app_modules/SuperElite.js';
+import { checkBounties } from './app_modules/BountyBoard.js';
 import { checkForCratesFound } from './app_modules/Crates.js';
+import { checkForTitanNotifications } from './app_modules/Titans.js';
+import { checkLadderReset } from './app_modules/Ladder.js';
 import { checkForShoutbox } from './app_modules/Shoutbox.js';
 import { checkForUpdatesArchive } from './app_modules/GameUpdates.js';
-import { checkLadderReset } from './app_modules/Ladder.js';
-import { checkForTitanNotifications } from './app_modules/Titans.js';
 import { checkRelics } from './app_modules/Relics.js';
-import { autoJoinAllGroups } from './app_modules/QoL.js';
+import { checkGuildConflicts } from './app_modules/GuildConflicts.js';
+import { autoJoinAllGroups, checkAndSwapGear } from './app_modules/QoL.js';
+import { checkGuildMessages } from './app_modules/GuildMessages.js';
 
-import { ensureLogin } from './session.mjs';
+// --- Task Configuration ---
+// Using a Map allows for easy lookup by task name.
+// Each task now includes a state (active) and a timerId.
+const tasks = new Map([
+    ['SuperElites', {
+        handler: checkSuperElites,
+        interval: 15 * 1000,
+        activeOnStart: true, // Should the task be active when the engine starts?
+        timerId: null, // Will hold the ID of the setInterval timer
+    }],
+    
+    ['BountyBoard', {
+		handler: checkBounties,
+		interval: 7 * 1000,
+		activeOnStart: true,
+		timerID: null,
+	}],
+	[ 'Crates', {
+		handler: checkForCratesFound,
+		interval: 60 * 1000,
+		activeOnStart: true,
+		timerId: null,
+	}],
+	[ 'Titans', { 
+		handler: checkForTitanNotifications,
+		interval: 60 * 1000,
+		activeOnStart: true,
+		timerID: null,
+	}],
+	[ 'Ladder', {
+		handler: checkLadderReset,
+		interval: 60 * 1000,
+		activeOnStart: true,
+		timerID: null,
+	}],
+	[ 'Shoutbox', {
+		handler: checkForShoutbox,
+		interval: 5 * 60 * 1000,		
+		activeOnStart: true,
+		timerId: null,
+	}],
+	[ 'GameUpdates', {
+		handler: checkForUpdatesArchive,
+		interval: 5 * 60 * 1000,
+		activeOnStart: true,
+		timerID: null,
+	}],
+	[ 'Relics', {
+		handler: checkRelics,
+		interval: 60 * 1000,
+		activeOnStart: true,  
+		timerID: null
+	}],
+	[ 'GuildConflicts', {
+		handler: checkGuildConflicts,
+		interval: 6 * 60 * 1000,
+		activeOnStart: true,
+		timerID: null,
+	}],
+	[ 'Groups', {
+		handler: autoJoinAllGroups, 
+		interval: 60 * 1000,
+		activeOnStart: true,
+		timerID: null,
+	}],
+	[ 'AutoGearSwap', {
+		handler: checkAndSwapGear,
+		interval: 60 * 1000,
+		activeOnStart: true,
+		timerID: null,
+	}],
+    [ 'GuildMessages', {
+		handler: checkGuildMessages, 
+		interval: 5 * 60 * 1000,
+		activeOnStart: true,
+		timerID: null,
+	}],
+]);
 
+/**
+ * Safely runs a task's handler function.
+ * @param {object} task - The task object from the tasks Map.
+ */
+function runTask(task) {
+    LOG('Engine', `Executing task: ${task.name}...`);
+    try {
+        (async () => {
+            await task.handler();
+        })();
+    } catch (e) {
+        ERR(task.name, 'execution failed', e);
+    }
+}
+
+// --- PUBLIC CONTROL FUNCTIONS ---
+
+/**
+ * Starts a specific task by its name.
+ * @param {string} taskName - The name of the task to start.
+ */
+export function startTask(taskName) {
+    const task = tasks.get(taskName);
+    if (!task) {
+        WARN('Engine', `Attempted to start an unknown task: ${taskName}`);
+        return;
+    }
+    if (task.timerId) {
+        LOG('Engine', `Task "${taskName}" is already running.`);
+        return;
+    }
+
+    // Run once immediately (kickoff)
+    runTask({ name: taskName, handler: task.handler });
+
+    // Schedule the interval
+    task.timerId = setInterval(() => runTask({ name: taskName, handler: task.handler }), task.interval);
+    LOG('Engine', `Task "${taskName}" has been started and scheduled.`);
+}
+
+/**
+ * Stops a specific task by its name.
+ * @param {string} taskName - The name of the task to stop.
+ */
+export function stopTask(taskName) {
+    const task = tasks.get(taskName);
+    if (!task) {
+        WARN('Engine', `Attempted to stop an unknown task: ${taskName}`);
+        return;
+    }
+    if (!task.timerId) {
+        LOG('Engine', `Task "${taskName}" is not currently running.`);
+        return;
+    }
+
+    clearInterval(task.timerId);
+    task.timerId = null;
+    LOG('Engine', `Task "${taskName}" has been stopped.`);
+}
+
+/**
+ * Initializes the engine, starting all tasks configured to be active on startup.
+ */
 export function initEngine() {
-  console.log('initEngine invoked (modular)');
-  if (typeof window !== 'undefined') {
-    window.initEngine = initEngine;
-    console.log('initEngine attached to window');
-  }
-  // Kickoff
-  try { checkForNewBounty(); } catch (e) { ERR('bounty', 'kickoff', e); }
-  try { checkForSuperEliteKills(); } catch (e) { ERR('se', 'kickoff', e); }
-  try { checkForCratesFound(); } catch (e) { ERR('crates', 'kickoff', e); }
-  try { checkForShoutbox(); } catch (e) { ERR('shoutbox', 'kickoff', e); }
-  try { checkForUpdatesArchive(); } catch (e) { ERR('updates', 'kickoff', e); }
-  //try { checkGuildLog(); } catch (e) { ERR('guild', 'kickoff', e); }
-  try { monitorIncomingAttacks(); } catch (e) { ERR('attacks', 'kickoff', e); }
-  try { checkLadderReset(); } catch (e) { ERR('pvp', 'kickoff', e); }
-  try { checkForTitanNotifications(); } catch (e) { ERR('titan', 'kickoff', e); }
-  try { checkRelics(); } catch (e) { ERR('relics', 'kickoff', e); } 
-  try { autoJoinAllGroups(); } catch (e) { ERR('groups', 'kickoff', e); } 
+    console.log('[SWS_Engine] Initializing task engine...');
 
-  // Schedules
-  const now = new Date();
-  const timeToNextHour = (60 - now.getMinutes()) * 60 * 1000;
-  setTimeout(() => {
-    try { checkForTitanNotifications(); } catch (e) { ERR('titan', 'hourly', e); }
-    setInterval(() => { try { checkForTitanNotifications(); } catch (e) { ERR('titan', 'hourly', e); } }, 1000 * 60 * 60);
-  }, timeToNextHour);
+    tasks.forEach((task, taskName) => {
+        if (task.activeOnStart) {
+            startTask(taskName);
+        }
+    });
 
-  setInterval(() => { try { checkLadderReset(); } catch (e) { ERR('pvp', 'interval', e); } }, 1000 * 60 * 2);
-  setInterval(() => { try { monitorIncomingAttacks(); } catch (e) { ERR('attacks', 'interval', e); } }, 1000 * 60 * 6);
-  //setInterval(() => { try { checkGuildLog(); } catch (e) { ERR('guild', 'interval', e); } }, 60 * 1000); 
-  setInterval(() => { try { checkForNewBounty(); } catch (e) { ERR('bounty', 'interval', e); } }, 7000);
-  setInterval(() => { try { checkForSuperEliteKills(); } catch (e) { ERR('se', 'interval', e); } }, 15 * 1000);
-  setInterval(() => { try { checkForCratesFound(); } catch (e) { ERR('crates', 'interval', e); } }, 60 * 1000);
-  setInterval(() => { try { checkForShoutbox(); } catch (e) { ERR('shoutbox', 'interval', e); } }, 300 * 1000);
-  setInterval(() => { try { checkForUpdatesArchive(); } catch (e) { ERR('updates', 'interval', e); } }, 300 * 1000);
-  setInterval(() => { try { checkRelics(); } catch (e) { ERR('relics', 'interval', e); } }, 60 * 1000);
-  setInterval(() => { try { autoJoinAllGroups(); } catch (e) { ERR('groups', 'interval', e); } }, 60 * 1000);
-  //setInterval(() => { try { ensureLogin(); } catch (e) { ERR('login', 'interval', e); } }, 60 * 5000);
+    console.log(`[SWS_Engine] Engine initialized. Active tasks are now running.`);
+}
+
+/**
+ * Returns the current status of all tasks.
+ * Useful for the GUI to know which tasks are currently on or off.
+ * @returns {Array<object>} A list of tasks and their status.
+ */
+export function getTasksStatus() {
+    const status = [];
+    tasks.forEach((task, name) => {
+        status.push({
+            name: name,
+            isActive: !!task.timerId,
+            interval: task.interval
+        });
+    });
+    return status;
 }

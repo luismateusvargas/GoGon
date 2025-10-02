@@ -1,59 +1,13 @@
 import { DELAY_BETWEEN_MESSAGES, RETRY_DELAY } from './webhooks.js';
+import { LOG, WARN, ERR } from './app_modules/core.js';
+import { getBuffNameById } from './game_modules/buffParser.js';
+import { apiEndpoints } from './game_modules/API.js';
+import * as cheerio from 'cheerio';
 
-// === GM_* Polyfill for Node.js (Tampermonkey-like storage) ==================
-try {
-  // Only define if not provided by the runtime (e.g., not running in TM)
-  if (typeof globalThis.GM_getValue !== 'function') {
-    const { default: fs } = await import('node:fs');
-	const { default: path } = await import('node:path');
-    const __SWS_GM_STORE = process.env.SWS_GM_STORE || './_sws_data/gm_store.json';
-
-    function __swsReadStore() {
-      try {
-        return JSON.parse(fs.readFileSync(__SWS_GM_STORE, 'utf8'));
-      } catch {
-        return {};
-      }
-    }
-    function __swsWriteStore(obj) {
-      try {
-        fs.mkdirSync(path.dirname(__SWS_GM_STORE), { recursive: true });
-        fs.writeFileSync(__SWS_GM_STORE, JSON.stringify(obj, null, 2), 'utf8');
-      } catch (e) {
-        try { console.warn('[SWS_DEBUG] GM polyfill write failed:', e?.message || e); } catch {}
-      }
-    }
-
-    globalThis.GM_getValue = function(key, defVal) {
-      const store = __swsReadStore();
-      return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : defVal;
-    };
-    globalThis.GM_setValue = function(key, val) {
-      const store = __swsReadStore();
-      store[key] = val;
-      __swsWriteStore(store);
-    };
-    globalThis.GM_deleteValue = function(key) {
-      const store = __swsReadStore();
-      if (Object.prototype.hasOwnProperty.call(store, key)) {
-        delete store[key];
-        __swsWriteStore(store);
-      }
-    };
-    globalThis.GM_listValues = function() {
-      const store = __swsReadStore();
-      return Object.keys(store);
-    };
-
-    console.log('[SWS_DEBUG] GM_* polyfill ativo. Arquivo:', __SWS_GM_STORE);
-  }
-} catch (e) {
-  try { console.warn('[SWS_DEBUG] Falha ao ativar GM polyfill:', e?.message || e); } catch {}
-}
-// === End GM_* Polyfill =======================================================
 import { FS_BASE, authedFetch, ensureLogin, isLoggedIn } from './session.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import discordFetch from 'node-fetch';
 
 
 function normalizeFsUrl(u, base) {
@@ -74,7 +28,7 @@ function normalizeFsUrl(u, base) {
 
 let LAST_GOOD_REFERER = (new URL('index.php?cmd=news', new URL(FS_BASE || 'https://www.fallensword.com/'))).toString();
 
-function __swsDebugLog(...args) {
+/*function __swsDebugLog(...args) {
   const dbg = (process.env.SWS_DEBUG || '').toString().trim();
   if (!dbg || dbg === '0' || dbg.toLowerCase() === 'false') return;
   try { console.log('[SWS_DEBUG]', ...args); } catch {}
@@ -98,65 +52,50 @@ function __swsDumpHtml(tag, url, html) {
   } catch (e) {
     try { console.log('[SWS_DEBUG] Falha ao salvar dump HTML:', e?.message || e); } catch {}
   }
-}
+}*/
 
 const messageQueue = [];
 let processingQueue = false;
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Adds a message to the queue to be sent to Discord.
+ * @param {string} webhook - The webhook URL.
+ * @param {object} payload - The message payload.
+ */
 export function queueDiscordMessage(webhook, payload) {
-  messageQueue.push({ webhook, payload });
-  processQueue();
-}
-
-export async function processQueue() {
-  if (processingQueue) return;
-  processingQueue = true;
-  while (messageQueue.length) {
-    const { webhook, payload } = messageQueue[0];
-    try {
-      await securePostDiscord(webhook, payload);
-      messageQueue.shift();
-      await sleep(DELAY_BETWEEN_MESSAGES);
-    } catch (err) {
-      if (err.status === 429) {
-        await sleep(err.retryAfter || DELAY_BETWEEN_MESSAGES);
-      } else {
-        console.error('queueDiscordMessage error:', err);
-        messageQueue.shift();
-      }
+    messageQueue.push({ webhook, payload });
+    if (!processingQueue) {
+        processQueue();
     }
-  }
-  processingQueue = false;
 }
 
-export function getContent(where) {
-  return GM_getValue(where, '');
+/**
+ * Processes the message queue one by one, sending messages to Discord.
+ */
+export async function processQueue() {
+    if (processingQueue) return;
+    processingQueue = true;
+    while (messageQueue.length > 0) {
+        const { webhook, payload } = messageQueue[0];
+        try {
+            await securePostDiscord(webhook, payload);
+            messageQueue.shift(); // Remove message from queue on success
+            await sleep(DELAY_BETWEEN_MESSAGES);
+        } catch (err) {
+            // Handle rate limits by pausing and retrying the same message
+            if (err.status === 429 && err.retryAfter) {
+                WARN('DiscordQueue', `Rate limited. Pausing queue for ${err.retryAfter}ms...`);
+                await sleep(err.retryAfter);
+            } else {
+                ERR('DiscordQueue', 'Failed to send message, removing from queue', err);
+                messageQueue.shift(); // Remove message from queue on other errors
+            }
+        }
+    }
+    processingQueue = false;
 }
-
-export function setContent(where, content) {
-  GM_setValue(where, content);
-}
-
-export function addLine(newLine, where) {
-  let conteudo = getContent(where);
-  let linhas = conteudo.split('\n');
-  linhas.push(newLine);
-  if (linhas.length > 20) {
-    linhas.shift();
-  }
-  conteudo = linhas.join('\n');
-  setContent(where, conteudo);
-}
-
-export function checkInfo(line, where) {
-  let conteudo = getContent(where);
-  let linhas = conteudo.split('\n');
-  return linhas.includes(line);
-}
-
-
 
 async function setRefererIfPCC(response, usedUrl) {
   try {
@@ -170,177 +109,186 @@ async function setRefererIfPCC(response, usedUrl) {
   } catch {}
 } 
 
+/**
+ * A secure fetch wrapper for Fallen Sword game URLs.
+ * Handles authentication, retries, and session validation for both HTML and JSON API responses.
+ */
 export async function secureFetch(url, options = {}, retries = 3) {
-  // Node/headless. Fallen Sword SEMPRE em https://www.fallensword.com/ (host com www)
-  const base = new URL(FS_BASE || 'https://www.fallensword.com/');
+  // Constants and environment setup (assuming these are defined elsewhere)
+  const FS_BASE = process.env.FS_BASE || 'https://www.fallensword.com/';
+  const RETRY_DELAY = 1000; // 1 second delay for retries
+  let LAST_GOOD_REFERER = '';
+
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  // Mock functions for environment compatibility if they don't exist
+  const __swsDebugLog = typeof globalThis.__swsDebugLog === 'function' ? globalThis.__swsDebugLog : () => {};
+  const __swsDumpHtml = typeof globalThis.__swsDumpHtml === 'function' ? globalThis.__swsDumpHtml : () => {};
+  const authedFetch = typeof globalThis.authedFetch === 'function' ? globalThis.authedFetch : globalThis.fetch;
+  const ensureLogin = typeof globalThis.ensureLogin === 'function' ? globalThis.ensureLogin : async () => { throw new Error('ensureLogin not implemented.'); };
+  // Helper to normalize URLs (assuming implementation exists)
+  const normalizeFsUrl = (urlToNormalize) => urlToNormalize;
+
+
+  // --- Main Function Logic ---
+  const base = new URL(FS_BASE);
   base.protocol = 'https:';
   base.hostname = 'www.fallensword.com';
 
   const finalUrl = (() => { try { return new URL(url, base).toString(); } catch { return String(url); } })();
   const isGameUrl = finalUrl.startsWith(base.toString());
 
-  // Normaliza a URL do FS sem tentar login aqui (evita dupla chamada)
   if (isGameUrl) {
     try {
       const norm = normalizeFsUrl(finalUrl, base);
       if (norm !== finalUrl) {
-        url = norm; // atualiza origem da requisição
+        url = norm;
       }
     } catch {}
   }
 
-  if (typeof __swsDebugLog === 'function') {
-    __swsDebugLog('secureFetch:start', { url: finalUrl, isGameUrl, retries });
-  }
+  __swsDebugLog('secureFetch:start', { url: finalUrl, isGameUrl, retries });
 
-  // Usar SEMPRE authedFetch para URLs do jogo
-  const f = isGameUrl && typeof authedFetch === 'function' ? authedFetch : globalThis.fetch;
-  if (typeof __swsDebugLog === 'function') {
-    __swsDebugLog('secureFetch:fetchSelected', isGameUrl ? (typeof authedFetch === 'function' ? 'authedFetch' : 'global.fetch') : 'global.fetch');
-  }
+  const f = isGameUrl ? authedFetch : globalThis.fetch;
+  __swsDebugLog('secureFetch:fetchSelected', isGameUrl ? 'authedFetch' : 'global.fetch');
 
-  // Warm-up de stickiness (cookie LB) se ausente
-  if (isGameUrl) {
-    try {
-      const sess = await import('./session.mjs');
-      if (typeof sess.dumpDomainCookies === 'function' && typeof authedFetch === 'function') {
-        const cookies = await sess.dumpDomainCookies('fallensword.com');
-        const hasLB = Array.isArray(cookies) && cookies.some(c => (c.key || c.name) === 'LB' && String(c.domain||'').includes('www.fallensword.com'));
-        if (!hasLB) {
-          if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:warmupLB', { action: 'GET /', reason: 'LB ausente' });
-          try { await authedFetch(base.toString(), { redirect: 'follow' }); } catch {}
-        }
-      }
-    } catch (e) {
-      if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:warmupLB:error', e?.message || e);
+  // Login guard (proactive check)
+  if (isGameUrl && !options.__skipEnsureLogin) {
+    try { await ensureLogin(); } catch (e) {
+      __swsDebugLog('secureFetch:ensureLoginWarn', e?.message || e);
     }
   }
 
-  const defaultHeaders = {
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'User-Agent': (process.env.SWS_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'),
-    'Origin': 'https://www.fallensword.com',
-    'Referer': (LAST_GOOD_REFERER || 'https://www.fallensword.com/index.php?'),
-  };
-  const optsTemplate = { method: 'GET', redirect: 'follow', cache: 'no-store' };
+  // --- LOGOUT DETECTION HELPERS ---
 
-  // Guard de login (único ponto pró-ativo)
-  if (isGameUrl && typeof globalThis.ensureLogin === 'function' && !options.__skipEnsureLogin) {
-    try { await globalThis.ensureLogin(); } catch (e) {
-      if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:ensureLoginWarn', e?.message || e);
-    }
-  }
-
-  // Helper: detecta página de login por #hc-account-link (determinístico)
+  /**
+   * Detects a logged-out state by checking for the HTML login page signature.
+   */
   async function isLoginHtml(response) {
+    const ct = response.headers.get('content-type') || '';
+    if (!/text\/html/i.test(ct)) return false;
     try {
-      const ct = response.headers.get('content-type') || '';
-      if (!/text\/html/i.test(ct)) return false;
       const html = await response.clone().text();
-      // Checagem robusta ao id e opcionalmente ao href esperado
-      const hasId = /\bid\s*=\s*["']hc-account-link["']\b/i.test(html);
-      if (!hasId) return false;
-      // Endurece se quiser: exigir também o href do HuntedCow
-      return /href\s*=\s*["']https:\/\/account\.huntedcow\.com\/auth\?game=6["']/i.test(html) || hasId;
+      return /\bid\s*=\s*["']hc-account-link["']\b/i.test(html);
     } catch {
       return false;
     }
   }
 
-  // Garante flag global para evitar loop de reautenticação
+  /**
+   * [NEW] Detects a logged-out state by checking for the JSON error signature.
+   * This handles API responses like: {"s":false,"e":{"message":"...","code":...}}
+   */
+  async function isLoginJson(response) {
+    const ct = response.headers.get('content-type') || '';
+    if (!/application\/json/i.test(ct)) return false;
+    try {
+      const data = await response.clone().json();
+      // The signature of a logged-out API call is s:false with an error object 'e'.
+      return data && data.s === false && typeof data.e === 'object' && data.e !== null;
+    } catch {
+      // Failed to parse JSON, so it's not the target signature.
+      return false;
+    }
+  }
+
+
   if (typeof globalThis.__didLoginAttempt === 'undefined') {
     globalThis.__didLoginAttempt = false;
   }
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const opts = { ...optsTemplate, ...options, headers: { ...defaultHeaders, ...(options?.headers || {}) } };
+      const defaultHeaders = {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7',
+        'User-Agent': (process.env.SWS_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'),
+        'Origin': 'https://www.fallensword.com',
+        'Referer': (LAST_GOOD_REFERER || 'https://www.fallensword.com/index.php?'),
+      };
+      const opts = {
+        method: 'POST',
+        redirect: 'follow',
+        cache: 'no-store',
+        ...options,
+        headers: { ...defaultHeaders, ...(options?.headers || {}) }
+      };
+
       let res = await f(finalUrl, opts);
 
-      if (typeof __swsDebugLog === 'function') {
-        __swsDebugLog('secureFetch:response', { url: finalUrl, status: res?.status, redirected: res?.redirected, final: res?.url });
+      __swsDebugLog('secureFetch:response', { url: finalUrl, status: res?.status, redirected: res?.redirected, final: res?.url });
+
+      if (isGameUrl && res.ok) {
+        LAST_GOOD_REFERER = res.url || finalUrl;
       }
 
-      if (isGameUrl && res.ok) { try { LAST_GOOD_REFERER = res.url || finalUrl; } catch {} }
+      // [MODIFIED] Check for logged-out state using BOTH HTML and JSON detectors.
+      if (isGameUrl && res.ok && (await isLoginHtml(res) || await isLoginJson(res))) {
+        __swsDebugLog('secureFetch:loginDetected', { url: res.url || finalUrl });
+        const dump = await res.clone().text();
+        __swsDumpHtml('secureFetch_login_detected', res?.url || finalUrl, dump);
 
-      // Detecta página de login (200 sem redirect) pelo marcador #hc-account-link
-      if (isGameUrl && res.ok && await isLoginHtml(res)) {
-        if (typeof __swsDebugLog === 'function') {
-          __swsDebugLog('secureFetch:loginDetected', { url: res.url || finalUrl });
-        }
-        if (typeof __swsDumpHtml === 'function') {
-          try {
-            const dump = await res.clone().text();
-            __swsDumpHtml('secureFetch_login_detected', res?.url || finalUrl, dump);
-          } catch {}
-        }
-
-        if (typeof ensureLogin === 'function' && !globalThis.__didLoginAttempt) {
+        if (!globalThis.__didLoginAttempt) {
           globalThis.__didLoginAttempt = true;
           try {
             await ensureLogin();
-            const optsRetry = {
-              ...opts,
-              headers: { ...defaultHeaders, ...(options?.headers || {}) }, // mesma ordem (caller tem precedência)
-            };
-            res = await f(finalUrl, optsRetry);
+            res = await f(finalUrl, opts); // Retry the fetch after re-authenticating
 
-            if (res.ok && !(await isLoginHtml(res))) {
-              // OK após reautenticar
-              if (typeof __swsDumpHtml === 'function') {
-                try {
-                  const tOk = await res.clone().text();
-                  __swsDumpHtml('secureFetch_ok', res?.url || finalUrl, tOk);
-                } catch {}
-              }
-              return res;
+            // Check again after retry. If it's still a login page, fail hard.
+            if (await isLoginHtml(res) || await isLoginJson(res)) {
+               throw new Error('Session is still invalid after re-authentication.');
             }
-
-            // Ainda em login após tentar reautenticar
-            throw new Error('Sessão inválida após reautenticação.');
+            // Success!
+            return res;
           } catch (e) {
-            // Propaga com mensagem clara
-            throw (e instanceof Error ? e : new Error('Falha na reautenticação.'));
+            throw (e instanceof Error ? e : new Error('Failed to re-authenticate.'));
           }
         } else {
-          // Sem ensureLogin ou já tentado: falha imediata
-          throw new Error('Sessão inválida/expirada (página de login detectada).');
+          // Already tried to log in once, so fail immediately.
+          throw new Error('Session invalid/expired (login page detected).');
         }
       }
 
       if (res.ok) {
-        try {
-          const tOk = await res.clone().text();
-          if (typeof __swsDumpHtml === 'function') __swsDumpHtml('secureFetch_ok', res?.url || finalUrl, tOk);
-          if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:okBodyPreview', tOk ? tOk.slice(0, 300) : '(sem corpo)');
-        } catch (e) {
-          if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:okBodyReadError', e?.message || e);
-        }
         return res;
       }
 
-      // Dump do corpo em erro (debug)
-      try {
-        const t = await res.clone().text();
-        if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:notOkBodyPreview', t ? t.slice(0, 300) : '(sem corpo)');
-        if (typeof __swsDumpHtml === 'function') __swsDumpHtml('secureFetch_not_ok', res?.url || finalUrl, t);
-      } catch (e) {
-        if (typeof __swsDebugLog === 'function') __swsDebugLog('secureFetch:notOkBodyReadError', e?.message || e);
-      }
-
+      // Handle non-OK responses (e.g., 500 server errors)
       const status = res.status || 0;
       if (status >= 500 && attempt < retries) {
+        __swsDebugLog('secureFetch:serverErrorRetry', { status, attempt });
         await sleep(RETRY_DELAY);
-        continue;
+        continue; // Go to the next iteration of the loop
       }
-      // ⚠️ Corrigido template string
-      throw new Error(`Request failed: ${status}`);
+
+      throw new Error(`Request failed with status: ${status}`);
 
     } catch (err) {
       if (attempt < retries) {
         await sleep(RETRY_DELAY);
       } else {
-        console.error('secureFetch error:', err);
+        console.error('secureFetch error after all retries:', err);
+        throw err;
+      }
+    }
+  }
+}
+
+
+// Fetch simplificado para domínios externos (ex.: guide.fallensword.com)
+export async function secureFetchExternal(url, options = {}, retries = 2) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await globalThis.fetch(url, { redirect: 'follow', ...options });
+      if (res.ok) return res;
+      if (res.status >= 500 && attempt < retries) {
+        await sleep(RETRY_DELAY);
+        continue;
+      }
+      throw new Error(`External request failed: ${res.status}`);
+    } catch (err) {
+      if (attempt < retries) {
+        await sleep(RETRY_DELAY);
+      } else {
+        console.error('secureFetchExternal error:', err);
         throw err;
       }
     }
@@ -364,69 +312,50 @@ export async function securePost(url, form, options = {}, retries = 3) {
 }
 
 export async function securePostDiscord(url, payload, opts = {}) {
-  const { retries = 5, authorization } = opts;
-  const headers = {
-    'Content-Type': 'application/json',
-    'Accept': '*/*',
-    'User-Agent': 'SWS-Bot/1.0 (+https://www.fallensword.com)'
-  };
-  if (authorization) headers['Authorization'] = authorization;
+    const { retries = 3, method = 'POST' } = opts;
+    const headers = {
+        'Content-Type': 'application/json',
+        'User-Agent': 'SWS-Bot/1.0 (+https://www.fallensword.com)'
+    };
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload)
-      });
-
-      if (res.status === 200 || res.status === 204) {
-        return res;
-      }
-
-      if (res.status === 429) {
-        let retryAfterMs = 0;
+    for (let attempt = 0; attempt < retries; attempt++) {
         try {
-          const data = await res.json().catch(() => ({}));
-          if (typeof data.retry_after !== 'undefined') {
-            retryAfterMs = Number(data.retry_after);
-            if (retryAfterMs && retryAfterMs < 50) retryAfterMs = Math.round(retryAfterMs * 1000);
-          }
-        } catch {}
-        if (!retryAfterMs) {
-          const h = (name) => res.headers.get(name) || res.headers.get(name.toLowerCase()) || '';
-          const ra = h('Retry-After') || h('X-RateLimit-Reset-After');
-          if (ra) {
-            const num = Number(ra);
-            if (!Number.isNaN(num)) retryAfterMs = num > 50 ? Math.round(num) : Math.round(num * 1000);
-          }
+            // [FIXED] Use the clean, dedicated 'discordFetch' for all Discord communication.
+            const res = await discordFetch(url, {
+                method: method,
+                headers,
+                body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                return res;
+            }
+
+            if (res.status === 429) { // Rate limited
+                const responseData = await res.json();
+                const retryAfterMs = Math.round(responseData.retry_after * 1000) + 500; // Add buffer
+                const error = new Error('Rate limited by Discord');
+                error.status = 429;
+                error.retryAfter = retryAfterMs;
+                throw error; // Throw to be handled by the caller (e.g., processQueue)
+            }
+
+            if (res.status >= 500 && attempt < retries - 1) { // Server error
+                WARN('Discord', `Server error (${res.status}). Retrying in ${RETRY_DELAY}ms...`);
+                await sleep(RETRY_DELAY);
+                continue;
+            }
+            
+            const errorText = await res.text();
+            throw new Error(`Request failed: ${res.status} - ${errorText}`);
+
+        } catch (err) {
+            if (err.status === 429) throw err; // Re-throw rate limit errors immediately
+            if (attempt >= retries - 1) {
+                throw err; // Throw the final error after all retries
+            }
         }
-        const err = new Error('Rate limited');
-        err.status = 429;
-        err.retryAfter = retryAfterMs || undefined;
-        throw err;
-      }
-
-      if ((res.status === 502 || res.status === 504 || res.status === 503) && attempt < retries) {
-        await sleep(RETRY_DELAY);
-        continue;
-      }
-      if (res.status >= 500) {
-        throw new Error(`Server error: ${res.status}`);
-      }
-
-      throw new Error(`Request failed: ${res.status}`);
-    } catch (err) {
-      if (err && err.status === 429) {
-        throw err;
-      }
-      if (attempt < retries) {
-        await sleep(RETRY_DELAY);
-        continue;
-      }
-      throw err;
     }
-  }
 }
 
 export function sendDiscordMessage(message, wTitle, colorCode, footerText, group, webhook) {
@@ -510,106 +439,150 @@ export function sendExtraDiscordMessageNODROP(
   ); */
 }
 
-/** (NOVO) Extrai Gold em mão do alvo */
+// --- HELPER FUNCTIONS FOR PARSING (MOVED FROM BountyBoard.js) ---
+
+// Helper to parse HTML string into a document
+export function toDoc(html) { 
+  return new DOMParser().parseFromString(html, 'text/html'); 
+}
+
+// Helper to clean up text content from HTML elements
+export function txt(n) {
+  return (n?.textContent || '').replace(/\u00A0/g, ' ').replace(/\s+/g,' ').trim();
+}
+
+// --- DUPLICATED FUNCTIONS (NOW CENTRALIZED) ---
+
+/**Extracts Gold in hand from a target's profile */
 export async function getGoldInHand(targetLink) {
   try {
-    const resp = await secureFetch(targetLink);
-    const html = await resp.text();
-    const doc = toDoc(html);
-    // Tenta #stat-gold primeiro; cai para qualquer id que contenha 'stat-gold'
-    const goldEl = doc.querySelector('#stat-gold') || doc.querySelector('[id*="stat-gold"]') || null;
-    if (goldEl) return txt(goldEl);
-    // Fallback: procurar label "Gold" na coluna esquerda do perfil
-    const maybe = Array.from(doc.querySelectorAll('#profileLeftColumn td, #profileLeftColumn div, #profileRightColumn td, #profileRightColumn div'))
-      .map(el => txt(el)).find(t => /^gold[:\s]/i.test(t));
-    if (maybe) return maybe.replace(/^gold[:\s]*/i, '').trim();
-  } catch (e) {
-    WARN('bounty', 'getGoldInHand falhou: ' + (e?.message || e));
+    // [FIXED] Added 'await' to wait for the promise to resolve.
+    const response = await secureFetch(targetLink);
+
+    if (!response.ok) {
+      WARN('goldFetch', `Failed HTTP request: ${response.status}`);
+      return; // Return undefined on failure
+    }
+
+    const data = await response.json();
+    if (!data || !data.s) {
+      LOG('goldFetch', `API call not successful: ${data.e?.message || 'Unknown error'}`);
+      return; // Return undefined on failure
+    }
+
+    // Safely access the gold value and return it.
+    return data.r?.gold; // Assuming the property is named 'gold_in_hand' based on context
+
+  } catch (error) {
+    console.error('An error occurred in getGoldInHand:', error);
+    // Return undefined if any part of the process fails.
+    return;
   }
-  return null;
 }
 
-/* export async function getGoldInHand(targetLink) {
-  let response = await secureFetch(targetLink);
-  let text = await response.text();
-  let tempElement = document.createElement('div');
-  tempElement.innerHTML = text;
-  let goldInHandElement = tempElement.querySelector('#stat-gold');
-  if (goldInHandElement) {
-    return goldInHandElement.textContent;
-  }
-  return null;
-} */
-
-/** (NOVO) Extrai buffs ativos do alvo (Deflect / Cloak + contagem) */
-export async function getBuffs(targetLink) {
+/**
+ * Extracts active buffs and their levels from a target's profile.
+ */
+export async function getBuffs(targetLink, isBounty) {
   try {
-    const resp = await secureFetch(targetLink);
-    const html = await resp.text();
-    const doc = toDoc(html);
-
-    const imgs = Array.from(doc.querySelectorAll('img[data-tipped]'));
-    const buffNameAndLevel = [];
-    for (const img of imgs) {
-      const tipped = img.getAttribute('data-tipped') || '';
-      if (!tipped || !/Level:\s*\d+/i.test(tipped)) continue;
-      // data-tipped é HTML; parseamos para extrair <span><b>NAME</b> ... Level: N</span>
-      try {
-        const tipDoc = toDoc(tipped);
-        const name = txt(tipDoc.querySelector('span > b')) || '';
-        const levelSpan = txt(tipDoc.querySelector('span')) || '';
-        const m = /Level:\s*(\d+)/i.exec(levelSpan);
-        const level = m ? m[1] : '';
-        if (name) buffNameAndLevel.push({ name, level });
-      } catch {}
+    const response = await secureFetch(targetLink);
+    if (!response.ok) {
+      WARN('getBuffs', `Failed HTTP request: ${response.status}`);
+      return;
     }
 
-    let hasDeflect = false, isCloaked = false;
-    for (const b of buffNameAndLevel) {
-      const n = (b.name || '').toLowerCase();
-      if (n === 'deflect') hasDeflect = true;
-      if (n === 'cloak') isCloaked = true;
+    const data = await response.json();
+    if (!data || !data.s) {
+      LOG('getBuffs', `API call not successful: ${data.e?.message || 'Unknown error'}`);
+      return;
     }
-    return { hasDeflect, isCloaked, numberOfBuffs: buffNameAndLevel.length };
+
+    // The raw list of buffs from the API.
+    const buffsList = data.r;
+
+    // If we're processing for a bounty, we transform the data.
+    if (isBounty) {
+      // Establish default values.
+      let hasDeflect = false;
+      let isCloaked = false;
+      const numberOfBuffs = Array.isArray(buffsList) ? buffsList.length : 0;
+
+      if (numberOfBuffs > 0) {
+        for (const buff of buffsList) {
+          const buffName = getBuffNameById(buff.id);
+          if (buffName === 'deflect') {
+            hasDeflect = true;
+          } else if (buffName === 'cloak') {
+            isCloaked = true;
+          }
+        }
+      }
+      return { hasDeflect, isCloaked, numberOfBuffs };
+    }
+
+    // If not for a bounty, return the raw buff list.
+    return buffsList;
+
   } catch (e) {
-    WARN('bounty', 'getBuffs falhou: ' + (e?.message || e));
-    return { hasDeflect: false, isCloaked: false, numberOfBuffs: 0 };
+    WARN('getBuffs', `Error fetching buffs: ${e}`);
+    return; // Return undefined on failure
   }
 }
 
-/* export async function getBuffs(targetLink) {
-  let response = await secureFetch(targetLink);
-  let text = await response.text();
-  let tempElement = document.createElement('div');
-  tempElement.innerHTML = text;
-  let isCloaked = false;
-  let hasDeflect = false;
-  let buffNameAndLevel = [];
-  let trs = tempElement.querySelectorAll('#profileRightColumn > div:nth-child(14) > table > tbody > tr');
-  trs.forEach(tr => {
-    let tds = tr.querySelectorAll('td');
-    tds.forEach(td => {
-      let img = td.querySelector('img');
-      if (img) {
-        let tipped = img.getAttribute('data-tipped');
-        let span = document.createElement('div');
-        span.innerHTML = tipped;
-        let buffName = span.querySelector('span > b').textContent;
-        let level = span
-          .querySelector('span')
-          .textContent.split('Level: ')[1]
-          .split(')')[0];
-        buffNameAndLevel.push({ name: buffName, level: level });
-      }
-    });
-  });
-  buffNameAndLevel.forEach(buff => {
-    if (buff.name === 'Deflect') {
-      hasDeflect = true;
+/**
+ * Fetches a player's ID based on their username.
+ * @param {string} username - The username of the player to find.
+ * @returns {Promise<number|null>} The player's ID, or null if not found.
+ */
+export async function getPlayerIdByName(username) {
+    try {
+        const response = await secureFetch(apiEndpoints.player.returnPlayerID(username));
+        const data = await response.json();
+        // The API returns a flat object, so we check for the 'id' property directly.
+        if (data && data.id) {
+            return data.id;
+        }
+        // It's possible for the API to return a success=false for not found players.
+        if (data && data.s === false) {
+             LOG('getPlayerId', `Could not find player ID for username: ${username}. Player does not exist.`);
+             return null;
+        }
+        LOG('getPlayerId', `Could not find player ID for username: ${username}. Unexpected API response.`);
+        return null;
+    } catch (error) {
+        ERR('getPlayerId', `An error occurred while fetching player ID for ${username}`, error);
+        return null;
     }
-    if (buff.name === 'Cloak') {
-      isCloaked = true;
+}
+
+/**
+ * Sends a Discord message and returns the created message's ID.
+ * @returns {Promise<string|null>} The ID of the created message, or null on failure.
+ */
+export async function sendAndGetMessageId(webhookUrl, payload) {
+    const url = `${webhookUrl}?wait=true`;
+    try {
+        const response = await securePostDiscord(url, payload, { method: 'POST' });
+        const data = await response.json();
+        return data.id || null;
+    } catch (err) {
+        ERR('Discord', 'sendAndGetMessageId failed after all retries', err);
+        return null;
     }
-  });
-  return { hasDeflect: hasDeflect, isCloaked: isCloaked, numberOfBuffs: buffNameAndLevel.length };
-} */
+}
+
+/**
+ * Edits an existing Discord message using its ID.
+ * @returns {Promise<boolean>} True on success, false on failure.
+ */
+export async function editDiscordMessage(webhookUrl, messageId, payload) {
+    const editUrl = `${webhookUrl}/messages/${messageId}`;
+    try {
+        const response = await securePostDiscord(editUrl, payload, { method: 'PATCH' });
+        LOG('Discord', `Successfully edited message ID: ${messageId}`);
+        return response.ok;
+    } catch (err) {
+        ERR('Discord', `editDiscordMessage failed for messageId ${messageId}`, err);
+        return false;
+    }
+}
