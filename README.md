@@ -1,9 +1,3 @@
-Com certeza. Aqui está um resumo completo e estruturado, ideal para ser o `README.md` do seu projeto no GitHub.
-
-Ele foi projetado para dar a qualquer visitante — seja um usuário ou um desenvolvedor — uma compreensão clara do que o projeto faz, suas principais características e como colocá-lo para funcionar.
-
------
-
 # SWS - Automação para Fallen Sword
 
 SWS é uma poderosa ferramenta de automação e monitoramento em Node.js para o jogo web Fallen Sword. Ele opera em duas frentes principais: um motor de monitoramento que observa eventos no jogo e um bot de Discord interativo que permite aos usuários executar ações e consultar informações.
