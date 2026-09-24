@@ -1,8 +1,10 @@
 // discord_modules/buffs.js
 import { ensureLogin } from '../session.mjs';
 import { secureFetch, getBuffs, getPlayerIdByName } from '../utils.js';
+import { getSetting } from '../config/runtime.mjs';
 import { apiEndpoints } from '../game_modules/API.js';
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import pkg from 'discord.js';
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = pkg;
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -12,10 +14,18 @@ import * as cheerio from 'cheerio';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const jsonPath = path.join(__dirname, 'buff_data.json');
-export const NAME_TO_ID = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+const BUFF_DATA = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
 
+const normName = (s) => s.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+
+// buff_data.json keeps display casing ("Blood Thirst"); lookups use normalized names ("blood thirst").
+export const NAME_TO_ID = Object.fromEntries(
+    Object.entries(BUFF_DATA).map(([name, id]) => [normName(name), id])
+);
+
+// Aliases (e.g. "Bloodthirst") are listed before their display name in buff_data.json, so the display name wins here.
 export const ID_TO_NAME = Object.fromEntries(
-    Object.entries(NAME_TO_ID).map(([name, id]) => {
+    Object.entries(BUFF_DATA).map(([name, id]) => {
         const capitalizedName = name.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
         return [id, capitalizedName];
     })
@@ -29,9 +39,19 @@ const META_BUFF_DEFAULT_LEVEL = 175;
 export const PVP_IDS = [12,9,13,14,27,28,82,37,57,58,59,44,80,77,97,86,96,119,121,123,110,114,154,136,135,170,171,172,178,183,0,1,4,5,2,7,30,29,32,33,35,47,51,52,73,70,74,118,108,89,105,111,88,106,175,180,23,25,39,66,81,72,124,112,102,103,100,159,161];
 export const ALL_IDS = [12,13,10,8,9,11,15,14,27,28,36,82,37,54,55,57,56,58,60,59,44,46,80,71,77,97,117,122,86,96,98,119,121,123,110,114,154,153,136,135,170,181,171,172,145,178,183,0,1,4,5,2,3,6,7,30,29,31,32,34,33,35,47,48,49,50,51,52,53,73,70,74,79,78,118,108,89,105,109,111,113,115,88,106,116,146,130,173,179,174,175,155,180,22,16,61,17,19,18,20,21,23,24,26,25,40,39,41,42,63,62,65,64,66,160,67,68,76,166,81,75,72,126,120,124,101,112,107,102,103,125,100,104,159,137,167,161,168,169,177];
 export const TITAN_IDS = [28, 39, 72, 167, 67];
+export const EPICS_IDS = [88,89,7,5,2,74,0,37,171,77,9,82,44,28,159,102,169,124];
 
-// --- Utility Functions (Unchanged) ---
-const normName = (s) => s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+// --- Utility Functions ---
+/**
+ * Returns the buff array from a getBuffs() result ({ buffsList, parsedAt }), a bare list, or undefined.
+ * @param {object|Array|undefined} result
+ * @returns {Array}
+ */
+export function toBuffsList(result) {
+    if (Array.isArray(result)) return result;
+    return Array.isArray(result?.buffsList) ? result.buffsList : [];
+}
+
 export function resolveBuffIds(input) {
     if (!input) return [];
     const raw = input.split(',').map(x => x.trim()).filter(Boolean);
@@ -39,6 +59,7 @@ export function resolveBuffIds(input) {
     if (raw.length === 1) {
         if (normalizedInput === 'pvp') return [...new Set(PVP_IDS)];
         if (normalizedInput === 'titan') return [...new Set(TITAN_IDS)];
+        if (normalizedInput === 'epics') return [...new Set(EPICS_IDS)];
         if (normalizedInput === 'all') return [...new Set(ALL_IDS)];
     }
     const out = new Set();
@@ -67,15 +88,19 @@ function formatSeconds(totalSeconds) {
     if (totalSeconds <= 0) {
         return "";
     }
-
-    const hours = Math.floor(totalSeconds / 3600);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
 
     const parts = [];
+    if (days > 0) parts.push(`${days}d`);
     if (hours > 0) parts.push(`${hours}h`);
     if (minutes > 0) parts.push(`${minutes}m`);
-    if (seconds > 0) parts.push(`${seconds}s`);
+
+    // If less than a minute, show seconds for precision
+    if (parts.length === 0 && totalSeconds > 0) {
+        parts.push(`${Math.floor(totalSeconds)}s`);
+    }
 
     return parts.join(' ');
 }
@@ -192,17 +217,16 @@ export async function quickBuff(target, skillIds) {
 // In discord_modules/buffs.js (replace the old version)
 
 export async function ensureMetaBuffs() {
-    const selfName = process.env.SWS_BOT_CHARACTER;
-    const selfId = process.env.SWS_BOT_ID_CHARACTER;
+    // GG_ names win over legacy SWS_/FS_ (registry settings, hot)
+    const selfName = getSetting('GG_BOT_CHARACTER');
+    const selfId = getSetting('GG_BOT_ID_CHARACTER');
     
     // 1. Get all active buffs and their levels
-    const activeBuffsList = await getBuffs(apiEndpoints.player.activeBuffs(selfId));
+    const activeBuffsList = toBuffsList(await getBuffs(apiEndpoints.player.activeBuffs(selfId)));
     const activeLevels = new Map();
-    if (activeBuffsList) {
-        for (const buff of activeBuffsList) {
-            const name = ID_TO_NAME[buff.id];
-            if (name) activeLevels.set(normName(name), Number(buff.level) || 0);
-        }
+    for (const buff of activeBuffsList) {
+        const name = ID_TO_NAME[buff.id];
+        if (name) activeLevels.set(normName(name), Number(buff.level) || 0);
     }
 
     // 2. Determine the minimum required level for meta buffs
@@ -242,19 +266,21 @@ export async function handleCheckBuffsInteraction(interaction) {
             return;
         }
 
-        const buffsList = await getBuffs(apiEndpoints.player.activeBuffs(playerID));
+        // getBuffs() returns { buffsList, parsedAt }, or undefined when the request fails.
+        const buffsResult = await getBuffs(apiEndpoints.player.activeBuffs(playerID));
+        const buffsList = toBuffsList(buffsResult);
+        const parsedAt = buffsResult?.parsedAt;
 
-        if (!buffsList || buffsList.length === 0) {
+        if (buffsList.length === 0) {
             await interaction.editReply(`**${targetUsername}** has no active buffs.`);
             return;
         }
 
-        // --- PAGINATION LOGIC ---
-        const BUFFS_PER_PAGE = 20; // Set how many buffs to show per page
+        // --- PAGINATION LOGIC (No changes here) ---
+        const BUFFS_PER_PAGE = 20;
         const totalPages = Math.ceil(buffsList.length / BUFFS_PER_PAGE);
         let currentPage = 0;
 
-        // Helper function to generate the embed and buttons for a specific page
         const generatePage = (page) => {
             const start = page * BUFFS_PER_PAGE;
             const end = start + BUFFS_PER_PAGE;
@@ -263,7 +289,12 @@ export async function handleCheckBuffsInteraction(interaction) {
             const buffLines = buffsForPage.map(buff => {
                 const buffName = ID_TO_NAME[buff.id] || `Unknown (ID: ${buff.id})`;
                 const level = buff.level ? ` (Lvl ${buff.level})` : '';
-                const formattedDuration = formatSeconds(Number(buff.duration));
+
+                // --- CHANGE #2: Calculate remaining seconds using expire_time and the server timestamp ---
+                const remainingSeconds = buff.expire_time - parsedAt;
+                const formattedDuration = formatSeconds(remainingSeconds);
+                // --- END CHANGE #2 ---
+
                 const duration = formattedDuration ? `- *${formattedDuration} remaining*` : '';
                 return `• **${buffName}**${level} ${duration}`;
             }).join('\n');
@@ -295,38 +326,31 @@ export async function handleCheckBuffsInteraction(interaction) {
         // Send the initial page
         const replyMessage = await interaction.editReply(generatePage(currentPage));
 
-        // If there's only one page, we don't need a collector
         if (totalPages <= 1) return;
 
-        // Create a collector to listen for button clicks
+        // Collector logic remains the same
         const collector = replyMessage.createMessageComponentCollector({
             componentType: ComponentType.Button,
-            time: 120000 // Collector stops after 2 minutes of inactivity
+            time: 120000
         });
 
         collector.on('collect', async i => {
-            // Ensure only the original command user can interact
             if (i.user.id !== interaction.user.id) {
                 await i.reply({ content: "You can't use these buttons.", ephemeral: true });
                 return;
             }
-
-            // Update the page index based on the button clicked
             if (i.customId === 'next_page') {
                 currentPage++;
             } else if (i.customId === 'previous_page') {
                 currentPage--;
             }
-
-            // Update the message with the new page content
             await i.update(generatePage(currentPage));
         });
 
-        // When the collector ends (times out), disable the buttons
         collector.on('end', async () => {
             const finalState = generatePage(currentPage);
             finalState.components[0].components.forEach(button => button.setDisabled(true));
-            await interaction.editReply(finalState).catch(() => {}); // Catch error if message was deleted
+            await interaction.editReply(finalState).catch(() => {});
         });
 
     } catch (e) {

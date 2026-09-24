@@ -2,13 +2,13 @@
 
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
-import { newsWebhook } from '../webhooks.js'; // Assuming you have these
+import { newsWebhook } from '../webhooks.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
     getContent,
     setContent
-} from '../_sws_data/handler/sws_database.js';
-import * as cheerio from 'cheerio'; // Import cheerio to parse HTML content
+} from '../_gg_data/handler/gg_database.js';
+import * as cheerio from 'cheerio';
 
 // --- CONFIGURATION & STATE ---
 const UPDATES_STORAGE_KEY = 'processed_update_archive_ids';
@@ -19,47 +19,39 @@ const DISCORD_CHAR_LIMIT = 2000;
  * Loads the set of processed update news IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing the unique IDs of processed news items.
  */
-function loadProcessedUpdates() {
+async function loadProcessedUpdates() {
     try {
-        const storedIdsJson = getContent(UPDATES_STORAGE_KEY) || '[]';
+        const storedIdsJson = (await getContent(UPDATES_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
-        console.log(`[SWS_DB] Loaded ${storedIdsArray.length} processed update news IDs from database.`);
+        LOG('updates', `Loaded ${storedIdsArray.length} processed update news IDs from database.`);
         return new Set(storedIdsArray);
     } catch (error) {
-        console.error('Failed to load processed update news IDs from database, starting fresh.', error);
+        WARN('updates', 'Failed to load processed update news IDs from database, starting fresh.', error);
         return new Set();
     }
 }
 
 /**
- * [MODIFIED] Formats the raw text from the game's news. It now parses HTML
- * to extract clean text, image URLs, and external links separately.
- * @param {string} text - The raw text content from the API, which may contain HTML.
+ * Formats the raw text from the game's news, parsing HTML.
+ * @param {string} text - The raw text content from the API.
  * @returns {{cleanText: string, images: string[], links: string[]}}
  */
 function formatNewsContent(text) {
     if (!text) return { cleanText: '', images: [], links: [] };
-
-    // First, handle the game's custom formatting tags
     let processedText = text
         .replace(/\[list\]/g, '')
         .replace(/\[\/list\]/g, '')
         .replace(/\[\*\]/g, '\n• ')
         .replace(/\\r\\n/g, '\n');
 
-    // Now, parse the result as HTML to handle tags like <div>, <img>, <a>
     const $ = cheerio.load(processedText);
-
-    // Extract image URLs
     const images = [];
     $('img').each((i, el) => {
         const src = $(el).attr('src');
-        if (src && !src.includes('a.fs-img.net')) { // Filter out tracker pixels
+        if (src && !src.includes('a.fs-img.net')) {
             images.push(src);
         }
     });
-
-    // Extract external links
     const links = [];
     $('a').each((i, el) => {
         const href = $(el).attr('href');
@@ -67,14 +59,10 @@ function formatNewsContent(text) {
             links.push(href);
         }
     });
-
-    // Convert <br> tags to newlines for proper text extraction
     $('br').replaceWith('\n');
-    const cleanText = $('body').text().trim().replace(/\n\s*\n/g, '\n'); // Remove excess blank lines
-
+    const cleanText = $('body').text().trim().replace(/\n\s*\n/g, '\n');
     return { cleanText, images, links };
 }
-
 
 /**
  * Splits a long message into multiple chunks that respect Discord's character limit.
@@ -86,7 +74,6 @@ function splitMessage(title, content) {
     const chunks = [];
     const contentLines = content.split('\n');
     let currentChunk = `${title}\n\n`;
-
     for (const line of contentLines) {
         if (currentChunk.length + line.length + 1 > DISCORD_CHAR_LIMIT) {
             chunks.push(currentChunk);
@@ -98,70 +85,63 @@ function splitMessage(title, content) {
     return chunks;
 }
 
-
 /**
  * The main function to check for and announce new game updates.
  */
 export async function checkForUpdatesArchive() {
-    console.log('Checking for new game updates...');
+    LOG('updates', 'Checking for new game updates...');
     try {
-        const processedUpdateIds = loadProcessedUpdates();
+        const processedUpdateIds = await loadProcessedUpdates();
 
         const response = await secureFetch(apiEndpoints.game.updateArchive);
         if (!response.ok) throw new Error(`Failed to fetch update archive data. Status: ${response.status}`);
 
         const data = await response.json();
-        if (!data || !data.s) {
-            console.error('Update archive fetch was not successful:', data.e?.message || 'Unknown error');
+        if (!data?.s || !data.r?.news) {
+            WARN('updates', `Update archive fetch failed: ${data.e?.message || 'Unknown error'}`);
             return;
         }
         
-        const newsItems = data.r?.news;
-        if (!newsItems || newsItems.length === 0) {
+        // 1. Filter to find only the new game updates
+        const newUpdates = data.r.news.reverse().filter(news =>
+            news.type === 0 && !processedUpdateIds.has(news.id)
+        );
+
+        if (newUpdates.length === 0) {
             return;
         }
 
-        let newUpdatesFound = false;
+        // 2. IMMEDIATELY claim and save the new IDs
+        LOG('updates', `Found ${newUpdates.length} new game updates. Claiming them now...`);
+        for (const news of newUpdates) {
+            await setContent(UPDATES_STORAGE_KEY, news.id, UPDATES_HISTORY_LIMIT);
+        }
+        LOG('updates', `Claimed and saved ${newUpdates.length} new update news IDs.`);
 
-        for (const news of newsItems.reverse()) {
-            const newsId = news.id;
-            if (processedUpdateIds.has(newsId)) {
-                continue;
-            }
-
-            if (news.type !== 0) {
-                continue;
-            }
-
-            newUpdatesFound = true;
-            console.log(`New game update found! ID: ${newsId}, Subject: "${news.subject}"`);
-            
-            const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
-            const title = `:loudspeaker: **${news.subject}**`;
-            
-            // [MODIFIED] Process the content to separate text, images, and links.
-            const formattedContent = formatNewsContent(news.content.text);
-            
-            let fullMessageBody = formattedContent.cleanText;
-
-            if (formattedContent.images.length > 0) {
-                fullMessageBody += '\n\n:camera_with_flash: **Images Found:**\n' + formattedContent.images.join('\n');
-            }
-            if (formattedContent.links.length > 0) {
-                fullMessageBody += '\n\n:link: **Related Links:**\n' + formattedContent.links.join('\n');
-            }
-            
-            const messageChunks = splitMessage(title, fullMessageBody);
-
+        // 3. Now, safely process all notifications concurrently
+        const notificationPromises = newUpdates.map(async (news) => {
             try {
+                const newsId = news.id;
+                const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
+                const title = `:loudspeaker: **${news.subject}**`;
+                
+                const formattedContent = formatNewsContent(news.content.text);
+                let fullMessageBody = formattedContent.cleanText;
+
+                if (formattedContent.images.length > 0) {
+                    fullMessageBody += '\n\n:camera_with_flash: **Images Found:**\n' + formattedContent.images.join('\n');
+                }
+                if (formattedContent.links.length > 0) {
+                    fullMessageBody += '\n\n:link: **Related Links:**\n' + formattedContent.links.join('\n');
+                }
+                
+                const messageChunks = splitMessage(title, fullMessageBody);
+
+                // This inner loop is correct; it sends chunks of a single update in order.
                 for (const chunk of messageChunks) {
                     await sendExtraDiscordMessage(
-                        chunk,
-                        "Game Update & Events",
-                        "5763719", // A green color
-                        `Posted at ${dateTime}`,
-                        "",
-                        newsWebhook
+                        chunk, "Game Update & Events", "5763719",
+                        `Posted at ${dateTime}`, "", newsWebhook
                     );
                     if (messageChunks.length > 1) {
                         await new Promise(resolve => setTimeout(resolve, 500));
@@ -169,24 +149,14 @@ export async function checkForUpdatesArchive() {
                 }
                 LOG('updates', `Notified: "${news.subject}" (ID: ${newsId})`);
             } catch (e) {
-                ERR('updates', 'Failed to send update notification to Discord', e);
+                ERR('updates', `Failed to process update ID ${news.id}`, e);
             }
+        });
 
-            processedUpdateIds.add(newsId);
-        }
+        // 4. Wait for all separate update notifications to be sent
+        await Promise.allSettled(notificationPromises);
 
-        if (newUpdatesFound) {
-            let idsToStore = Array.from(processedUpdateIds);
-
-            if (idsToStore.length > UPDATES_HISTORY_LIMIT) {
-                idsToStore = idsToStore.slice(idsToStore.length - UPDATES_HISTORY_LIMIT);
-            }
-            
-            setContent(UPDATES_STORAGE_KEY, JSON.stringify(idsToStore));
-            console.log(`[SWS_DB] Saved ${idsToStore.length} processed update news IDs to database.`);
-        }
     } catch (error) {
-        console.error('An error occurred while checking for game updates:', error);
+        ERR('updates', 'Error occurred while checking for game updates', error);
     }
 }
-

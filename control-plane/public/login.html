@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GoGon Control</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/login.js" defer></script>
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <h1>GoGon Control</h1>
+    <p class="muted">Private dashboard. Sign in with the administrator account from <code>.env</code>.</p>
+    <form id="login-form" autocomplete="on" novalidate>
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" required maxlength="64">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256">
+      <button type="submit">Sign in</button>
+      <p id="login-error" class="error" role="alert" hidden></p>
+    </form>
+  </main>
+</body>
+</html>

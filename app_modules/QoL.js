@@ -1,29 +1,42 @@
 // app_modules/QoL.js - Quality of Life enhancements
 // Handles auto group joining and automatic gear swapping based on conflict status.
+// Project: GoGon (GG)
 
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
-    getContent,
-    setContent
-} from '../_sws_data/handler/sws_database.js';
+    getObject,
+    setObject
+} from '../_gg_data/handler/gg_database.js';
+import { STORAGE_KEYS, DELAYS } from './constants.js';
+import { getSetting } from '../config/runtime.mjs';
 
 // --- CONFIGURATION ---
-const GEAR_STATE_KEY = 'current_gear_state';
-const botPlayerID = process.env.SWS_BOT_ID_CHARACTER;
+const GEAR_STATE_KEY = STORAGE_KEYS.GEAR_STATE;
+// --- GEAR CONFIGURATION ---
+// Hot registry settings (CTRL-TASK-001): read on every run, so dashboard changes apply next cycle.
+const getBotPlayerId = () => getSetting('GG_BOT_ID_CHARACTER');
+const parseGearIds = key => new Set(
+    getSetting(key)
+        .split(',')
+        .map(id => parseInt(id.trim(), 10))
+        .filter(id => !isNaN(id))
+);
 
-// --- [ACTION REQUIRED] DEFINE YOUR EQUIPMENT SETUPS HERE ---
-// Use the INVENTORY ID ('a' value) for each piece of gear.
-const PEACE_GEAR_INVENTORY_IDS = new Set([
-    529720295, 529878548, 529886771, 546492527, 546492529, 
-    566206042, 566206043, 566206044, 569579310
-]);
-const WAR_GEAR_INVENTORY_IDS = new Set([
-    543019687, 543019688, 546671480, 546722123, 546722124, 
-    546948627, 546948628, 579943341, 579943342
-]);
-
+// Validate configuration on module load
+const botPlayerID = getBotPlayerId();
+const PEACE_GEAR_INVENTORY_IDS = parseGearIds('GG_PEACE_GEAR_IDS');
+const WAR_GEAR_INVENTORY_IDS = parseGearIds('GG_WAR_GEAR_IDS');
+if (!botPlayerID) {
+    WARN('gearSwap', 'GG_BOT_ID_CHARACTER not configured in .env. Gear swapping will be disabled.');
+}
+if (PEACE_GEAR_INVENTORY_IDS.size === 0) {
+    WARN('gearSwap', 'GG_PEACE_GEAR_IDS not configured in .env. Gear swapping will not work for peace mode.');
+}
+if (WAR_GEAR_INVENTORY_IDS.size === 0) {
+    WARN('gearSwap', 'GG_WAR_GEAR_IDS not configured in .env. Gear swapping will not work for war mode.');
+}
 
 // --- Helper Functions for Gear Swapping ---
 
@@ -51,14 +64,21 @@ async function getCurrentEquipment() {
 /**
  * Equips a single item by its inventory ID.
  * @param {number} inventoryId - The 'a' value of the item in the inventory.
+ * @returns {Promise<boolean>} True when the equip request succeeded.
  */
 async function equipItem(inventoryId) {
     try {
         LOG('gearSwap', `Equipping item with inventory ID: ${inventoryId}...`);
-        await secureFetch(apiEndpoints.player.equipItem(inventoryId));
-        await new Promise(resolve => setTimeout(resolve, 500)); // Short delay between actions
+        const response = await secureFetch(apiEndpoints.player.equipItem(inventoryId));
+        await new Promise(resolve => setTimeout(resolve, DELAYS.BETWEEN_EQUIPS)); // Short delay between actions
+        if (!response.ok) {
+            ERR('gearSwap', `Failed to equip item ${inventoryId}: status ${response.status}`);
+            return false;
+        }
+        return true;
     } catch (error) {
         ERR('gearSwap', `Failed to equip item ${inventoryId}`, error);
+        return false;
     }
 }
 
@@ -96,8 +116,8 @@ export async function autoJoinAllGroups() {
 
 
 export async function checkAndSwapGear() {
-    if (!botPlayerID) {
-        WARN('gearSwap', 'FS_BOT_ID is not set in environment variables. Aborting gear swap.');
+    if (!getBotPlayerId()) {
+        WARN('gearSwap', 'GG_BOT_ID_CHARACTER is not set in environment variables. Aborting gear swap.');
         return;
     }
     
@@ -105,7 +125,8 @@ export async function checkAndSwapGear() {
     const inConflict = await isGuildInConflict();
     const desiredState = inConflict ? 'war' : 'peace';
     
-    const lastKnownState = getContent(GEAR_STATE_KEY);
+    // Scalar state saved with setObject; legacy list-wrapped values are unwrapped. MON-TASK-002 / AC-MON-003
+    const lastKnownState = await getObject(GEAR_STATE_KEY, '');
     if (lastKnownState === desiredState) {
         return;
     }
@@ -117,7 +138,7 @@ export async function checkAndSwapGear() {
     }
     
     LOG('gearSwap', `State change detected! Current: ${lastKnownState || 'unknown'}. Desired: ${desiredState}.`);
-    const targetSetupIds = desiredState === 'war' ? WAR_GEAR_INVENTORY_IDS : PEACE_GEAR_INVENTORY_IDS;
+    const targetSetupIds = parseGearIds(desiredState === 'war' ? 'GG_WAR_GEAR_IDS' : 'GG_PEACE_GEAR_IDS');
     
     let needsSwap = false;
     if (equippedInventoryIds.size !== targetSetupIds.size) {
@@ -133,19 +154,26 @@ export async function checkAndSwapGear() {
 
     if (!needsSwap) {
         LOG('gearSwap', `Current gear already matches the desired ${desiredState} setup. Updating state.`);
-        setContent(GEAR_STATE_KEY, desiredState);
+        await setObject(GEAR_STATE_KEY, desiredState);
         return;
     }
 
     LOG('gearSwap', `Gear swap required. Equipping ${desiredState} setup...`);
 
     try {
+        let failed = 0;
         for (const invId of targetSetupIds) {
-            await equipItem(invId);
+            if (!(await equipItem(invId))) failed++;
         }
-        
+
+        // AC-MON-003: leave the stored state unchanged so the next cycle retries
+        if (failed > 0) {
+            ERR('gearSwap', `${failed} of ${targetSetupIds.size} equip requests failed; ${desiredState} setup incomplete, will retry next cycle.`);
+            return;
+        }
+
         LOG('gearSwap', `Successfully switched to ${desiredState} gear setup!`);
-        setContent(GEAR_STATE_KEY, desiredState);
+        await setObject(GEAR_STATE_KEY, desiredState);
 
     } catch (error) {
         ERR('gearSwap', 'An error occurred during the gear swap process', error);

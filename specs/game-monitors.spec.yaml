@@ -1,0 +1,333 @@
+# =============================================================================
+# SDD DOMAIN SPEC: Game Event Scrapers & Polling Monitors
+# =============================================================================
+spec:
+  id: "game-monitors-v1"
+  status: draft
+  version: "1.5.0"
+  created: "2026-09-22"
+  updated: "2026-09-24"
+
+  version_policy:
+    sync_group: "business-domain"
+    depends_on: ["data-model", "security"]
+
+  changelog:
+    - version: "1.5.0"
+      date: "2026-09-24"
+      changes:
+        - "MON-TASK-004 DONE: tests/game-monitors/monitors.test.mjs (AC-MON-001/002/004/006) and tests/game-monitors/bounty-buffs.test.mjs."
+        - "Bug fix (AC-MON-002): getBuffs(isBounty) compared buff names against lowercase deflect/cloak while buff_data.json is Title Case, so BountyBoard never reported Deflect or Cloak."
+        - "AC-MON-002 error case implemented: a throwing gold/buff lookup no longer drops the alert; it is sent with Unknown."
+        - "AC-MON-004 wording reconciled to the code: the monitor sends the game join-all group command and logs the outcome (it never parsed individual invites). Pending owner confirmation."
+        - "CTRL-TASK-008: the AC-MON-007 ping mention comes from GG_CONFLICT_PING_MENTION (none, @everyone, or a role ID); none sends no ping."
+    - version: "1.4.0"
+      date: "2026-09-24"
+      changes:
+        - "Owner decision supersedes part of 1.3.0: the ping timing is fixed, not configurable. Incoming = enemy hitting us, outgoing = us hitting them. Ping when incoming goes up, then stay quiet 15 minutes; after that, ping only when the enemy starts again after having stopped. The root rule of pinging when incoming decreased was wrong and has been replaced. Only the mention target is configured, in the notifications web panel (CTRL-TASK-008)."
+        - "Added AC-MON-007. MON-TASK-005 DONE: ping sent as its own message (Discord does not notify mentions added by an edit); lastIncomingAt/lastPingAt cached in conflict state in the database. Tests: tests/game-monitors/conflict-ping.test.mjs."
+    - version: "1.3.0"
+      date: "2026-09-24"
+      changes:
+        - "Owner decision resolves the 1.2.0 open GuildConflicts ping question: the ping (enabled, mention target, trigger) will be configured through a control-plane dashboard form and stored in the database once the Docker upgrade lands (control-plane-v1:CTRL-TASK-008). Until then the root behavior (@everyone when incoming decreases) is the default. The backup's hardcoded role ID is not ported."
+    - version: "1.2.0"
+      date: "2026-09-24"
+      changes:
+        - "MON-TASK-002 DONE (AC-MON-003, AC-MON-005): QoL.js and GuildConflicts.js persist with setObject and read with getObject; GvG cooldown uses COOLDOWNS.GVG = 10 days; failed equips leave current_gear_state unchanged. Tests: tests/game-monitors/state-persistence.test.mjs."
+        - "MON-TASK-001 DONE (AC-MON-001) and MON-TASK-003 DONE, completed as REC-TASK-003 prerequisites. Tests: tests/reconciliation/monitors.test.mjs."
+        - "Open decision: backup and root disagree on the incoming-attack direction and on the ping target (backup: hardcoded role on increase; root: @everyone on decrease). Root behavior kept pending owner decision."
+    - version: "1.1.0"
+      date: "2026-09-24"
+      changes:
+        - "Owner decision: GuildConflicts cooldown duration is exactly 10 days; MON-TASK-002 must replace the current 7-day value."
+    - version: "1.0.0"
+      date: "2026-09-22"
+      changes:
+        - "Initial domain specification for all 12 game scrapers, event deduplication, unindexed creature handling, and QoL automation."
+
+domain:
+  name: "Game Event Scrapers & Polling Monitors"
+  description: |
+    Implements 12 specialized FallenSword scraper modules running on independent polling intervals.
+    Extracts real-time game events (Super Elites, Bounties, Crates, Titans, Ladder, Relics,
+    Guild Conflicts, Shoutbox, Game Updates, Guild Messages), handles unindexed entity fallbacks,
+    and executes Quality of Life automations (auto-group join and conflict-driven gear swapping).
+
+entities:
+  - name: SuperEliteKill
+    description: "Record of a defeated Super Elite creature in the game."
+    fields:
+      - name: killId
+        type: string
+        constraints: [required, unique]
+        description: "Unique timestamp or identifier for the kill event."
+        example: "1727000000"
+      - name: creatureId
+        type: integer
+        constraints: [required]
+        description: "FallenSword creature ID."
+        example: 1542
+      - name: creatureName
+        type: string
+        constraints: [required]
+        description: "Resolved name, or fallback '**NEW SE Waiting on database**' if unindexed."
+        example: "Thrag the Vile (Super Elite)"
+      - name: playerName
+        type: string
+        constraints: [required]
+        description: "Name of the player who scored the kill."
+        example: "ShadowHunter"
+      - name: realmName
+        type: string
+        constraints: [required]
+        description: "Name of the realm where the kill occurred."
+        example: "Eldham (North) (12, 14)"
+      - name: itemDrop
+        type: string
+        constraints: []
+        description: "Item name or image URL if an item dropped, else empty string."
+        example: "Crest of Eldham"
+
+  - name: Bounty
+    description: "Target player posted on the game bounty board."
+    fields:
+      - name: bountyId
+        type: string
+        constraints: [required, unique]
+        description: "Unique identifier for the bounty."
+        example: "849201"
+      - name: targetId
+        type: integer
+        constraints: [required]
+        description: "Target player ID."
+        example: 30489
+      - name: targetName
+        type: string
+        constraints: [required]
+        description: "Target player username."
+        example: "Renegade"
+      - name: reward
+        type: integer
+        constraints: [required]
+        description: "Gold or FSP reward offered."
+        example: 500000
+      - name: hasDeflect
+        type: boolean
+        constraints: [required]
+        description: "Whether target currently has Deflect active."
+        example: false
+      - name: hasCloak
+        type: boolean
+        constraints: [required]
+        description: "Whether target currently has Cloak active."
+        example: false
+      - name: goldInHand
+        type: integer
+        constraints: []
+        description: "Amount of unprotected gold currently held by target."
+        example: 1250000
+
+  - name: GuildConflict
+    description: "Active GvG guild conflict and cooldown state."
+    fields:
+      - name: conflictId
+        type: string
+        constraints: [required, unique]
+        description: "Unique conflict ID."
+        example: "99182"
+      - name: opponentGuild
+        type: string
+        constraints: [required]
+        description: "Name of the opposing guild."
+        example: "Valhalla"
+      - name: status
+        type: string
+        constraints: [required]
+        description: "Conflict state (e.g. 'active', 'ended')."
+        example: "active"
+      - name: cooldownExpires
+        type: integer
+        constraints: []
+        description: "Timestamp when conflict cooldown against this guild expires."
+        example: 1727600000000
+
+acceptance_criteria:
+  - id: AC-MON-001
+    description: "Super Elite monitor alert with fallback for unindexed creatures"
+    given: "A new Super Elite kill retrieved from the FallenSword API"
+    when: "The creature ID is not found in the local SQLite database (unindexed creature)"
+    then: "Monitor formats the notification using fallback name '**NEW SE Waiting on database**', checks if an item dropped, and sends Discord embed alert without skipping"
+    error_cases:
+      - given: "Kill event was already processed (killId in processed_se_kill_ids set)"
+        when: "checkSuperElites() runs"
+        then: "Silently ignores the kill and does not send duplicate Discord alert"
+
+  - id: AC-MON-002
+    description: "BountyBoard extracts buffs, gold in hand, and filters processed bounties"
+    given: "Unprocessed bounties detected on the bounty board"
+    when: "checkBountyBoard() executes"
+    then: "Fetches target player active buffs (flagging Deflect and Cloak) and gold in hand, dispatches rich embed, and stores bounty ID"
+    error_cases:
+      - given: "Target player profile lookup fails or player is offline"
+        when: "getBuffs() or getGoldInHand() throws"
+        then: "Dispatches bounty alert with 'Unknown' buff/gold info without halting execution"
+
+  - id: AC-MON-003
+    description: "Automatic gear swap driven by active guild conflict status"
+    given: "AutoGearSwap task is enabled with configured GG_PEACE_GEAR_IDS and GG_WAR_GEAR_IDS"
+    when: "checkAndSwapGear() runs and conflict status changes (e.g. war started or peace resumed)"
+    then: "Compares current equipped gear to target setup, equips missing items via FallenSword equip API, and stores current_gear_state as a scalar string ('war' or 'peace')"
+    error_cases:
+      - given: "Equip item call fails due to inventory lock or server error"
+        when: "checkAndSwapGear() executes"
+        then: "Logs ERR and leaves current_gear_state unchanged so retry can occur on next iteration"
+
+  - id: AC-MON-004
+    description: "Quality of Life auto-joining hunting groups"
+    given: "Pending hunting group invites present on player group management page"
+    when: "autoJoinAllGroups() executes"
+    then: "Sends the game join-all group command (guild groups joinall) and logs the result"
+    error_cases:
+      - given: "Group is full or invite was cancelled"
+        when: "Join request is posted"
+        then: "Catches failure response and logs warning without throwing uncaught exception"
+
+  - id: AC-MON-005
+    description: "Guild conflicts state synchronization and cooldown tracking"
+    given: "Active guild conflicts and cooldown records"
+    when: "checkGuildConflicts() detects state changes"
+    then: "Saves updated conflict and cooldown maps to database using setObject, updating active Discord conflict embed"
+    error_cases:
+      - given: "Database write throws error"
+        when: "Saving conflict state"
+        then: "Logs error to ERR logger and retries next cycle"
+
+  - id: AC-MON-006
+    description: "Event deduplication across server restarts"
+    given: "Bot process restarts after crash or deployment"
+    when: "Monitors initialize their processed ID sets from SQLite key_value_store"
+    then: "All previously seen event IDs are loaded into in-memory Sets, preventing duplicate alerts for already processed events"
+    error_cases:
+      - given: "Key-value store has no prior record for module"
+        when: "Module initializes"
+        then: "Starts fresh with empty Set and records new IDs moving forward"
+
+  - id: AC-MON-007
+    description: "Guild conflict incoming-attack ping (owner rule). Incoming = the enemy guild hitting us; outgoing = us hitting them."
+    given: "An active guild conflict whose stored state caches lastIncoming, lastIncomingAt, and lastPingAt in the database"
+    when: "checkGuildConflicts() sees the incoming-attack count go up"
+    then: "It pings the configured mention in a new Discord message (never by editing the live embed) if no ping has been sent in this conflict yet, or if at least 15 minutes have passed since the last ping and the enemy had stopped (no incoming attack for more than 3 minutes) before this attack. It then records lastIncomingAt and, when the ping was delivered, lastPingAt."
+    error_cases:
+      - given: "The enemy keeps hitting (attacks at most every 2 minutes) inside the 15-minute window, or uninterruptedly beyond it"
+        when: "Further incoming increases are seen"
+        then: "No further ping is sent; the live embed is still updated and monitoring continues every minute"
+      - given: "Only outgoing attacks or scores change"
+        when: "checkGuildConflicts() runs"
+        then: "No ping is sent"
+      - given: "Sending the ping message fails"
+        when: "The attack is processed"
+        then: "lastPingAt is not recorded, so the next qualifying attack pings again"
+
+security:
+  constitutions:
+    - SEC-OWASP-A01-2025   # Broken Access Control (API scope validation)
+    - SEC-OWASP-A02-2025   # Security Misconfiguration (Environment variable validation)
+    - SEC-OWASP-A05-2025   # Injection (HTML sanitization and query protection)
+    - SEC-OWASP-A10-2025   # Mishandling of Exceptional Conditions (Fail-safe scrapers)
+
+  project_specific:
+    - rule: "Scraped text from player chat, guild messages, or shoutbox must be sanitized and markdown-escaped before posting to Discord to prevent mentions/injection."
+      severity: HIGH
+      cwe: 79
+      scope: "app_modules/Shoutbox.js, app_modules/GuildMessages.js, utils.js"
+    - rule: "Gear swapping inventory IDs must be validated as numeric integers to prevent parameter injection into equip API endpoints."
+      severity: HIGH
+      cwe: 20
+      scope: "app_modules/QoL.js"
+
+  threat_model:
+    - threat: "Discord webhook spam due to lost deduplication state"
+      impact: "Channel noise, Discord rate limit lockout (429 ban)"
+      mitigation: "Persist processed ID lists in SQLite with atomic setContent FIFO bounds"
+      verification: "Simulate scraper rerun against identical fixture and verify 0 outbound Discord calls"
+    - threat: "Missing Super Elite notifications during game content patches"
+      impact: "Guild misses critical rare drops and monster kills"
+      mitigation: "Implement graceful unindexed creature and item fallbacks as proven in production backup"
+      verification: "Unit test with creature ID not present in SQLite database"
+
+constraints:
+  - "SuperElites polling interval: 15 seconds (max 200 history IDs)."
+  - "BountyBoard polling interval: 5 seconds (max 100 history IDs)."
+  - "GuildConflicts, Titans, Crates, Ladder, Relics, QoL polling interval: 60 seconds."
+  - "GuildConflicts cooldown duration is exactly 10 days (864000000 milliseconds)."
+  - "GuildConflicts attack-ping timing follows AC-MON-007: 15-minute quiet window after a ping; the enemy counts as stopped after more than 3 minutes without an incoming attack (2-minute attack cadence plus 1-minute polling)."
+  - "The GuildConflicts ping mention is never hardcoded to a role ID; it is set in the notifications web panel (control-plane-v1:CTRL-TASK-008) and defaults to @everyone until then."
+  - "Shoutbox, GameUpdates, GuildMessages polling interval: 300 seconds."
+
+dependencies:
+  - domain: "auth-session"
+    relationship: "Scrapers depend on authedFetch and secureFetch for all game communication."
+    criticality: CRITICAL
+  - domain: "data-storage"
+    relationship: "Scrapers depend on SQLite and LRU cache for deduplication and entity resolution."
+    criticality: CRITICAL
+  - domain: "discord-integration"
+    relationship: "Scrapers dispatch notifications via centralized Discord queue and batch system."
+    criticality: HIGH
+
+git:
+  last_implementation_branch: ""
+  last_pr_url: ""
+  last_pr_merged: ""
+  last_version_tag: ""
+
+tasks:
+  - id: MON-TASK-001
+    description: |
+      Port unindexed Super Elite creature/item handling from backup/app_modules/SuperElite.js to
+      app_modules/SuperElite.js. When getCreatureById returns undefined, format fallback alert
+      with '**NEW SE Waiting on database**' instead of dropping the notification.
+    affects: "app_modules/SuperElite.js"
+    depends_on: []
+    source: "AC-MON-001"
+    status: DONE
+
+  - id: MON-TASK-002
+    description: |
+      Reconcile QoL.js and GuildConflicts.js to use setObject instead of setContent for
+      current_gear_state, active_guild_conflicts, and gvg_cooldowns. Replace the current
+      7-day GuildConflicts cooldown with the owner-locked 10-day duration.
+    affects: "app_modules/QoL.js, app_modules/GuildConflicts.js"
+    depends_on: ["data-storage-v1:DATA-TASK-001"]
+    source: "AC-MON-003, AC-MON-005"
+    status: DONE
+
+  - id: MON-TASK-003
+    description: |
+      Fix template literal syntax bug in game_modules/API.js for currency.type and items.displayImage
+      (missing ${} around BASE_MEDIA_URL), and fix world.fetchWorldMap extra bracket syntax error.
+    affects: "game_modules/API.js"
+    depends_on: []
+    source: "spec.constraints"
+    status: DONE
+
+  - id: MON-TASK-004
+    description: |
+      Create fixture-based automated tests for SuperElite, BountyBoard, and QoL modules
+      validating parsing, state updates, and deduplication logic.
+    affects: "tests/game-monitors/monitors.test.mjs, tests/game-monitors/bounty-buffs.test.mjs, app_modules/BountyBoard.js, utils.js"
+    depends_on: ["MON-TASK-001", "MON-TASK-002", "MON-TASK-003"]
+    source: "acceptance_criteria"
+    status: DONE
+
+  - id: MON-TASK-005
+    description: |
+      Owner decision (2026-09-24): implement the AC-MON-007 incoming-attack ping in GuildConflicts.js.
+      Ping on the first incoming increase of a conflict; then a 15-minute quiet window; after it,
+      ping only when the enemy restarts after having stopped (more than 3 minutes without an incoming
+      attack). Cache lastIncomingAt/lastPingAt in the stored conflict state. Send the ping as a new
+      message. The mention comes from CONFLICT_PING.DEFAULT_MENTION until CTRL-TASK-008 provides it.
+    affects: "app_modules/GuildConflicts.js, app_modules/constants.js, tests/game-monitors/conflict-ping.test.mjs"
+    depends_on: ["MON-TASK-002"]
+    source: "AC-MON-007"
+    status: DONE

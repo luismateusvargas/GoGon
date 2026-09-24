@@ -1,0 +1,84 @@
+# .github/workflows/ci.yml - DATA-TASK-009 / AC-DATA-008
+# CI runs on the tracked code only (owner decision 2026-09-24): backup/ is Git-ignored and never
+# supplied here, so no reconciliation comparison or preflight runs in CI.
+#   test   - the whole suite on Node 22 with the in-process MySQL fake and the no-network guard
+#   mysql  - the data-layer and control-plane tests again, against a real MySQL 8.4
+#   docker - the production image builds, compose.yaml is valid, and the bundled mysql becomes healthy
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.20.0
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+
+  mysql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-throwaway-root-password   # ephemeral service container, CI only
+        ports:
+          - 127.0.0.1:3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      GG_TEST_MYSQL_URL: mysql://root:ci-throwaway-root-password@127.0.0.1:3306
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.20.0
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Data layer and control plane on real MySQL
+        run: >-
+          node --import ./tests/helpers/no-network.mjs --import ./tests/helpers/test-database.mjs
+          --experimental-test-module-mocks --test
+          "tests/data-storage/*.test.mjs"
+          "tests/control-plane/*.test.mjs"
+          "tests/game-monitors/*.test.mjs"
+          "tests/discord-integration/gvg.test.mjs"
+          "tests/health-metrics/*.test.mjs"
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder .env (compose needs one; no real secret is used)
+        run: |
+          cp .env.example .env
+          echo "GG_MYSQL_PASSWORD=ci-throwaway-mysql-password" >> .env
+      - run: docker compose config --quiet
+      - run: docker compose build
+      - name: Bundled MySQL starts healthy with the compose settings
+        run: docker compose up --detach --wait --wait-timeout 180 mysql
+      - name: The mysql service publishes no host port
+        run: test -z "$(docker compose port mysql 3306 2>/dev/null || true)"
+      - if: always()
+        run: docker compose down --volumes

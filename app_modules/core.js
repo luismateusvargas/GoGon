@@ -1,18 +1,21 @@
-// app_modules/core.js
+// app_modules/core.js - GoGon Edition
 import * as cheerio from 'cheerio';
-export const SWS_DEBUG = (typeof process !== 'undefined' && process?.env?.SWS_DEBUG) ? process.env.SWS_DEBUG : '1';
+import { getBooleanSetting, getSetting } from '../config/runtime.mjs';
+
+// GG_DEBUG is a hot registry setting (CTRL-TASK-001): '0' silences LOG() on the next call.
+export const isDebugEnabled = () => getBooleanSetting('GG_DEBUG');
 
 export function ts() {
   const d = new Date();
   return d.toISOString().replace('T',' ').replace('Z','');
 }
-export function LOG(feature, msg, extra)  { if (!SWS_DEBUG) return; const base = `[${ts()}][${feature}] ${msg}`; extra!==undefined ? console.log(base, extra) : console.log(base); }
+export function LOG(feature, msg, extra)  { if (!isDebugEnabled()) return; const base = `[${ts()}][${feature}] ${msg}`; extra!==undefined ? console.log(base, extra) : console.log(base); }
 export function WARN(feature, msg, extra) { const base = `⚠️ [${ts()}][${feature}] ${msg}`; extra!==undefined ? console.warn(base, extra) : console.warn(base); }
 export function ERR(feature, msg, extra)  { const base = `❌ [${ts()}][${feature}] ${msg}`; extra!==undefined ? console.error(base, extra) : console.error(base); }
 
 export async function dumpHtml(feature, label, html) {
   try {
-    const dir = (typeof process !== 'undefined' && process?.env?.SWS_DEBUG_DIR) ? process.env.SWS_DEBUG_DIR : null;
+    const dir = getSetting('GG_DEBUG_DIR') || null;
     if (!dir) return;
     const fs = await import('node:fs');
     const path = await import('node:path');
@@ -25,6 +28,71 @@ export async function dumpHtml(feature, label, html) {
   }
 }
 export function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/**
+ * Formats a Unix timestamp to a localized date string
+ * Uses Brazilian Portuguese locale with London timezone (game standard)
+ * @param {number} timestamp - Unix timestamp in seconds
+ * @returns {string} Formatted date string
+ */
+export function formatGameTime(timestamp) {
+    return new Date(timestamp * 1000).toLocaleString('pt-BR', { 
+        timeZone: 'Europe/London' 
+    });
+}
+
+/**
+ * Formats remaining time from a future timestamp
+ * @param {number} futureTimestamp - Future timestamp in milliseconds
+ * @returns {string} Formatted time remaining (e.g., "6d 23h 59m")
+ */
+export function formatRemainingTime(futureTimestamp) {
+    const now = Date.now();
+    const remainingMs = futureTimestamp - now;
+
+    if (remainingMs <= 0) {
+        return "Expired";
+    }
+
+    let totalSeconds = Math.floor(remainingMs / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    totalSeconds %= 86400;
+    const hours = Math.floor(totalSeconds / 3600);
+    totalSeconds %= 3600;
+    const minutes = Math.floor(totalSeconds / 60);
+
+    const parts = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+
+    return parts.length > 0 ? parts.join(' ') : "< 1m";
+}
+
+/**
+ * Formats a duration in seconds to human-readable format
+ * @param {number} totalSeconds - Duration in seconds
+ * @returns {string} Formatted duration (e.g., "20h 16m 8s")
+ */
+export function formatDuration(totalSeconds) {
+    if (totalSeconds <= 0) {
+        return "0s";
+    }
+    
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+
+    const parts = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+
+    return parts.join(' ');
+}
+
 
 export async function waitForPCC(fetchFn, retries = 8) {
     if (retries <= 0) {

@@ -1,0 +1,93 @@
+# compose.yaml - CTRL-TASK-006 / AC-CTRL-005, DATA-TASK-008 / AC-DATA-007
+# Private, persistent, minimally privileged GoGon deployment.
+#   - The dashboard is published on 127.0.0.1 only (reach it remotely through an SSH tunnel).
+#   - MySQL 8.4 is the database. It publishes no port and sits on an internal network that only
+#     gogon joins, so it has no route in or out. Its data lives in the named volume gogon-mysql.
+#   - gogon: read-only root filesystem; /tmp is a tmpfs; all Linux capabilities dropped; no
+#     privilege escalation; non-root user. It has no writable application path.
+# The same .env supplies the application settings (env_file), GG_CONTROL_PORT for the port mapping,
+# and the MySQL account (GG_MYSQL_USER / GG_MYSQL_PASSWORD / GG_MYSQL_DATABASE) the mysql service creates.
+name: gogon
+
+services:
+  gogon:
+    build: .
+    image: gogon:local
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      GG_CONTROL_ENABLED: "1"
+      GG_CONTROL_HOST: "0.0.0.0"             # inside the container only; the host side is 127.0.0.1
+      GG_CONTROL_PORT: "${GG_CONTROL_PORT:-8787}"
+      GG_HEALTH_CHECK_ENABLED: "1"
+      GG_HEALTH_CHECK_HOST: "127.0.0.1"      # probe stays inside the container (healthcheck only)
+      GG_HEALTH_CHECK_PORT: "3000"
+      GG_MYSQL_HOST: mysql
+      GG_MYSQL_PORT: "3306"
+      GG_DEBUG_DIR: /tmp/gogon-debug
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${GG_CONTROL_PORT:-8787}:${GG_CONTROL_PORT:-8787}"
+    networks:
+      - default                              # outbound: FallenSword and Discord
+      - db                                   # MySQL only
+    user: "node"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: "${GG_MYSQL_DATABASE:-gogon}"
+      MYSQL_USER: "${GG_MYSQL_USER:-gogon}"
+      MYSQL_PASSWORD: "${GG_MYSQL_PASSWORD:?Set GG_MYSQL_PASSWORD in .env}"
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"      # root is never used by GoGon
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_bin"]
+    volumes:
+      - gogon-mysql:/var/lib/mysql
+    networks:
+      - db                                   # no ports: unreachable from the host and the internet
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysqladmin ping -h 127.0.0.1 -u \"$$MYSQL_USER\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  db:
+    internal: true
+
+volumes:
+  gogon-mysql:

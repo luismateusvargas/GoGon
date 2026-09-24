@@ -1,11 +1,12 @@
 import { secureFetch, getBuffs } from '../utils.js';
+import { getSetting } from '../config/runtime.mjs';
 import { LOG, WARN, ERR } from '../app_modules/core.js';
 import { apiEndpoints } from '../game_modules/API.js';
-import { quickBuff, NAME_TO_ID, ID_TO_NAME } from './buffs.js';
+import { quickBuff, NAME_TO_ID, ID_TO_NAME, toBuffsList } from './buffs.js';
 
 // --- CONFIGURATION ---
+// /bebuff is not role-gated (owner decision 2026-09-24).
 const FOLDER_NAME = 'Main';
-const REQUIRED_ROLE_ID = '1422978406693208064';
 
 // --- POTION & SKILL DEFINITIONS ---
 const ITEM_IDS = {
@@ -61,26 +62,16 @@ export async function useBESequence(interaction) {
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const normName = (s) => s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
-    /*if (!interaction.member.roles.cache.has(REQUIRED_ROLE_ID)) {
-        await interaction.reply({
-            content: '❌ You do not have the required role to use this command.',
-            ephemeral: true
-        });
-        return { ok: false, message: 'Permission denied' };
-    }*/
-
     await interaction.deferReply();
 
     // 1. CHECK ACTIVE BUFFS
     await interaction.editReply('⌛ Checking for active potion buffs...');
     const activeBuffs = new Set();
-    const selfID = process.env.SWS_BOT_ID_CHARACTER;
+    const selfID = getSetting('GG_BOT_ID_CHARACTER'); // GG_ wins over legacy SWS_/FS_
     try {
-        const buffs = await getBuffs(apiEndpoints.player.activeBuffs(selfID));
-        if (buffs) {
-            const selfBuffNames = buffs.map(b => ID_TO_NAME[b.id] || '');
-            selfBuffNames.forEach(name => activeBuffs.add(normName(name)));
-        }
+        const buffs = toBuffsList(await getBuffs(apiEndpoints.player.activeBuffs(selfID)));
+        const selfBuffNames = buffs.map(b => ID_TO_NAME[b.id] || '');
+        selfBuffNames.forEach(name => activeBuffs.add(normName(name)));
     } catch (e) {
         ERR('BE-Sequence', 'Could not fetch active buffs.', e);
         await interaction.editReply('❌ Failed to check active buffs. Aborting.');
@@ -152,7 +143,7 @@ export async function useBESequence(interaction) {
 
     // 4. --- EXECUTE PLANNED ACTIONS IN SEQUENCE ---
     const usedItems = [];
-    const selfName = process.env.SWS_BOT_CHARACTER;
+    const selfName = getSetting('GG_BOT_CHARACTER');
 
     for (const action of plannedActions) {
         if (action.type === 'potion') {

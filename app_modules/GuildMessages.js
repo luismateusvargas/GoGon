@@ -2,12 +2,12 @@
 
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
-import { guildMessageWebhook } from '../webhooks.js'; // Assuming you have these
+import { guildMessageWebhook } from '../webhooks.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
     getContent,
     setContent
-} from '../_sws_data/handler/sws_database.js';
+} from '../_gg_data/handler/gg_database.js';
 
 // --- CONFIGURATION & STATE ---
 const GUILD_MSG_STORAGE_KEY = 'processed_guild_message_ids';
@@ -17,14 +17,14 @@ const GUILD_MSG_HISTORY_LIMIT = 100;
  * Loads the set of processed guild message IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing the unique IDs of processed messages.
  */
-function loadProcessedGuildMessages() {
+async function loadProcessedGuildMessages() {
     try {
-        const storedIdsJson = getContent(GUILD_MSG_STORAGE_KEY) || '[]';
+        const storedIdsJson = (await getContent(GUILD_MSG_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
-        console.log(`[SWS_DB] Loaded ${storedIdsArray.length} processed guild message IDs from database.`);
+        LOG('guildmsg', `Loaded ${storedIdsArray.length} processed guild message IDs from database.`);
         return new Set(storedIdsArray);
     } catch (error) {
-        console.error('Failed to load processed guild message IDs from database, starting fresh.', error);
+        WARN('guildmsg', 'Failed to load processed guild message IDs from database, starting fresh.', error);
         return new Set();
     }
 }
@@ -33,80 +33,58 @@ function loadProcessedGuildMessages() {
  * The main function to check for and announce new guild messages.
  */
 export async function checkGuildMessages() {
-    console.log('Checking for new guild messages...');
+    LOG('guildmsg', 'Checking for new guild messages...');
     try {
-        const processedMessageIds = loadProcessedGuildMessages();
+        const processedMessageIds = await loadProcessedGuildMessages();
 
         const response = await secureFetch(apiEndpoints.player.privateMessages);
         if (!response.ok) throw new Error(`Failed to fetch private messages. Status: ${response.status}`);
 
         const data = await response.json();
-        if (!data || !data.s) {
-            console.error('Private message fetch was not successful:', data.e?.message || 'Unknown error');
+        if (!data?.s || !data.r?.private_messages) {
+            WARN('guildmsg', `Private message fetch failed: ${data.e?.message || 'Unknown error'}`);
             return;
         }
         
-        const messages = data.r?.private_messages;
-        if (!messages || messages.length === 0) {
+        // 1. Filter to find only the new guild messages
+        const newGuildMessages = data.r.private_messages.reverse().filter(msg =>
+            msg.msg.text.startsWith('[Guild Message]:') &&
+            !processedMessageIds.has(msg.id)
+        );
+
+        if (newGuildMessages.length === 0) {
             return;
         }
 
-        let newMessagesFound = false;
+        // 2. IMMEDIATELY claim and save the new IDs
+        LOG('guildmsg', `Found ${newGuildMessages.length} new guild messages. Claiming them now...`);
+        for (const msg of newGuildMessages) {
+            await setContent(GUILD_MSG_STORAGE_KEY, msg.id, GUILD_MSG_HISTORY_LIMIT);
+        }
+        LOG('guildmsg', `Claimed and saved ${newGuildMessages.length} new guild message IDs.`);
 
-        for (const msg of messages.reverse()) {
-            const messageId = msg.id;
-            if (processedMessageIds.has(messageId)) {
-                continue;
-            }
-
-            const messageText = msg.msg.text;
-            if (!messageText.startsWith('[Guild Message]:')) {
-                continue;
-            }
-
-            newMessagesFound = true;
-            console.log(`New guild message found! ID: ${messageId}`);
-            
-            const dateTime = new Date(msg.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
-            
-            const cleanContent = messageText.replace('[Guild Message]:', '').trim();
-            const playerProfileImage = apiEndpoints.player.profileImg(msg.player.id);
-
-            // [FIXED] Converted to use the multi-argument helper function
-            const title = `New Guild Message from ${msg.player.name}`;
-            const message = cleanContent;
-
+        // 3. Now, safely process all notifications concurrently
+        const notificationPromises = newGuildMessages.map(msg => {
             try {
+                const dateTime = new Date(msg.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
+                const cleanContent = msg.msg.text.replace('[Guild Message]:', '').trim();
+                const playerProfileImage = apiEndpoints.player.profileImg(msg.player.id);
+                const title = `New Guild Message from ${msg.player.name}`;
+
                 sendExtraDiscordMessage(
-                    message,
-                    title,
-                    '7506394', // Discord Blurple
-                    `Received at ${dateTime}`,
-                    "", // Group to ping, or "" for none
-                    guildMessageWebhook,
-                    "", // No main image
-                    playerProfileImage // Use player profile image as thumbnail
+                    cleanContent, title, '7506394', `Received at ${dateTime}`,
+                    "", guildMessageWebhook, "", playerProfileImage
                 );
-                LOG('guildmsg', `Replicated guild message from ${msg.player.name} (ID: ${messageId})`);
+                LOG('guildmsg', `Replicated guild message from ${msg.player.name} (ID: ${msg.id})`);
             } catch (e) {
-                ERR('guildmsg', 'Failed to send guild message notification to Discord', e);
+                ERR('guildmsg', `Failed to process guild message ID ${msg.id}`, e);
             }
+        });
 
-            processedMessageIds.add(messageId);
-        }
+        // 4. Wait for all notifications to be sent
+        await Promise.allSettled(notificationPromises);
 
-        if (newMessagesFound) {
-            let idsToStore = Array.from(processedMessageIds);
-
-            if (idsToStore.length > GUILD_MSG_HISTORY_LIMIT) {
-                idsToStore = idsToStore.slice(idsToStore.length - GUILD_MSG_HISTORY_LIMIT);
-            }
-            
-            setContent(GUILD_MSG_STORAGE_KEY, JSON.stringify(idsToStore));
-            console.log(`[SWS_DB] Saved ${idsToStore.length} processed guild message IDs to database.`);
-        }
     } catch (error) {
-        console.error('An error occurred while checking guild messages:', error);
+        ERR('guildmsg', 'Error occurred while checking guild messages', error);
     }
 }
-

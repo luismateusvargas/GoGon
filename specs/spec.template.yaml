@@ -1,0 +1,136 @@
+# =============================================================================
+# SDD SPEC TEMPLATE — v1.1
+# =============================================================================
+# Copy this template for each domain spec file.
+# Required sections: spec, domain, acceptance_criteria, security, constraints
+# Optional sections: entities, dependencies, threat_model, git
+
+spec:
+  id: "<domain>-v1"           # e.g., "auth-v1", "payments-v1"
+  status: draft               # draft | locked | implemented | stale
+  version: "1.0.0"            # Semver of this spec (independent from other specs)
+  created: "YYYY-MM-DD"
+  updated: "YYYY-MM-DD"
+
+  # Version policy — how this spec's version relates to other specs
+  version_policy:
+    sync_group: "<group>"     # api-surface | data-model | business-domain | security | deployment
+    depends_on: []            # List of sync_groups this spec's version depends on
+                              # e.g., api-surface depends_on: [data-model]
+                              #       business-domain depends_on: [data-model]
+                              #       deployment depends_on: [api-surface]
+                              #       security and data-model depend on nothing
+
+  # Changelog entries reference AC IDs (feature changes) or task IDs (fixes/enforcement)
+  # Format: version (date): <change summary> [AC-NNN] [TASK-ID]
+  changelog:
+    - version: "1.0.0"
+      date: "YYYY-MM-DD"
+      changes: ["Initial spec"]
+
+domain:
+  name: "<Domain Name>"
+  description: "<One paragraph describing what this domain covers>"
+
+# --- Entities: what data objects exist in this domain ---
+entities:
+  - name: <EntityName>
+    description: <what it represents in the business domain>
+    fields:
+      - name: <field_name>
+        type: <string | integer | float | boolean | datetime | uuid | json>
+        constraints: [required, unique, indexed, sensitive, immutable]
+        description: <what this field holds>
+        example: <concrete example value>
+    relationships:
+      - to: <OtherEntity>
+        type: belongs_to | has_one | has_many | many_to_many
+        foreign_key: <field_name>
+        description: <nature of the relationship>
+
+# --- Acceptance Criteria: falsifiable statements of what "done" looks like ---
+# Format: Given <precondition> When <action> Then <expected result>
+# Every AC must be specific enough to generate a test from.
+acceptance_criteria:
+  - id: AC-001
+    description: "<Short description of the behavior being verified>"
+    given: "<Precondition — what state the system is in>"
+    when: "<Action — what happens>"
+    then: "<Expected result — what the system should do>"
+    error_cases:
+      - given: "<error precondition>"
+        when: "<error action>"
+        then: "<expected error response>"
+
+  - id: AC-002
+    description: "<Another behavior>"
+    given: "..."
+    when: "..."
+    then: "..."
+
+# --- Security: project-specific security rules ---
+# Extends the global security constitution baseline.
+# Can ADD rules. CANNOT weaken baseline rules.
+security:
+  # Which global constitutions apply to this domain
+  constitutions:
+    - SEC-OWASP-A01-2025   # Broken Access Control
+    - SEC-OWASP-A04-2025   # Cryptographic Failures
+    - SEC-OWASP-A05-2025   # Injection
+    - SEC-OWASP-A07-2025   # Authentication Failures
+
+  # Project-specific security rules (ADDITIVE only)
+  project_specific:
+    - rule: "<security rule text>"
+      severity: CRITICAL | HIGH | MEDIUM
+      cwe: <CWE-ID if applicable>
+      scope: "<what code this applies to>"
+
+  # Threat model for this domain
+  threat_model:
+    - threat: "<What could go wrong>"
+      impact: "<What damage if it happens>"
+      mitigation: "<How we prevent it>"
+      verification: "<How we test the mitigation works>"
+
+# --- Constraints: invariants and limits ---
+constraints:
+  - "<Invariant that must always hold>"
+  - "<Numeric limit with rationale>"
+  - "<Business rule that cannot be violated>"
+
+# --- Dependencies: what other specs this domain depends on ---
+dependencies:
+  - domain: "<other domain>"
+    relationship: "<how this domain uses the other>"
+    criticality: CRITICAL | HIGH | MEDIUM
+
+# =============================================================================
+# GIT INTEGRATION — Track implementation history
+# =============================================================================
+# Populated by /sdd-git and sdd-implement pipeline. Not required for initial spec creation.
+git:
+  last_implementation_branch: ""    # Branch name from last /sdd-implement run
+  last_pr_url: ""                   # PR URL from last implementation cycle
+  last_pr_merged: ""                # Date PR was merged (YYYY-MM-DD)
+  last_version_tag: ""              # Git tag created for last release (vX.Y.Z)
+
+# =============================================================================
+# TASKS — Architectural decisions not yet implemented
+# =============================================================================
+# Tasks track work identified from this spec that is NOT YET implemented.
+# /sdd-implement reads this section directly. /sdd-spec-update reconciles it.
+# When a task is implemented: mark status DONE (do NOT delete — audit trail).
+# When a task is no longer relevant: mark status OBSOLETE with reason.
+#
+# Task IDs: <DOMAIN>-TASK-NNN (e.g., API-TASK-001, SEC-TASK-001, DM-TASK-001)
+
+tasks:
+  - id: <DOMAIN>-TASK-001
+    description: |
+      <What needs to be done. Be specific — file paths, functions, exact changes.
+      Multi-line descriptions use YAML literal block scalar (|).>
+    affects: "<file paths this task touches>"
+    depends_on: ["<other task ids>"]  # optional — task IDs that must complete first
+    source: "<spec section or decision this task derives from>"  # required
+    status: TODO

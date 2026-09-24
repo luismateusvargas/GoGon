@@ -1,0 +1,203 @@
+# =============================================================================
+# SDD DOMAIN SPEC: Backup Reconciliation
+# =============================================================================
+spec:
+  id: "backup-reconciliation-v1"
+  status: draft
+  version: "1.5.0"
+  created: "2026-09-23"
+  updated: "2026-09-24"
+  version_policy:
+    sync_group: "reconciliation"
+    depends_on: ["auth-session-v1", "data-storage-v1", "discord-integration-v1", "game-monitors-v1", "task-engine-v1"]
+  changelog:
+    - version: "1.5.0"
+      date: "2026-09-24"
+      changes:
+        - "data-storage 2.0.0 (owner decision 2026-09-24): legacy SQLite data is disposable and MySQL starts empty. The REC-TASK-005 SQLite-to-SQLite import no longer matches the MySQL migrations; its tests are skipped and deleting the tool waits on the owner (DATA-TASK-010)."
+        - "Owner decision 2026-09-24: reconciliation is local-only. CI receives tracked code without backup/, so the AC-REC-001 workspace manifest test skips when backup/ is absent."
+    - version: "1.4.0"
+      date: "2026-09-24"
+      changes:
+        - "REC-TASK-005 DONE (AC-REC-003): scripts/reconciliation/import-legacy-db.mjs takes a snapshot, stages, maps columns explicitly (target rows win), verifies integrity, foreign keys, and counts, and promotes by atomic rename; --rollback restores a snapshot. Real import report in reconciliation/import-reports/; rollback exercised on the real database; current_gear_state intentionally not imported. Tests: tests/reconciliation/import-legacy-db.test.mjs."
+        - "REC-TASK-006 DONE (AC-REC-004): tests/helpers/no-network.mjs is preloaded by npm test and blocks non-loopback sockets, TLS, DNS, fetch, and node-fetch; tests/reconciliation/no-network.test.mjs proves it. Every port disposition has fixture coverage; all domain suites pass."
+        - "Import snapshots under _gg_data/database/snapshots/ are excluded from the manifest scan. Dispositions re-reviewed for this session."
+    - version: "1.3.0"
+      date: "2026-09-24"
+      changes:
+        - "REC-TASK-004 DONE (AC-REC-002): discord_modules reconciled. Ported EPICS_IDS/'epics' (buffs.js), the malformed-cooldown filter and 25-field chunking (gvg.js), and the backup names 'bloodthirst'/'deathwish' as aliases in buff_data.json. inventory.js and guide.js stay retain-root; /bebuff role gating (GG_BE_ROLE_ID) removed by owner decision, and no backup role ID or webhook literal was copied."
+        - "Re-reviewed buff_data.json, buffs.js, gvg.js, inventory.js in reconciliation/dispositions.json and regenerated reconciliation/manifest.json; the preflight passes."
+    - version: "1.2.0"
+      date: "2026-09-24"
+      changes:
+        - "REC-TASK-002 DONE (AC-REC-002): bootstrap/session reconciled through readEnv; unused backup utils helpers not ported; undefined normalizeFsUrl call removed. Tests: tests/reconciliation/bootstrap.test.mjs."
+        - "REC-TASK-003 DONE (AC-REC-002): SuperElite, QoL, and GuildConflicts ported; the other monitors stay retain-root. Tests: tests/reconciliation/monitors.test.mjs."
+        - "Re-reviewed 12 changed paths in reconciliation/dispositions.json and regenerated reconciliation/manifest.json; the preflight passes."
+    - version: "1.1.0"
+      date: "2026-09-23"
+      changes:
+        - "REC-TASK-001 DONE (AC-REC-001): reviewed manifest in reconciliation/, preflight in scripts/reconciliation/, tests in tests/reconciliation/."
+        - "ReconciliationManifest: backupHash and rootHash are null on the side a one-sided path is missing from; added status and reviewState fields."
+    - version: "1.0.0"
+      date: "2026-09-23"
+      changes:
+        - "Records the evidence-based merge plan for backup/ and the current GoGon root."
+
+domain:
+  name: "Backup Reconciliation"
+  description: |
+    Reconciles proven behavior from backup/ into the current GoGon codebase without
+    overwriting newer root capabilities. The backup is evidence of prior behavior,
+    not an authority to copy wholesale. Each selected change must be ported,
+    tested, and accepted against the current runtime interfaces.
+
+entities:
+  - name: ReconciliationManifest
+    description: "Hash and classification record for each backup/root path pair."
+    fields:
+      - { name: path, type: string, constraints: [required, unique] }
+      - { name: status, type: string, constraints: [required], description: "differing, root-only, or backup-only" }
+      - { name: backupHash, type: string, constraints: [optional], description: "SHA-256; null only for root-only paths" }
+      - { name: rootHash, type: string, constraints: [optional], description: "SHA-256; null only for backup-only paths" }
+      - { name: reviewState, type: string, constraints: [required], description: "reviewed, stale, or unreviewed; only reviewed paths may be merged" }
+      - { name: disposition, type: string, constraints: [required], description: "port, retain-root, import-data, or retire-legacy" }
+  - name: DatabaseImportReport
+    description: "Counts, integrity results, and rollback location for a staged legacy database import."
+    fields:
+      - { name: sourcePath, type: string, constraints: [required] }
+      - { name: destinationSnapshot, type: string, constraints: [required] }
+      - { name: tableCounts, type: json, constraints: [required] }
+      - { name: integrityCheck, type: string, constraints: [required] }
+
+acceptance_criteria:
+  - id: AC-REC-001
+    description: "A reproducible manifest distinguishes files to port from root-only capabilities to retain"
+    given: "The current root and backup/ trees"
+    when: "The reconciliation preflight runs"
+    then: "It records SHA-256 hashes and a reviewed disposition for every differing or one-sided application path, excluding .env, node_modules, build output, and database secrets"
+    error_cases:
+      - given: "A selected source path changes after review"
+        when: "Implementation begins"
+        then: "The manifest is regenerated and the affected review is repeated before that path is merged"
+  - id: AC-REC-002
+    description: "Root-only operational capabilities are retained while backup behavior is ported selectively"
+    given: "Root-only migration, cache, validation, health, metrics, and constants modules"
+    when: "A backup behavior is introduced"
+    then: "No root-only capability is removed unless a dedicated acceptance test proves an explicit replacement"
+    error_cases:
+      - given: "A direct file copy would delete a root-only import or public function"
+        when: "The merge is reviewed"
+        then: "The copy is rejected and the behavior is ported into the current module interface"
+  - id: AC-REC-003
+    description: "Legacy game data is imported safely"
+    given: "backup/_sws_data/database/sws_data.db and the active gg_data database"
+    when: "The data reconciliation runs"
+    then: "It creates a timestamped snapshot, imports through an explicit mapping into a staging database, verifies SQLite integrity and required table counts, and atomically promotes only a validated result"
+    error_cases:
+      - given: "Integrity, schema compatibility, or count validation fails"
+        when: "Import completes"
+        then: "The active gg_data database remains untouched and the report identifies the failed check"
+  - id: AC-REC-004
+    description: "Reconciled behavior is verified without a real FallenSword or Discord account"
+    given: "Fixture responses for game, SSO, and Discord APIs"
+    when: "The reconciliation test suite runs"
+    then: "It exercises selected regressions and confirms no outbound request is sent to real account or Discord endpoints"
+
+security:
+  constitutions:
+    - SEC-OWASP-A02-2025
+    - SEC-OWASP-A04-2025
+    - SEC-OWASP-A05-2025
+    - SEC-OWASP-A10-2025
+  project_specific:
+    - rule: "Never compare, copy, log, commit, or include .env, cookies, tokens, webhook URLs, or database credentials in a reconciliation manifest or fixture."
+      severity: CRITICAL
+      cwe: 532
+    - rule: "Database reconciliation must write to a staging copy and retain a recoverable snapshot until acceptance is complete."
+      severity: CRITICAL
+      cwe: 665
+  threat_model:
+    - threat: "Blindly copying the backup removes newer root security and operational changes."
+      impact: "Regression of validation, migration, health, or secret handling."
+      mitigation: "Per-path disposition, port-not-copy rule, and regression tests."
+      verification: "AC-REC-001 and AC-REC-002."
+    - threat: "A legacy database replaces live state with incompatible or corrupt data."
+      impact: "Lost processed-event state or unusable game indexes."
+      mitigation: "Snapshot, staging import, integrity check, schema mapping, and atomic promotion."
+      verification: "AC-REC-003."
+
+constraints:
+  - "backup/ is read-only evidence during reconciliation."
+  - "No reconciliation task may contact FallenSword, HuntedCow, Discord, or a webhook in automated tests."
+  - "Legacy _sws_data paths are retired only after data migration and import compatibility are accepted."
+  - "The working root is not a Git repository; initialize version control and establish an owner-controlled remote before implementation branches or CI are created."
+
+dependencies:
+  - { domain: "auth-session-v1", relationship: "Owns session and environment compatibility.", criticality: CRITICAL }
+  - { domain: "data-storage-v1", relationship: "Owns database mapping and state semantics.", criticality: CRITICAL }
+  - { domain: "discord-integration-v1", relationship: "Owns command and webhook regressions.", criticality: HIGH }
+  - { domain: "game-monitors-v1", relationship: "Owns monitor behavior regressions.", criticality: HIGH }
+
+git:
+  last_implementation_branch: ""
+  last_pr_url: ""
+  last_pr_merged: ""
+  last_version_tag: ""
+
+tasks:
+  - id: REC-TASK-001
+    description: |
+      Create a reviewed reconciliation manifest covering all mismatched source files and
+      one-sided application paths. Classify root-only configValidator.mjs, healthCheck.mjs,
+      metrics.mjs, app_modules/constants.js, scripts/populate_db.mjs, and _gg_data/ as
+      retain-root; exclude .env and generated output.
+    affects: "backup/, app_modules/, discord_modules/, game_modules/, *.mjs, engine.js, utils.js"
+    depends_on: []
+    source: "AC-REC-001"
+    status: DONE
+  - id: REC-TASK-002
+    description: |
+      Reconcile bootstrap and session behavior in app.mjs, session.mjs, utils.js,
+      discordBot.mjs, engine.js, webhooks.js, and package manifests. Port only behaviors
+      still compatible with the GG_ configuration and current ESM modules. Resolve
+      AUTH-TASK-001 and ENG-TASK-001 before accepting this task.
+    affects: "app.mjs, session.mjs, utils.js, discordBot.mjs, engine.js, webhooks.js, package.json, package-lock.json"
+    depends_on: ["REC-TASK-001", "auth-session-v1:AUTH-TASK-001", "task-engine-v1:ENG-TASK-001"]
+    source: "AC-REC-002"
+    status: DONE
+  - id: REC-TASK-003
+    description: |
+      Reconcile all monitor modules: BountyBoard, core, Crates, GameUpdates,
+      GuildConflicts, GuildMessages, Ladder, QoL, Relics, Shoutbox, SuperElite, and Titans.
+      Preserve current constants/cache interfaces while porting only reviewed backup behavior.
+      MON-TASK-001 through MON-TASK-003 are the detailed behavior owners.
+    affects: "app_modules/BountyBoard.js, app_modules/core.js, app_modules/Crates.js, app_modules/GameUpdates.js, app_modules/GuildConflicts.js, app_modules/GuildMessages.js, app_modules/Ladder.js, app_modules/QoL.js, app_modules/Relics.js, app_modules/Shoutbox.js, app_modules/SuperElite.js, app_modules/Titans.js, game_modules/API.js"
+    depends_on: ["REC-TASK-001", "data-storage-v1:DATA-TASK-001", "game-monitors-v1:MON-TASK-001", "game-monitors-v1:MON-TASK-002", "game-monitors-v1:MON-TASK-003"]
+    source: "AC-REC-002"
+    status: DONE
+  - id: REC-TASK-004
+    description: |
+      Reconcile discord_modules/buff_data.json, buffs.js, guide.js, gvg.js, and inventory.js.
+      The detailed owners are DISC-TASK-001 through DISC-TASK-004; do not replace current
+      module exports or secret sourcing with the legacy versions.
+    affects: "discord_modules/buff_data.json, discord_modules/buffs.js, discord_modules/guide.js, discord_modules/gvg.js, discord_modules/inventory.js"
+    depends_on: ["REC-TASK-001", "discord-integration-v1:DISC-TASK-001", "discord-integration-v1:DISC-TASK-002", "discord-integration-v1:DISC-TASK-003", "discord-integration-v1:DISC-TASK-004"]
+    source: "AC-REC-002"
+    status: DONE
+  - id: REC-TASK-005
+    description: |
+      Build the staged import tool for backup/_sws_data/database/sws_data.db and map it to
+      _gg_data/database/gg_data.db. Retain _sws_data and utils/db_cleanup.js until the import
+      report, rollback exercise, and DATA-TASK-002 acceptance are complete.
+    affects: "scripts/, _gg_data/, backup/_sws_data/, _sws_data/, utils/db_cleanup.js"
+    depends_on: ["REC-TASK-001", "data-storage-v1:DATA-TASK-001", "data-storage-v1:DATA-TASK-002"]
+    source: "AC-REC-003"
+    status: DONE
+  - id: REC-TASK-006
+    description: |
+      Add fixture-only regression coverage and a no-live-network test guard for every selected
+      backup behavior. Run the domain test suites before removing legacy paths.
+    affects: "tests/, package.json"
+    depends_on: ["REC-TASK-002", "REC-TASK-003", "REC-TASK-004", "REC-TASK-005", "auth-session-v1:AUTH-TASK-002", "data-storage-v1:DATA-TASK-003", "discord-integration-v1:DISC-TASK-005", "game-monitors-v1:MON-TASK-004", "task-engine-v1:ENG-TASK-002"]
+    source: "AC-REC-004"
+    status: DONE

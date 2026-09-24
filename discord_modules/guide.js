@@ -1,4 +1,4 @@
-// discord_modules/guide.js
+/*// discord_modules/guide.js
 import { LOG, WARN, ERR } from '../app_modules/core.js';
 import { secureFetchExternal as _secureFetchExternal } from '../utils.js';
 import { SlashCommandBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } from 'discord.js';
@@ -364,7 +364,7 @@ export async function handleGuideInteraction(interaction) {
     const { inputs } = parseForm(html);
     const sessionId = newSession({ tab, inputs });
     await interaction.editReply({
-      content: `🧭 **/guide** – *${tab}*\nUse the menus to apply filters, then click **Search**.`,
+      content: `🧭 **//*guide** – *${tab}*\nUse the menus to apply filters, then click **Search**.`,
       components: buildFilterRows(sessionId, getSession(sessionId)),
     });
   } catch (err) {
@@ -445,7 +445,7 @@ export async function handleGuideComponent(interaction) {
     if (interaction.isButton() && interaction.customId.startsWith('guide:back_to_filters:')) {
         s.page = 0; s.results = [];
         await interaction.editReply({
-            content: `🧭 **/guide** – *${s.tab}*\nUse the menus to apply filters, then click **Search**.`,
+            content: `🧭 **//*guide** – *${s.tab}*\nUse the menus to apply filters, then click **Search**.`,
             components: buildFilterRows(sessionId, s)
         });
         return;
@@ -475,11 +475,11 @@ export async function handleGuideComponent(interaction) {
     }
     
     const activeFilters = Object.entries(s.values).map(([key, value]) => value ? `**${key.replace(/_/g, ' ')}:** "${value}"` : '').filter(Boolean).join(', ');
-    const content = `🧭 **/guide** – *${s.tab}*\n` + (activeFilters ? `**Current Filters:** ${activeFilters}` : 'Use the menus to apply filters, then click **Search**.');
+    const content = `🧭 **//*guide** – *${s.tab}*\n` + (activeFilters ? `**Current Filters:** ${activeFilters}` : 'Use the menus to apply filters, then click **Search**.');
     await interaction.editReply({ content: content, components: buildFilterRows(sessionId, s) });
 
   } catch (e) {
     console.error('[guide] handleGuideComponent error:', e);
     try { await interaction.editReply({ content: '❌ An error occurred while processing this action. Please check the console log.', components: [] }); } catch {}
   }
-}
+}*/

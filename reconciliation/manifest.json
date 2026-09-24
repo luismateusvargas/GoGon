@@ -1,0 +1,912 @@
+{
+  "schemaVersion": 1,
+  "spec": "backup-reconciliation-v1",
+  "task": "REC-TASK-001",
+  "acceptance": "AC-REC-001",
+  "hashAlgorithm": "sha256",
+  "review": {
+    "reviewedOn": "2026-09-24",
+    "reviewer": "Claude Code (pending owner confirmation)"
+  },
+  "summary": {
+    "paths": 66,
+    "identical": 1,
+    "byDisposition": {
+      "import-data": 1,
+      "port": 7,
+      "retain-root": 55,
+      "retire-legacy": 3
+    },
+    "failures": 0
+  },
+  "entries": [
+    {
+      "path": ".dockerignore",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "93e3a52134752c15cba500eb1b4fecf1d447b95f68ff87a359f816229fd25ad2",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-006"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Keeps .env, local state, backup/ and tests out of the image."
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "24e719020241dd95f160830646ae8a657ceedc21745dbf3b3b7b3857bea4fc87",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only CI (DATA-TASK-009): Node 22 suite on the fake, data layer on real MySQL 8.4, Docker build and compose check. No reconciliation (owner decision 2026-09-24)."
+    },
+    {
+      "path": ".gitignore",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "00a4f0b2e20f0988d0fac8453036437198b7e5f11a3ddb2b69c2fe5e0780037a",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only ignore rules, including .env and database files. Re-reviewed 2026-09-24 after a backup/ rule (added outside this session, benign) and the _gg_data/database/snapshots/ rule (REC-TASK-005). Re-reviewed 2026-09-24 before the first commit: the webhooks.js ignore rule was removed because webhooks.js now holds only registry-backed code (no webhook URLs); .env and database files stay ignored."
+    },
+    {
+      "path": "Dockerfile",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "c1703e9aadcabdaad458c5e72a282d504bd9d404d1076321b349e55f67042f8b",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-006"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Pinned Node 22 image, npm ci --omit=dev, non-root runtime. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. No native modules: build toolchain and writable database directory removed."
+    },
+    {
+      "path": "Gon.esproj",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "f10abe618dd8da2a3e8cae0cde04b0d0ed1f6bf1df9a6652e31e45247ab91df0",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only Visual Studio project file."
+    },
+    {
+      "path": "_gg_data/handler/cacheLayer.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "5bf0e5d119f50931c29f71755975c6bdc7e307c26f24cc925f07399cbae23b03",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only LRU cache layer under _gg_data/ (required by REC-TASK-001)."
+    },
+    {
+      "path": "_gg_data/handler/controlStore.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "c12e54ab08f319e49d270045d8f4a368a1890f29ff53e3bfa9658b4c5d12e429",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Encrypted profiles/overrides, module preferences, redacted audit events. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Async over the MySQL client; each mutation and its audit event share one transaction."
+    },
+    {
+      "path": "_gg_data/handler/gg_database.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "ec1559bf6059b63eca942c03c9d2b7b62c2ceab6aa93e908ab4ec4ece34b82ec",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only database handler under _gg_data/ (required by REC-TASK-001). Re-reviewed 2026-09-24: DATA-TASK-001 added setObject/deleteContent; MON-TASK-002 added the legacy-tolerant getObject reader. Nothing removed. Re-reviewed 2026-09-24 after DATA-TASK-003: backupDatabase awaits db.backup() (AC-DATA-006); setContent warns on corrupt/non-list state (AC-DATA-002); getConnection() export for the control-plane store. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Rewritten over the mysql2 client (initDatabase/closeDatabase, lazy once-per-process migrations); backupDatabase removed (AC-DATA-006 retired)."
+    },
+    {
+      "path": "_gg_data/handler/migrationRunner.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "61ebc570530b023206b5f1ac0e63aca39a348708c30bac074a633c11ef13d929",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only migration runner under _gg_data/ (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Async, statement by statement (MySQL DDL commits implicitly); failed files are not recorded."
+    },
+    {
+      "path": "_gg_data/handler/mysqlClient.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "0ec798507ce6f925eec60f71aca71f7dde5148daa9a8aa6fbd10b31987367522",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only MySQL pool wrapper (DATA-TASK-004 / AC-DATA-007): registry settings, bounded pool, no multi-statement queries, password never in errors."
+    },
+    {
+      "path": "_gg_data/migrations/001_initial_schema.sql",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "fd258c60d31dae90b3baa909396f6be497e0a5b2c5d448898cd1bb7055eadb83",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only schema migration under _gg_data/ (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. MySQL dialect (InnoDB, utf8mb4_bin, no FKs); relics.id AUTO_INCREMENT."
+    },
+    {
+      "path": "_gg_data/migrations/002_control_plane.sql",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "7ae976836a430ea6a90634a2cf048ab838efe859243785052742db3c42f884b8",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Control-plane tables. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. MySQL dialect; ISO timestamps written by the app; single active profile enforced in setActiveProfile."
+    },
+    {
+      "path": "_sws_data/database/sws_data.db",
+      "status": "backup-only",
+      "backupHash": "af800c5f4981735a6b3e8e1c0dafacc7cfcfe3a4a3b6d5d53fbbc4cf2dc322e6",
+      "rootHash": null,
+      "disposition": "import-data",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-005",
+        "data-storage-v1:DATA-TASK-002"
+      ],
+      "rationale": "Legacy game database (19 MB). Import only through the staged, snapshot-first mapping of AC-REC-003."
+    },
+    {
+      "path": "_sws_data/handler/sws_database.js",
+      "status": "backup-only",
+      "backupHash": "6827f3d467cc9c6a10a9039a8fb9120b724909e411d37497426f28c421acd6ed",
+      "rootHash": null,
+      "disposition": "retire-legacy",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-005",
+        "data-storage-v1:DATA-TASK-001"
+      ],
+      "rationale": "Superseded by _gg_data/handler/gg_database.js. Its setObject, deleteContent, vacuumDatabase, and getAllIdsFromTable exports are restored through DATA-TASK-001, not by copying."
+    },
+    {
+      "path": "app.mjs",
+      "status": "differing",
+      "backupHash": "d091f2420b91a43c8bc645fe6d833e4d9b1d1e37e7c11a63165953a10425df1b",
+      "rootHash": "5e245ccf763227d0234caa9da6851148fd415d1fcc44b7e2ce5ec56f2b3bec13",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-002",
+        "auth-session-v1:AUTH-TASK-001"
+      ],
+      "rationale": "Root bootstrap (GG_ config, validation, health check) is retained. Re-reviewed 2026-09-24 (REC-TASK-002): credentials and Discord settings now resolve through readEnv, so the backup SWS_/FS_/DISCORD_* names work as fallbacks without copying backup code. The commented legacy deleteContent block is left untouched. Re-reviewed 2026-09-24 after CTRL-TASK-003/004/005: control-plane bootstrap fails closed before login; credentials via currentCredentials(); Discord settings via getSetting(); engine preferences; loopback probe. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. initDatabase() before the control plane and the first login; exit 1 when MySQL is unavailable (AC-DATA-007).",
+      "doNotPort": [
+        "SWS_* credential env names (AUTH-TASK-001 decides aliases)"
+      ]
+    },
+    {
+      "path": "app_modules/BountyBoard.js",
+      "status": "differing",
+      "backupHash": "dab6e48a6da2fcc9eb350bd2d29bcd5719ae351714969f7bbafd18c4f02367bd",
+      "rootHash": "9e6eaaae8b43c0ec1d6e9b2b796f58097b8190cce015c4f9d4eff0d0b8d98778",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Backup differs only by the _sws_data import path and console logging; root uses _gg_data and LOG/WARN/ERR. Nothing to port. Re-reviewed 2026-09-24 after MON-TASK-004 (AC-MON-002): failed gold/buff lookups send the alert with 'Unknown' instead of dropping it. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited."
+    },
+    {
+      "path": "app_modules/Crates.js",
+      "status": "differing",
+      "backupHash": "2c436a787f169e8d8acad49d8df04430817fd8a3ec44627e583cb99a3c07fcd2",
+      "rootHash": "e6270c3a42381245b9b59d137af93c3c4efc0cd3e6ed703768b189ce1b124a69",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Backup differs only by the _sws_data import path and console logging; root uses _gg_data and LOG/WARN/ERR. Nothing to port. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited."
+    },
+    {
+      "path": "app_modules/GameUpdates.js",
+      "status": "differing",
+      "backupHash": "823de01f4ead48412b0d678b1d20458c7d15bd2ed74d4dd5f81b11cb5204a37a",
+      "rootHash": "57be1c50572e6a2cad4c342a2589143a08d2360fd08934e257d5088cf5edd855",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Backup differs only by the _sws_data import path and console logging; root uses _gg_data and LOG/WARN/ERR. Nothing to port. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited."
+    },
+    {
+      "path": "app_modules/GuildConflicts.js",
+      "status": "differing",
+      "backupHash": "dd8a54d67a70824f2e467ed620f8be4ec8eff9e39d66062ed32788a7891b0b79",
+      "rootHash": "1803d3bb72e38b1a73032b7277679ae497afb01e81a7834738c1569dd814894f",
+      "disposition": "port",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-003",
+        "game-monitors-v1:MON-TASK-002",
+        "data-storage-v1:DATA-TASK-001"
+      ],
+      "rationale": "Ported 2026-09-24 (REC-TASK-003/MON-TASK-002): whole-object setObject persistence, legacy-tolerant getObject reads, owner-locked 10-day COOLDOWNS.GVG, messageId/incomplete-state guards, clearing stale pings on edit, \"Less than a minute\". Not ported: backup hardcoded role ID. Re-reviewed 2026-09-24 (MON-TASK-005 / AC-MON-007): owner rule confirms the backup direction (incoming increase = enemy hitting us) but not its hardcoded role; ping now sent as a separate message with a 15-minute quiet window and restart detection, timestamps cached in state. Re-reviewed 2026-09-24 after CTRL-TASK-008: ping mention from GG_CONFLICT_PING_MENTION; guild name from the registry (hot). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited.",
+      "portCandidates": [
+        "setObject persistence for conflict and cooldown state",
+        "loadStateAsObject robust parser",
+        "Role mention on new/escalating incoming attack",
+        "Cooldown duration: exactly 10 days; replace the root 7-day value during REC-TASK-003"
+      ],
+      "doNotPort": [
+        "Hardcoded MENTION_ROLE_ID (move to configuration)"
+      ]
+    },
+    {
+      "path": "app_modules/GuildMessages.js",
+      "status": "differing",
+      "backupHash": "eca80baac0d55e6e9fe50020808363c65d7d95c6dd6e4479690e26d1bf7d4613",
+      "rootHash": "a33ec9db1e9e196fb85339f0b463fc1b4d2f15256560899531c7b143225a70e6",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Backup-only lines are the same loader with console logging; root adds structured logging. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited."
+    },
+    {
+      "path": "app_modules/Ladder.js",
+      "status": "differing",
+      "backupHash": "fce861cbd2a56c34d6a6689d9b77b06aaf1d9f12ae66aaf9757951d8c7077b91",
+      "rootHash": "15e84530ff12b47a05581641c8e0db3fb6f68fc7c16c1802ee2c75d4d1bc2812",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root supersedes the backup: batched band fetches with DELAYS constants instead of one unbounded Promise.allSettled. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited."
+    },
+    {
+      "path": "app_modules/QoL.js",
+      "status": "differing",
+      "backupHash": "cb5aec0a437daa202bd953d77ec8844e026e6d4e380637d72d2f4e835e632666",
+      "rootHash": "ac953bc1a8c54d943de6a927bc6440c6c511efec7e3315269c7cdbcb61849da5",
+      "disposition": "port",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-003",
+        "game-monitors-v1:MON-TASK-002",
+        "data-storage-v1:DATA-TASK-001"
+      ],
+      "rationale": "Ported 2026-09-24 (REC-TASK-003/MON-TASK-002): gear state stored with setObject and read with getObject (fixes the backup quoted-string comparison too); a failed equip leaves the state unchanged (AC-MON-003). Root env-sourced gear IDs retained; backup hardcoded gear IDs not ported. Re-reviewed 2026-09-24 after CTRL-TASK-001: bot ID and gear IDs are hot registry settings read per run. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited.",
+      "portCandidates": [
+        "setObject semantics for current_gear_state"
+      ],
+      "doNotPort": [
+        "Hardcoded inventory gear IDs (root reads GG_PEACE_GEAR_IDS/GG_WAR_GEAR_IDS)",
+        "SWS_BOT_ID_CHARACTER env name"
+      ]
+    },
+    {
+      "path": "app_modules/Relics.js",
+      "status": "differing",
+      "backupHash": "fe1fe83d2a2324a7a47ddaf247b4a9cc2acd691f46fc0c775c6d2de800af0b89",
+      "rootHash": "c28970b6f00e64205f1b7adad523e51eae04c68e1be5c48427951686a8be986d",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Backup differs only by the _sws_data import path and console logging; root uses _gg_data and LOG/WARN/ERR. Nothing to port. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited."
+    },
+    {
+      "path": "app_modules/Shoutbox.js",
+      "status": "differing",
+      "backupHash": "88ac4435d4ad552b240d5295af3dea1d4663c0fba20e1280c296d3f322036b6a",
+      "rootHash": "675a72b9d0c016a38da9a5193c2a0e5b38257f759057d2add7e4566aa0885b6b",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Backup differs only by the _sws_data import path and console logging; root uses _gg_data and LOG/WARN/ERR. Nothing to port. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited."
+    },
+    {
+      "path": "app_modules/SuperElite.js",
+      "status": "differing",
+      "backupHash": "6edf5bf76239668777262974f4786931647562453741bc708078c099b0af95d7",
+      "rootHash": "0d2944e032242ea5a0f824f8f94b186e01ae535b5cc6f4fd39ca1ea8f02a644e",
+      "disposition": "port",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-003",
+        "game-monitors-v1:MON-TASK-001"
+      ],
+      "rationale": "Ported 2026-09-24 (REC-TASK-003/MON-TASK-001): unindexed creatures are announced as **NEW SE Waiting on database**, unknown drops as New Item, using the root single code path, _gg_data imports and LOG/WARN/ERR. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited.",
+      "portCandidates": [
+        "Unknown-creature fallback notification with realm lookup",
+        "Unknown-item \"New Item\" fallback"
+      ]
+    },
+    {
+      "path": "app_modules/Titans.js",
+      "status": "differing",
+      "backupHash": "08e0127059af2481d040ab31c2f140e96d542166a2e169d7fee6dfcad688431b",
+      "rootHash": "68a5f21321fc6b982d0e61b88ef0f08dc646b6e85f8ea61819b0925fe7c5a9b6",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Backup differs only by the _sws_data import path and console logging; root uses _gg_data and LOG/WARN/ERR. Nothing to port. The sendExtraDiscordMessage call is reformatted only. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited."
+    },
+    {
+      "path": "app_modules/constants.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "445dd15d4c4efa6cbe86e9fb0fba9a92941b19e5c4a3e1fcc4271f3b7ac68e13",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only shared constants (required by REC-TASK-001). Re-reviewed 2026-09-24: added ENV_ALIASES (AUTH-TASK-001/REC-TASK-002); COOLDOWNS.GVG comment corrected to the owner-locked 10 days. Re-reviewed 2026-09-24: added CONFLICT_PING (default mention, 15-minute quiet window, 3-minute stop gap) for MON-TASK-005. Re-reviewed 2026-09-24 after CTRL-TASK-001: ENV_ALIASES gains GG_BOT_CHARACTER/GG_BOT_ID_CHARACTER; CONFLICT_PING.DEFAULT_MENTION is now only a fallback."
+    },
+    {
+      "path": "app_modules/core.js",
+      "status": "differing",
+      "backupHash": "1f20551709065e7a8dea2ee9ed44c08d8c6a21b3031fe32621ffe7fa65a4cdc3",
+      "rootHash": "71a0e39e17ea2a80112716274d1031708d461756de04be2b58be3b3a1772c958",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root is a superset: GG_DEBUG names plus formatGameTime, formatRemainingTime, and formatDuration helpers. Re-reviewed 2026-09-24 after CTRL-TASK-001: GG_DEBUG is a hot registry setting ('0' now really silences LOG); debug dir via registry."
+    },
+    {
+      "path": "compose.yaml",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "81e6d3c0b00424d9de0b111708527381a3b3d95952e720ccca3cd5244cb8d647",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-006"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Loopback-only publish, read-only root, tmpfs, cap_drop ALL, named volume, healthcheck. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Bundled mysql:8.4 service on an internal network with no ports; gogon waits for it healthy; SQLite volume removed."
+    },
+    {
+      "path": "config/registry.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "bb7df0460142b419a015982999c17be2fd58e7cc79daccedc2134cf14a14bd14",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-001"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Allow-listed configuration registry. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. GG_MYSQL_* settings replace GG_DB_DIR/GG_DB_PATH; hostname and db-identifier validators."
+    },
+    {
+      "path": "config/runtime.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "718f450395c82bb36a575143d26625723480bc0eaad06b09a7f924edca6802bf",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-001"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Effective configuration (override > env > default)."
+    },
+    {
+      "path": "configValidator.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "7ff801a32fba470cfa9a14f13f0e963ce6322a8b21dba4d55c70f5bb1c98b7c0",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only configuration validation (required by REC-TASK-001). Re-reviewed 2026-09-24 (AUTH-TASK-001): fallback lookup follows ENV_ALIASES, same GG_ > SWS_ > FS_ order as session.mjs. Re-reviewed 2026-09-24: GG_DEBUG is read through the runtime registry."
+    },
+    {
+      "path": "control-plane/accountSwitch.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "cd157ec917fcbaf3cb86dff852a035ea75e75278941aaacd7a22314f3ffefdcd",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-004"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Serialized, fail-closed account switch. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited."
+    },
+    {
+      "path": "control-plane/crypto.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "6ea89ab88788006a6b05de39873aa5d43435f7607686f3920545ac5ddc8880e7",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-24. AES-256-GCM keyring and scrypt hashes."
+    },
+    {
+      "path": "control-plane/index.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "12dca5c0dc469b89787e3dcc73bfefc93ea028c4dd510a6a6be64f460a152721",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-005"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Bootstrap wiring for app.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: GG_CONTROL_ENABLED uses the runtime registry."
+    },
+    {
+      "path": "control-plane/public/app.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "8a86d04a04fc6a8d6fcb883812d60e0264097d20e3ecd5ac4158aaf1ed36ca3b",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-005"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Dashboard client (textContent rendering only)."
+    },
+    {
+      "path": "control-plane/public/index.html",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "dfff26074d407a17ec373bcd30b84293b83b9b898305abce3a1ab2eb03b5544f",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-005"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Dashboard page (no inline script/style)."
+    },
+    {
+      "path": "control-plane/public/login.html",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "6f0a13960eec5e16065f477d753387000d38e91153af304ee4a74b3e9f63717a",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-005"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Login page."
+    },
+    {
+      "path": "control-plane/public/login.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "b82fc2d0fd4150a32eead3ed1399d435cdd54066fdc67efe574bd41834d5ef0a",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-005"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Login client."
+    },
+    {
+      "path": "control-plane/public/styles.css",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "350bf8698f2f3bb298cfa16c8a9a457a10dddac632602f17c7d80f85bc79c737",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-005"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Dashboard styles."
+    },
+    {
+      "path": "control-plane/server.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "9e28c9691d846f4c23bf98dd0c5e79e8b951032c43601af2d0102b2a76737526",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-005"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Authenticated dashboard/API server. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: bootstrap settings use the runtime registry."
+    },
+    {
+      "path": "discordBot.mjs",
+      "status": "differing",
+      "backupHash": "3110a605bffeb8206acb5b4759d1f224c58050e3a298a050b7a9222321bf87b5",
+      "rootHash": "e4c041c5e662a2c4c839fdb0dc42abcdbcf4256fd0d9ed0b89491c216becb94b",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-002"
+      ],
+      "rationale": "Backup registers /guide, which root disabled deliberately (Cloudflare blocking); root adds the rest of the current command routing. Re-reviewed 2026-09-24 after CTRL-TASK-005: stopDiscord/restartDiscord for subsystem-rebind of Discord settings."
+    },
+    {
+      "path": "discord_modules/buff_data.json",
+      "status": "differing",
+      "backupHash": "43c6e3a22d4b0bb80f0f0f2baa6333776ee8df532340644f2338ffde66973b2d",
+      "rootHash": "2ba002395a38a78ecedf7c47cea2531e4fc4c029f96b7f783d9f99a65c1e2d00",
+      "disposition": "port",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-004"
+      ],
+      "rationale": "Ported 2026-09-24 (REC-TASK-004): the two reviewed backup names missing from root, \"bloodthirst\" (4) and \"deathwish\" (34), were added as Title Case aliases \"Bloodthirst\"/\"Deathwish\", listed before \"Blood Thirst\"/\"Death Wish\" so ID-to-name maps (buffs.js ID_TO_NAME, game_modules/buffParser.js) keep the display names. Root keeps its Title Case keys and root-only IDs; buffs.js now normalizes keys for lookups. Every backup name resolves to its backup ID.",
+      "portCandidates": [
+        "bloodthirst",
+        "deathwish"
+      ]
+    },
+    {
+      "path": "discord_modules/buffs.js",
+      "status": "differing",
+      "backupHash": "dcfe4455bf786d4c1c3a6111373b1737d0c232d400c286894a453a7c949273ab",
+      "rootHash": "8c0c0e00a421df78d375834ec911ca39c84c11368a046a89addf1a21eb174db5",
+      "disposition": "port",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-004",
+        "discord-integration-v1:DISC-TASK-001",
+        "discord-integration-v1:DISC-TASK-004"
+      ],
+      "rationale": "Ported 2026-09-24 (REC-TASK-004/DISC-TASK-004): EPICS_IDS and the \"epics\" keyword. Root fixes (DISC-TASK-001): toBuffsList() reads the getBuffs() { buffsList, parsedAt } shape (or a bare list/undefined) in ensureMetaBuffs and /checkbuffs; NAME_TO_ID is keyed by normalized name so lookups match the Title Case buff_data.json. Not ported: backup pagination, duration-based formatSeconds, and named discord.js imports (root equivalents retained). Re-reviewed 2026-09-24 after CTRL-TASK-001: bot character read via getSetting (GG_ > SWS_ > FS_) instead of SWS_ only.",
+      "portCandidates": [
+        "EPICS_IDS and \"epics\" keyword resolution"
+      ],
+      "doNotPort": [
+        "Backup pagination (root already has an equivalent)",
+        "Backup formatSeconds from buff.duration (root uses expire_time - parsedAt)"
+      ]
+    },
+    {
+      "path": "discord_modules/guide.js",
+      "status": "differing",
+      "backupHash": "93ef7b35dd7d5c0b8cc12e74c7050266011ef04f742184b712090779836fffaf",
+      "rootHash": "667c8a0c3cfa77b7458087ec5b2b0a076db4697ee9a7718a32d6dc6c3ddce46d",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Backup differs by header comment and message wording only; the /guide command is disabled in root."
+    },
+    {
+      "path": "discord_modules/gvg.js",
+      "status": "differing",
+      "backupHash": "2fd671876d116975b18e3d7578ad3d5ac9fcc4a74a9f79a991377e8c8c0d77b8",
+      "rootHash": "6b17e7511156ef6937b66cb5e8dfa1c885135da40b998d7507bb989897daa6e4",
+      "disposition": "port",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-004",
+        "discord-integration-v1:DISC-TASK-003"
+      ],
+      "rationale": "Ported 2026-09-24 (REC-TASK-004/DISC-TASK-003): malformed-entry filter (string non-blank guildName, finite numeric expires) and 25-field embed chunking capped at 10 embeds. Root keeps the gg_database.js import (backup reads _sws_data). Footer derived from COOLDOWNS.GVG (owner-locked 10 days) instead of the stale 7-day text. Not ported: expired-count reply/footer and alphabetical sort (outside the reviewed safe slice). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited.",
+      "portCandidates": [
+        "guildName/expires validation filter",
+        "25-field embed chunking (max 10 embeds)",
+        "Expired-count reply"
+      ],
+      "doNotPort": [
+        "Legacy _sws_data/handler/sws_database.js import",
+        "Expired-count reply and footer",
+        "Alphabetical sort of cooldown fields"
+      ]
+    },
+    {
+      "path": "discord_modules/inventory.js",
+      "status": "differing",
+      "backupHash": "3c6cd0efbf17abb7a7809dc2c7ba1f6155200f9e741a9875ea68f6439c7654b6",
+      "rootHash": "e5dafe403d6a35b819707307708698f04a8b8bd0ce4ce2823ebe0306b7b7b3fd",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-004",
+        "discord-integration-v1:DISC-TASK-002"
+      ],
+      "rationale": "Re-reviewed 2026-09-24 (REC-TASK-004/DISC-TASK-002): owner decision, /bebuff is not role-gated, so the commented-out role check and the GG_BE_ROLE_ID read were removed; backup hardcodes a role ID, which is not ported. Root fix: useBESequence reads the getBuffs() { buffsList, parsedAt } shape through toBuffsList(). Nothing ported from backup. Re-reviewed 2026-09-24 after CTRL-TASK-001: bot character read via getSetting (GG_ > SWS_ > FS_) instead of SWS_ only.",
+      "doNotPort": [
+        "Hardcoded REQUIRED_ROLE_ID and any /bebuff role gating"
+      ]
+    },
+    {
+      "path": "docs/deployment.md",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "1c812502114f037b636b15017d2f6f18cc05eee1bdf1a435b342be263030a575",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-006"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Owner deployment and SSH-tunnel guide. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. MySQL setup, populate step, and key rotation without snapshots."
+    },
+    {
+      "path": "engine.js",
+      "status": "differing",
+      "backupHash": "887431b7c2c11eb8f6c6f397f73b756c2423705525871664ced2109a3b3f2a08",
+      "rootHash": "72119642d8bfa307790a4198996453072b203f17d2cd71612e43f7ec66f05e17",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "task-engine-v1:ENG-TASK-001"
+      ],
+      "rationale": "Backup has no lines that root lacks apart from a closing brace; root adds scheduling and shutdown changes. Re-reviewed 2026-09-24 (ENG-TASK-001): pure ESM confirmed; shutdown cancels pending staggered starts and is idempotent across repeated signals. Re-reviewed 2026-09-24 (ENG-TASK-003): stop kills the task (run generation + AbortSignal) and start refuses while a run is in flight; still no backup behavior to port. Re-reviewed 2026-09-24 after ENG-TASK-002 (unknown-task ERR message) and CTRL-TASK-003 (preferences, serialized transitions, pause/resume, per-run results)."
+    },
+    {
+      "path": "game_modules/API.js",
+      "status": "differing",
+      "backupHash": "8915d9dbde2d17a7eee0b6c41473c3c53ed6815495178b87bfe30c46940f4684",
+      "rootHash": "08e4987925521efdacf733e06a0070c9c608f4e96d2f7f239be9b78d6a78828b",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "game-monitors-v1:MON-TASK-003"
+      ],
+      "rationale": "Root is a superset (arena subcmd, extra endpoints). Re-reviewed 2026-09-24 (MON-TASK-003): currency.type/items.displayImage template literals and the fetchWorldMap stray bracket fixed in root."
+    },
+    {
+      "path": "healthCheck.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "0b5bc51fb661de4c51e7ed7681ec9234bb0388a5f1626d56a06a555c87719d8a",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only health endpoint (required by REC-TASK-001). Re-reviewed 2026-09-24 after CTRL-TASK-005: now a loopback-only /health probe without CORS; tasks/cache/config/metrics moved behind the authenticated control plane. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Async database check with a 3 s timeout. Re-reviewed 2026-09-24: probe host and port use the runtime registry."
+    },
+    {
+      "path": "metrics.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "7be3f959375a59b0e20828e13539088052730a5d6676d92811a28b1a7cf5d8a2",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only metrics (required by REC-TASK-001). Re-reviewed 2026-09-24 after HLTH AC-HLTH-002: memory stats added."
+    },
+    {
+      "path": "package-lock.json",
+      "status": "differing",
+      "backupHash": "b79a71c10a441951c4e4cd6b1f1c5e193b0156fd4c76baf82aa0ad20cc2888a7",
+      "rootHash": "2709404f21712d10bc9b49b134bd8e28a350406c37ce519d296dc688ef64ba91",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "The lockfile follows root package.json; backup lockfile is older. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Lockfile for mysql2; retired better-sqlite3 packages were removed."
+    },
+    {
+      "path": "package.json",
+      "status": "differing",
+      "backupHash": "136c33a22f0b5d228b1557dac44bb0d92d5b6413229cc607a008316478c43e22",
+      "rootHash": "39fc779376292751ab0a5231d54465277182e364587f6a9f1113720b5c969dd6",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Backup has the older name, version, and dependency ranges; root adds scripts and newer ranges. Re-reviewed 2026-09-24 (REC-TASK-002): test script enables --experimental-test-module-mocks for fixture tests. Re-reviewed 2026-09-24 after REC-TASK-006: npm test preloads tests/helpers/no-network.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. mysql2 added; test preload adds tests/helpers/test-database.mjs. Re-reviewed 2026-09-24: npm test excludes local-only reconciliation tests; test:reconciliation retains that local workflow; better-sqlite3 removed."
+    },
+    {
+      "path": "runSWS.bat",
+      "status": "backup-only",
+      "backupHash": "2306d17063658581b5884129e44e4bd40f3dba3e607f963b2dfc2b9ca5f8f78a",
+      "rootHash": null,
+      "disposition": "retire-legacy",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-006"
+      ],
+      "rationale": "Legacy Windows launcher with a hardcoded deployment path; root starts with npm start."
+    },
+    {
+      "path": "scripts/control-plane/demo-server.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "fbc15ea1692c87c9711721455eaa76941519e074493401b6d5c563a7f2fa11a5",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-007"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Fixture-only demo harness for browser acceptance. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Runs on the in-process MySQL stand-in from tests/helpers/fake-mysql.mjs."
+    },
+    {
+      "path": "scripts/control-plane/firefox-acceptance.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "254fb1d8b16e088521a7f97f6ceb6356a3728d0165564bc72340847fd48ed06a",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-007"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Headless Firefox (WebDriver BiDi) acceptance run."
+    },
+    {
+      "path": "scripts/control-plane/generate-secrets.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "1eb312a117d8ea20779ceb7ec61aab11b527d4f0daa98fb5e8125c43a5714e3b",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-001"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Prints session secret and encryption key."
+    },
+    {
+      "path": "scripts/control-plane/hash-password.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "1beaea7f8f84c3c5a2e0ddafda0aa13929d8dafb2250bd59a8723cac2debecbe",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-001"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Prints GG_ADMIN_PASSWORD_HASH from stdin."
+    },
+    {
+      "path": "scripts/control-plane/rotate-key.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "f77f9b69564abc80a954164579718fd2d437636c51930fa36c722747e26cc852",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Snapshot-first key rotation. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-seals in one MySQL transaction; no SQLite snapshot."
+    },
+    {
+      "path": "scripts/control-plane/write-env-example.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "e930f8b08582ca3ce79a6bd890b3e024d89292a8230294718113c205b7a28ea6",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "control-plane-v1:CTRL-TASK-001"
+      ],
+      "rationale": "Root-only, added 2026-09-24. Regenerates .env.example from the registry."
+    },
+    {
+      "path": "scripts/populate_db.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "4d853075167a3ed80c1e6128e2989e897586508d8ace389d7b70a09b69942901",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only database population script (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Replaces only the master-data tables in one MySQL transaction; state and control-plane tables are kept."
+    },
+    {
+      "path": "session.mjs",
+      "status": "differing",
+      "backupHash": "1db976d5911e7532426ded2962e9d3a589cc079afaec92ced42e2efac6948404",
+      "rootHash": "28919c44a2862cfd2b48323d7b40e13b2bc965e453ace9ab528fecadf7778a95",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-002",
+        "auth-session-v1:AUTH-TASK-001"
+      ],
+      "rationale": "Root session retained. Re-reviewed 2026-09-24 (AUTH-TASK-001): the backup SWS_/FS_ env names are now fallbacks through readEnv/ENV_ALIASES, with GG_ names taking precedence. Re-reviewed 2026-09-24 after AUTH-TASK-002 (login throws on rejected credentials, 15 s step timeout, redacted connection errors, re-auth log) and CTRL-TASK-004 (credential provider, resetSession, useBootstrap option).",
+      "doNotPort": [
+        "SWS_* credential env names without an AUTH-TASK-001 decision"
+      ]
+    },
+    {
+      "path": "utils.js",
+      "status": "differing",
+      "backupHash": "ad55b19c3969d55514f92837182c10312293a935d13a33d16cb119acf69b6359",
+      "rootHash": "32790bc8d62a7f52e2f1c00dc7430d700a5149ac7581e6a9f8dfe64989af3a6c",
+      "disposition": "port",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-002",
+        "auth-session-v1:AUTH-TASK-001"
+      ],
+      "rationale": "Root secureFetch is the base (retries, 5xx handling). Reviewed 2026-09-24 (REC-TASK-002): backup-only helpers sendSimpleMessage, setRefererIfPCC, toDoc, txt are unused anywhere and are not ported. The root call to undefined normalizeFsUrl (a swallowed ReferenceError whose result was unused) was removed. UA/lang now come from readEnv. Re-reviewed 2026-09-24 after bounty Deflect/Cloak name fix, AUTH-TASK-002 (per-request re-login, game-only Origin/Referer, login-page regex fix, no retry after session failure), CTRL-TASK-001 (UA/lang via registry), CTRL-TASK-004 (drainDiscordQueue).",
+      "portCandidates": [
+        "normalizeFsUrl news-cmd fix",
+        "setRefererIfPCC referer tracking",
+        "sendSimpleMessage",
+        "toDoc/txt parsing helpers"
+      ]
+    },
+    {
+      "path": "utils/db_cleanup.js",
+      "status": "backup-only",
+      "backupHash": "607484b3a8dae470d0d34f477debbe9f8577caa8b37c740e7c19e7169dabc972",
+      "rootHash": null,
+      "disposition": "retire-legacy",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "REC-TASK-005",
+        "data-storage-v1:DATA-TASK-002"
+      ],
+      "rationale": "Manual key-reset utility bound to sws_database.js; retire after the staged import and rollback exercise are accepted."
+    },
+    {
+      "path": "webhooks.js",
+      "status": "differing",
+      "backupHash": "65e2ee6c9ae906d440af63728aae9e6ecd171050eb80231f2b0db01b131b5e16",
+      "rootHash": "2191df30264f25e63edcb24b467989ae5c88b4bf715e8180c6443365691f92ed",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": true,
+      "owners": [
+        "REC-TASK-002"
+      ],
+      "rationale": "Backup hardcodes Discord webhook URLs; root sources every webhook from environment variables. The backup file must never be copied. Re-reviewed 2026-09-24 after CTRL-TASK-001: webhooks and role mentions are live bindings rebound on dashboard changes.",
+      "doNotPort": [
+        "Any webhook URL literal"
+      ]
+    }
+  ],
+  "identical": [
+    {
+      "path": "game_modules/buffParser.js",
+      "hash": "324a7c11b38b85099e6f11765162bf7321993875894095b4a7f504a48a52a7ce"
+    }
+  ]
+}

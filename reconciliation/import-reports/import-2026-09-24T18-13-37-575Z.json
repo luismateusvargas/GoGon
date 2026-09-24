@@ -1,0 +1,163 @@
+{
+  "spec": "backup-reconciliation-v1",
+  "task": "REC-TASK-005",
+  "acceptance": "AC-REC-003",
+  "startedAt": "2026-09-24T18:13:37.575Z",
+  "source": "backup\\_sws_data\\database\\sws_data.db",
+  "active": "_gg_data\\database\\gg_data.db",
+  "dryRun": true,
+  "snapshot": "C:\\Users\\luism\\OneDrive\\Documents\\GoGon\\_gg_data\\database\\snapshots\\gg_data_2026-09-24T18-13-37-575Z.db",
+  "checks": [
+    {
+      "name": "source-exists",
+      "ok": true,
+      "detail": "C:\\Users\\luism\\OneDrive\\Documents\\GoGon\\backup\\_sws_data\\database\\sws_data.db"
+    },
+    {
+      "name": "active-not-in-use",
+      "ok": true,
+      "detail": "exclusive lock acquired and released"
+    },
+    {
+      "name": "snapshot",
+      "ok": true,
+      "detail": "C:\\Users\\luism\\OneDrive\\Documents\\GoGon\\_gg_data\\database\\snapshots\\gg_data_2026-09-24T18-13-37-575Z.db"
+    },
+    {
+      "name": "source-integrity",
+      "ok": true,
+      "detail": "ok"
+    },
+    {
+      "name": "schema:master_realms",
+      "ok": true,
+      "detail": "all mapped columns present"
+    },
+    {
+      "name": "schema:realms",
+      "ok": true,
+      "detail": "all mapped columns present"
+    },
+    {
+      "name": "schema:relics",
+      "ok": true,
+      "detail": "all mapped columns present"
+    },
+    {
+      "name": "schema:creatures",
+      "ok": true,
+      "detail": "all mapped columns present"
+    },
+    {
+      "name": "schema:items",
+      "ok": true,
+      "detail": "all mapped columns present"
+    },
+    {
+      "name": "staging-integrity",
+      "ok": true,
+      "detail": "ok"
+    },
+    {
+      "name": "staging-foreign-keys",
+      "ok": true,
+      "detail": "0 violation(s)"
+    },
+    {
+      "name": "count:master_realms",
+      "ok": true,
+      "detail": "source=324 before=0 inserted=324 after=324"
+    },
+    {
+      "name": "count:realms",
+      "ok": true,
+      "detail": "source=6822 before=0 inserted=6822 after=6822"
+    },
+    {
+      "name": "count:relics",
+      "ok": true,
+      "detail": "source=577 before=0 inserted=577 after=577"
+    },
+    {
+      "name": "count:creatures",
+      "ok": true,
+      "detail": "source=7803 before=0 inserted=7803 after=7803"
+    },
+    {
+      "name": "count:items",
+      "ok": true,
+      "detail": "source=16317 before=0 inserted=16317 after=16317"
+    },
+    {
+      "name": "nonempty:items",
+      "ok": true,
+      "detail": "16317 rows"
+    },
+    {
+      "name": "nonempty:creatures",
+      "ok": true,
+      "detail": "7803 rows"
+    },
+    {
+      "name": "nonempty:realms",
+      "ok": true,
+      "detail": "6822 rows"
+    }
+  ],
+  "tables": {
+    "master_realms": {
+      "source": 324,
+      "targetBefore": 0,
+      "inserted": 324,
+      "targetAfter": 324
+    },
+    "realms": {
+      "source": 6822,
+      "targetBefore": 0,
+      "inserted": 6822,
+      "targetAfter": 6822
+    },
+    "relics": {
+      "source": 577,
+      "targetBefore": 0,
+      "inserted": 577,
+      "targetAfter": 577
+    },
+    "creatures": {
+      "source": 7803,
+      "targetBefore": 0,
+      "inserted": 7803,
+      "targetAfter": 7803
+    },
+    "items": {
+      "source": 16317,
+      "targetBefore": 0,
+      "inserted": 16317,
+      "targetAfter": 16317
+    }
+  },
+  "keyValue": {
+    "imported": [
+      "active_guild_conflicts",
+      "gvg_cooldowns",
+      "processed_bounty_ids",
+      "processed_crate_ids",
+      "processed_guild_message_ids",
+      "processed_ladder_news_ids",
+      "processed_relic_log_ids",
+      "processed_se_kill_ids",
+      "processed_shoutbox_ids",
+      "processed_titan_news_ids",
+      "processed_update_archive_ids"
+    ],
+    "keptTarget": [],
+    "skipped": [
+      "current_gear_state"
+    ]
+  },
+  "outcome": "validated-not-promoted",
+  "failedCheck": null,
+  "finishedAt": "2026-09-24T18:13:37.665Z",
+  "rollback": "node scripts/reconciliation/import-legacy-db.mjs --rollback \"_gg_data\\database\\snapshots\\gg_data_2026-09-24T18-13-37-575Z.db\"",
+  "reportFile": "C:\\Users\\luism\\OneDrive\\Documents\\GoGon\\reconciliation\\import-reports\\import-2026-09-24T18-13-37-575Z.json"
+}

@@ -7,7 +7,7 @@ import { apiEndpoints } from '../game_modules/API.js';
 import {
     getContent,
     setContent
-} from '../_sws_data/handler/sws_database.js';
+} from '../_gg_data/handler/gg_database.js';
 
 // --- CONFIGURATION & STATE ---
 const RELIC_LOG_STORAGE_KEY = 'processed_relic_log_ids';
@@ -17,14 +17,14 @@ const RELIC_HISTORY_LIMIT = 500;
  * Loads the set of processed relic log IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing the unique IDs of processed log entries.
  */
-function loadProcessedRelicLogs() {
+async function loadProcessedRelicLogs() {
     try {
-        const storedIdsJson = getContent(RELIC_LOG_STORAGE_KEY) || '[]';
+        const storedIdsJson = (await getContent(RELIC_LOG_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
-        console.log(`[SWS_DB] Loaded ${storedIdsArray.length} processed relic log IDs from database.`);
+        LOG('relics', `Loaded ${storedIdsArray.length} processed relic log IDs from database.`);
         return new Set(storedIdsArray);
     } catch (error) {
-        console.error('Failed to load processed relic log IDs from database, starting fresh.', error);
+        WARN('relics', 'Failed to load processed relic log IDs from database, starting fresh.', error);
         return new Set();
     }
 }
@@ -33,125 +33,94 @@ function loadProcessedRelicLogs() {
  * The main function to check for and announce new relic-related guild log events.
  */
 export async function checkRelics() {
-    console.log('Checking for new relic events...');
+    LOG('relics', 'Checking for new relic events...');
     try {
-        const processedLogIds = loadProcessedRelicLogs();
+        const processedLogIds = await loadProcessedRelicLogs();
 
         const response = await secureFetch(apiEndpoints.guild.log);
         if (!response.ok) throw new Error(`Failed to fetch guild log data. Status: ${response.status}`);
 
         const data = await response.json();
-        if (!data || !data.s) {
-            console.error('Guild log fetch was not successful:', data.e?.message || 'Unknown error');
+        if (!data?.s || !data.r?.logs) {
+            WARN('relics', `Guild log fetch failed: ${data.e?.message || 'Unknown error'}`);
             return;
         }
         
-        const logs = data.r?.logs;
-        if (!logs || logs.length === 0) {
+        // 1. Filter to find only the new, important relic log events
+        const newRelicEvents = data.r.logs.reverse().filter(log => {
+            if (processedLogIds.has(log.id) || log.type !== 39) {
+                return false;
+            }
+            const text = log.msg.text.toLowerCase();
+            return text.includes('has captured the relic') ||
+                   text.includes('has captured your relic') ||
+                   text.includes('but your defense held them back') ||
+                   text.includes('failed to capture the relic');
+        });
+
+        if (newRelicEvents.length === 0) {
             return;
         }
 
-        let newEventsFound = false;
+        // 2. IMMEDIATELY claim and save the new IDs to prevent race conditions
+        LOG('relics', `Found ${newRelicEvents.length} new relic events. Claiming them now...`);
+        for (const log of newRelicEvents) {
+            await setContent(RELIC_LOG_STORAGE_KEY, log.id, RELIC_HISTORY_LIMIT);
+        }
+        LOG('relics', `Claimed and saved ${newRelicEvents.length} new relic log IDs.`);
 
-        for (const log of logs.reverse()) {
-            const logId = log.id;
-            if (processedLogIds.has(logId)) {
-                continue;
-            }
-            
-            if (log.type !== 39) {
-                continue;
-            }
-            
-            const text = log.msg.text;
-            if (!text.toLowerCase().includes('relic')) {
-                continue;
-            }
-
-            const attachments = log.msg.attachments;
-            const attachmentMap = new Map();
-            attachments.forEach((att, index) => {
-                attachmentMap.set(`a${index}`, att.data);
-            });
-
-            const relicMatch = text.match(/relic (.*? \(.+?\))/);
-            const relicInfo = relicMatch ? `**${relicMatch[1]}**` : 'an unknown relic';
-
-            let message = '';
-            let title = 'Relic Update';
-            let color = '8421504';
-            
-            let eventShouldBeSent = false;
-
-            if (text.includes('has captured the relic')) {
-                title = '🏆 Relic Captured!';
-                color = '3066993'; // Green
-                const player = attachmentMap.get('a0');
-                const enemyGuild = attachmentMap.get('a1');
-                message = `**${player.name}** from our guild has captured the relic ${relicInfo} from **${enemyGuild.name}**!`;
-                eventShouldBeSent = true;
-
-            } else if (text.includes('has captured your relic')) {
-                title = '❌ Relic Lost!';
-                color = '15158332'; // Red
-                const enemyGuild = attachmentMap.get('a0');
-                const enemyPlayer = attachmentMap.get('a1');
-                message = `**${enemyPlayer.name}** from **${enemyGuild.name}** has captured our relic ${relicInfo}!`;
-                eventShouldBeSent = true;
-
-            } else if (text.includes('but your defense held them back')) {
-                title = '🛡️ Relic Defended!';
-                color = '3447003'; // Blue
-                const enemyPlayer = attachments.find(a => a.type === 0)?.data;
-                message = `We successfully defended the relic ${relicInfo} from an attack by **${enemyPlayer?.name || 'an enemy'}**!`;
-                eventShouldBeSent = true;
-
-            } else if (text.includes('failed to capture the relic')) {
-                title = '💨 Attack Failed!';
-                color = '16737095'; // Gold/Yellow
-                const player = attachments.find(a => a.type === 0)?.data;
-                const enemyGuild = attachments.find(a => a.type === 1)?.data;
-                message = `**${player.name}** from our guild failed to capture the relic ${relicInfo} from **${enemyGuild.name}**.`;
-                eventShouldBeSent = true;
-            }
-            
-            // [FIXED] If the event is not one of the important types, simply skip it.
-            // Do not log it, do not add it to the processed list.
-            if (!eventShouldBeSent) {
-                continue;
-            }
-
-            // --- If we reach this point, it is a new, important event ---
-            console.log(`New processable relic event found! Log ID: ${logId}`);
-            newEventsFound = true;
-            processedLogIds.add(logId);
-
-            const dateTime = new Date(log.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
+        // 3. Now, safely process all notifications concurrently
+        const notificationPromises = newRelicEvents.map(log => {
             try {
+                const text = log.msg.text;
+                const attachments = log.msg.attachments;
+                const relicMatch = text.match(/relic (.*? \(.+?\))/);
+                const relicInfo = relicMatch ? `**${relicMatch[1]}**` : 'an unknown relic';
+
+                let message = '';
+                let title = 'Relic Update';
+                let color = '8421504';
+
+                if (text.includes('has captured the relic')) {
+                    title = '🏆 Relic Captured!';
+                    color = '3066993'; // Green
+                    const player = attachments[0]?.data;
+                    const enemyGuild = attachments[1]?.data;
+                    message = `**${player.name}** from our guild has captured the relic ${relicInfo} from **${enemyGuild.name}**!`;
+                } else if (text.includes('has captured your relic')) {
+                    title = '❌ Relic Lost!';
+                    color = '15158332'; // Red
+                    const enemyGuild = attachments[0]?.data;
+                    const enemyPlayer = attachments[1]?.data;
+                    message = `**${enemyPlayer.name}** from **${enemyGuild.name}** has captured our relic ${relicInfo}!`;
+                } else if (text.includes('but your defense held them back')) {
+                    title = '🛡️ Relic Defended!';
+                    color = '3447003'; // Blue
+                    const enemyPlayer = attachments.find(a => a.type === 0)?.data;
+                    message = `We successfully defended the relic ${relicInfo} from an attack by **${enemyPlayer?.name || 'an enemy'}**!`;
+                } else if (text.includes('failed to capture the relic')) {
+                    title = '💨 Attack Failed!';
+                    color = '16737095'; // Gold/Yellow
+                    const player = attachments.find(a => a.type === 0)?.data;
+                    const enemyGuild = attachments.find(a => a.type === 1)?.data;
+                    message = `**${player.name}** from our guild failed to capture the relic ${relicInfo} from **${enemyGuild.name}**.`;
+                }
+
+                const dateTime = new Date(log.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
                 sendExtraDiscordMessage(
-                    message,
-                    title,
-                    color,
-                    `Event time: ${dateTime}`,
-                    "", // No group ping for relic events
-                    relicWebhook
+                    message, title, color, `Event time: ${dateTime}`,
+                    "", relicWebhook
                 );
                 LOG('relics', `Notified: ${title} - ${relicInfo.replace(/\*/g, '')}`);
             } catch (e) {
-                ERR('relics', 'Failed to send relic notification to Discord', e);
+                ERR('relics', `Failed to process relic log ID ${log.id}`, e);
             }
-        }
+        });
 
-        if (newEventsFound) {
-            let idsToStore = Array.from(processedLogIds);
-            if (idsToStore.length > RELIC_HISTORY_LIMIT) {
-                idsToStore = idsToStore.slice(idsToStore.length - RELIC_HISTORY_LIMIT);
-            }
-            setContent(RELIC_LOG_STORAGE_KEY, JSON.stringify(idsToStore));
-            console.log(`[SWS_DB] Saved ${idsToStore.length} processed relic log IDs to database.`);
-        }
+        // 4. Wait for all notifications to be sent
+        await Promise.allSettled(notificationPromises);
+
     } catch (error) {
-        console.error('An error occurred while checking for relic events:', error);
+        ERR('relics', 'Error occurred while checking for relic events', error);
     }
 }
-

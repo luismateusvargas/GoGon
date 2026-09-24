@@ -1,0 +1,217 @@
+# =============================================================================
+# SDD DOMAIN SPEC: Authentication & Session Management
+# =============================================================================
+spec:
+  id: "auth-session-v1"
+  status: draft
+  version: "1.2.0"
+  created: "2026-09-22"
+  updated: "2026-09-24"
+
+  version_policy:
+    sync_group: "security"
+    depends_on: []
+
+  changelog:
+    - version: "1.2.0"
+      date: "2026-09-24"
+      changes:
+        - "AUTH-TASK-002 DONE: tests/auth-session/login-recovery.test.mjs covers AC-AUTH-001..005 against an in-process fake game/SSO (tests/helpers/fake-fetch.mjs)."
+        - "AC-AUTH-001: login() now throws 'Authentication failed' when SSO completes without #pCC (it returned false and boot continued), bounds each SSO step at 15 s, and turns network/5xx failures into a connection error naming only the host."
+        - "AC-AUTH-002: ensureLogin logs re-authentication. AC-AUTH-003: re-login is once per request (a process-wide flag made every logout after the first fatal); a session still invalid after re-login is not retried; the HTML login-page detector regex never matched real HTML and is fixed. AC-AUTH-005: game Origin/Referer are sent to the game only."
+        - "AC-AUTH-003 wording reconciled to the code: the retry delay is RETRY_DELAY from webhooks.js (2000 ms), not 1000 ms. Pending owner confirmation."
+    - version: "1.1.0"
+      date: "2026-09-24"
+      changes:
+        - "AUTH-TASK-001 DONE: readEnv() in session.mjs with ENV_ALIASES in app_modules/constants.js resolves GG_ before SWS_ before FS_; session.mjs, utils.js, app.mjs, and configValidator.mjs share it. .env already uses GG_ names and was not modified. Tests: tests/auth-session/env-precedence.test.mjs."
+    - version: "1.0.0"
+      date: "2026-09-22"
+      changes:
+        - "Initial domain specification for FallenSword and HuntedCow SSO authentication, cookie persistence, and resilient HTTP client."
+
+domain:
+  name: "Authentication & Session Management"
+  description: |
+    Handles user credentials, HuntedCow Single Sign-On (SSO) multi-step authentication,
+    RFC-compliant cookie jar persistence, proactive and reactive session validation, and
+    the secureFetch HTTP wrapper that guards all interactions with the FallenSword MMORPG.
+
+entities:
+  - name: SessionCredentials
+    description: "User authentication credentials loaded from environment variables."
+    fields:
+      - name: email
+        type: string
+        constraints: [required, sensitive]
+        description: "Account login email (GG_EMAIL or FS_EMAIL)."
+        example: "player@example.com"
+      - name: password
+        type: string
+        constraints: [required, sensitive]
+        description: "Account login password (GG_PASSWORD or FS_PASSWORD)."
+        example: "P@ssw0rd123!"
+      - name: baseUrl
+        type: string
+        constraints: [required]
+        description: "Target game URL base (defaults to https://www.fallensword.com)."
+        example: "https://www.fallensword.com"
+      - name: ssoEntryUrl
+        type: string
+        constraints: [required]
+        description: "HuntedCow SSO authentication endpoint."
+        example: "https://account.huntedcow.com/auth?game=6"
+
+  - name: CookieJarState
+    description: "In-memory and file-backed cookie storage representing authenticated state."
+    fields:
+      - name: cookies
+        type: json
+        constraints: [sensitive]
+        description: "Serialized cookie jar contents conforming to RFC 6265."
+        example: '{"fallensword.com": {"PHPSESSID": "abcdef..."}}'
+      - name: lastGoodReferer
+        type: string
+        constraints: [required]
+        description: "Last confirmed game URL visited that maintained a valid session."
+        example: "https://www.fallensword.com/index.php?cmd=home"
+
+  - name: FetchRequest
+    description: "Outbound HTTP request intercepted and processed by secureFetch."
+    fields:
+      - name: url
+        type: string
+        constraints: [required]
+        description: "Target URL to request (relative or absolute)."
+        example: "https://www.fallensword.com/app.php?cmd=bounty&subcmd=search"
+      - name: isGameUrl
+        type: boolean
+        constraints: [required]
+        description: "Flag indicating whether destination belongs to www.fallensword.com."
+        example: true
+      - name: retryCount
+        type: integer
+        constraints: [required]
+        description: "Remaining attempts allowed on 5xx or transient errors."
+        example: 3
+
+acceptance_criteria:
+  - id: AC-AUTH-001
+    description: "Authenticate against HuntedCow SSO and establish active game session"
+    given: "Valid GG_EMAIL and GG_PASSWORD environment variables and no active session"
+    when: "login() is invoked during the application boot sequence"
+    then: "System completes SSO form submission, follows relay redirects, and confirms presence of #pCC element in returned HTML, returning true"
+    error_cases:
+      - given: "Invalid email or password provided"
+        when: "login() is executed"
+        then: "Throws descriptive authentication error and exits boot sequence with code 1"
+      - given: "HuntedCow SSO endpoint is unreachable or returns 5xx"
+        when: "login() is executed"
+        then: "Throws connection failure error without exposing password in stack trace or console"
+
+  - id: AC-AUTH-002
+    description: "Validate active session proactively via ensureLogin"
+    given: "An authenticated application state with a valid cookie jar"
+    when: "ensureLogin() is called prior to executing scraping or command tasks"
+    then: "Executes lightweight GET to /index.php, confirms presence of #pCC element, and resolves without re-authenticating"
+    error_cases:
+      - given: "Session has expired or cookie was invalidated by server"
+        when: "ensureLogin() detects absence of #pCC element in response"
+        then: "Automatically invokes login() with configured credentials and logs re-authentication"
+
+  - id: AC-AUTH-003
+    description: "Transparent retry and logout detection in secureFetch"
+    given: "A game URL requested via secureFetch"
+    when: "Server returns HTTP 500, 502, 503, or 504"
+    then: "secureFetch waits RETRY_DELAY (webhooks.js, 2000 ms) and retries up to configured retry limit (default 3) before failing"
+    error_cases:
+      - given: "Server returns HTTP 200 containing JSON error {\"s\":false,\"e\":{\"message\":\"Not logged in\"}} or HTML login form"
+        when: "secureFetch inspects response body"
+        then: "Detects logout state, invokes ensureLogin() once to refresh credentials, and retries original request"
+
+  - id: AC-AUTH-004
+    description: "Pre-load existing cookies from bootstrap file"
+    given: "A valid cookies.bootstrap.json file exists in working directory"
+    when: "loadCookieBootstrap() is executed during boot"
+    then: "Cookies are injected into tough-cookie jar and verified via isLoggedIn() before initiating full SSO"
+    error_cases:
+      - given: "cookies.bootstrap.json is missing or contains invalid JSON"
+        when: "loadCookieBootstrap() is invoked"
+        then: "Silently ignores file failure and proceeds with standard SSO credentials login"
+
+  - id: AC-AUTH-005
+    description: "Header management and Referer maintenance"
+    given: "Outbound request to FallenSword domain"
+    when: "secureFetch constructs request options"
+    then: "Sets User-Agent to GG_UA (or fallback), Origin to https://www.fallensword.com, and Referer to last known valid game URL"
+    error_cases:
+      - given: "Target URL is on external host (e.g. guide.fallensword.com or discord.com)"
+        when: "secureFetch or secureFetchExternal is called"
+        then: "Does not inject game cookies or session headers to external origin"
+
+security:
+  constitutions:
+    - SEC-OWASP-A01-2025   # Broken Access Control (SSRF & Header validation)
+    - SEC-OWASP-A02-2025   # Security Misconfiguration (Safe errors, no stack traces)
+    - SEC-OWASP-A04-2025   # Cryptographic Failures (Credential protection)
+    - SEC-OWASP-A07-2025   # Identification and Authentication Failures
+    - SEC-OWASP-A10-2025   # Mishandling of Exceptional Conditions (Fail-closed login)
+
+  project_specific:
+    - rule: "Credentials (GG_EMAIL, GG_PASSWORD, DISCORD_TOKEN) must never be logged to console, written to debug dumps, or exposed via HTTP endpoints."
+      severity: CRITICAL
+      cwe: 312
+      scope: "session.mjs, utils.js, configValidator.mjs"
+    - rule: "Debug HTML dumps created when GG_LOGIN_DEBUG=1 must be written to an ignored directory (DEBUG/) and sanitized of sensitive session cookies."
+      severity: HIGH
+      cwe: 532
+      scope: "session.mjs"
+    - rule: "SSRF protection: secureFetch must enforce that internal or private IPs (127.0.0.1, 10.0.0.0/8, 192.168.0.0/16) are not targetable through dynamic game parameters."
+      severity: CRITICAL
+      cwe: 918
+      scope: "utils.js"
+
+  threat_model:
+    - threat: "Account credential leakage through error stack traces or debug console logging"
+      impact: "Unauthorized compromise of user game account and Discord bot identity"
+      mitigation: "Redact passwords and session tokens in error handlers; catch and log sanitized error summaries"
+      verification: "Automated unit tests checking error message strings when login fails"
+    - threat: "Session fixation or replay resulting from stale bootstrap cookies"
+      impact: "Scraper operates with stale or hijacked account context"
+      mitigation: "Always validate #pCC after loading bootstrap cookies; discard on failure"
+      verification: "Integration test simulating expired bootstrap cookie triggering immediate re-login"
+
+constraints:
+  - "Maximum 3 retry attempts for transient HTTP 5xx failures before aborting request."
+  - "Login timeout of 15 seconds per SSO step to prevent process hang during network partition."
+  - "All FallenSword API requests must pass through authedFetch with cookie jar synchronization."
+
+dependencies:
+  - domain: "task-engine"
+    relationship: "Task engine triggers login during bootstrap and relies on session stability for task loops."
+    criticality: CRITICAL
+
+git:
+  last_implementation_branch: ""
+  last_pr_url: ""
+  last_pr_merged: ""
+  last_version_tag: ""
+
+tasks:
+  - id: AUTH-TASK-001
+    description: |
+      Harmonize environment variable precedence across session.mjs and utils.js.
+      Ensure GG_EMAIL, GG_PASSWORD, GG_UA, GG_LANG, GG_BASE take precedence, with graceful
+      fallback to legacy SWS_* and FS_* variables for backwards compatibility.
+    affects: "session.mjs, utils.js, .env"
+    depends_on: []
+    source: "spec.security.project_specific"
+    status: DONE
+
+  - id: AUTH-TASK-002
+    description: |
+      Build automated test suite for authentication and session recovery using mock HTTP servers.
+      Cover AC-AUTH-001 through AC-AUTH-005 without requiring real game network calls.
+    affects: "tests/auth-session/login-recovery.test.mjs, tests/helpers/fake-fetch.mjs, session.mjs, utils.js"
+    depends_on: ["AUTH-TASK-001"]
+    source: "acceptance_criteria"
+    status: DONE

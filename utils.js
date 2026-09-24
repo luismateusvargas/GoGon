@@ -1,30 +1,17 @@
+// utils.js - GoGon Utility Functions
 import { DELAY_BETWEEN_MESSAGES, RETRY_DELAY } from './webhooks.js';
 import { LOG, WARN, ERR } from './app_modules/core.js';
 import { getBuffNameById } from './game_modules/buffParser.js';
 import { apiEndpoints } from './game_modules/API.js';
 import * as cheerio from 'cheerio';
 
-import { FS_BASE, authedFetch, ensureLogin, isLoggedIn } from './session.mjs';
+// Session management imports
+import { FS_BASE, authedFetch, ensureLogin, isLoggedIn, DEFAULT_UA, DEFAULT_LANG } from './session.mjs';
+import { getSetting } from './config/runtime.mjs';
+
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import discordFetch from 'node-fetch';
-
-
-function normalizeFsUrl(u, base) {
-  try {
-    const url = new URL(u, base);
-    if (url.pathname.endsWith('/index.php')) {
-      const cmd = url.searchParams.get('cmd');
-      const subcmd = url.searchParams.get('subcmd');
-      if ((!cmd || cmd === '') && subcmd) {
-        url.searchParams.set('cmd', 'news');
-      }
-    }
-    return url.toString();
-  } catch {
-    return u;
-  }
-}
 
 let LAST_GOOD_REFERER = (new URL('index.php?cmd=news', new URL(FS_BASE || 'https://www.fallensword.com/'))).toString();
 
@@ -57,19 +44,177 @@ function __swsDumpHtml(tag, url, html) {
 const messageQueue = [];
 let processingQueue = false;
 
+// v1.8.0: Batch queue for combining multiple messages
+const batchQueue = new Map(); // webhook -> { messages: [], timeout: null, totalChars: 0 }
+const BATCH_SIZE = 10; // Max 10 embeds per Discord message
+const BATCH_IDLE_TIMEOUT = 100; // 100ms idle before sending partial batch
+const MAX_DISCORD_CHARS = 5800; // Safety limit (actual is 6000) for title+desc+fields+footer+author
+const MAX_EMBED_DESC = 4096;
+
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * Adds a message to the queue to be sent to Discord.
+ * Calculates the character count of an embed object to ensure Discord limits are met.
+ * @param {object} embed - The embed object to measure.
+ * @returns {number} The total character count.
+ */
+function getEmbedSize(embed) {
+    let size = 0;
+    if (embed.title) size += embed.title.length;
+    if (embed.description) size += embed.description.length;
+    if (embed.footer?.text) size += embed.footer.text.length;
+    if (embed.author?.name) size += embed.author.name.length;
+    if (embed.fields) {
+        for (const field of embed.fields) {
+            size += (field.name?.length || 0) + (field.value?.length || 0);
+        }
+    }
+    return size;
+}
+
+/**
+ * Adds a message to the batch queue for efficient Discord sending.
+ * Messages are automatically batched (up to 10 embeds) by webhook.
+ * Automatically splits batches if size exceeds Discord limits (6000 chars).
  * @param {string} webhook - The webhook URL.
- * @param {object} payload - The message payload.
+ * @param {object} payload - The message payload with embeds.
  */
 export function queueDiscordMessage(webhook, payload) {
-    messageQueue.push({ webhook, payload });
+    // Get or create batch for this webhook
+    if (!batchQueue.has(webhook)) {
+        batchQueue.set(webhook, {
+            messages: [],
+            timeout: null,
+            totalChars: 0
+        });
+    }
+
+    const batch = batchQueue.get(webhook);
+    
+    // Calculate new message size
+    let msgSize = (payload.content || '').length;
+    if (payload.embeds) {
+        for (const embed of payload.embeds) {
+            msgSize += getEmbedSize(embed);
+        }
+    }
+
+    // Check if adding this message would exceed limits
+    // 1. Embed count > 10
+    // 2. Total chars > 6000
+    const wouldExceedCount = batch.messages.length >= BATCH_SIZE; // Actually checking BEFORE adding, so >= 10 means full
+    
+    // Calculate current batch size if we merged now (deduplicated content is tricky to estimate perfectly, 
+    // but simply summing lengths is a safe upper bound)
+    const wouldExceedSize = (batch.totalChars + msgSize) > MAX_DISCORD_CHARS;
+
+    if (batch.messages.length > 0 && (wouldExceedCount || wouldExceedSize)) {
+        // Must send current batch first
+        if (wouldExceedSize) {
+             LOG('BatchQueue', `Batch size limit reached (${batch.totalChars} + ${msgSize} > ${MAX_DISCORD_CHARS}). Sending partial batch.`);
+        }
+        sendBatch(webhook);
+        
+        // Re-get new (empty) batch
+        return queueDiscordMessage(webhook, payload);
+    }
+    
+    // Add message to batch
+    batch.messages.push(payload);
+    batch.totalChars += msgSize;
+
+    // Clear existing timeout
+    if (batch.timeout) {
+        clearTimeout(batch.timeout);
+        batch.timeout = null;
+    }
+
+    // If batch is full (count limit), send immediately
+    if (batch.messages.length >= BATCH_SIZE) {
+        sendBatch(webhook);
+    } else {
+        // Schedule batch send after idle timeout
+        batch.timeout = setTimeout(() => {
+            sendBatch(webhook);
+        }, BATCH_IDLE_TIMEOUT);
+    }
+}
+
+/**
+ * Sends a batch of messages for a specific webhook.
+ * Merges multiple payloads into a single Discord message with multiple embeds.
+ * @param {string} webhook - The webhook URL to send the batch to.
+ */
+function sendBatch(webhook) {
+    if (!batchQueue.has(webhook)) return;
+
+    const batch = batchQueue.get(webhook);
+    
+    // Clear timeout
+    if (batch.timeout) {
+        clearTimeout(batch.timeout);
+        batch.timeout = null;
+    }
+
+    // Nothing to send
+    if (batch.messages.length === 0) {
+        batchQueue.delete(webhook);
+        return;
+    }
+
+    // Merge messages into a single payload
+    const mergedPayload = {
+        content: batch.messages
+            .map(m => m.content)
+            .filter(Boolean)
+            .filter((v, i, a) => a.indexOf(v) === i) // Deduplicate @mentions
+            .join(' '),
+        embeds: batch.messages.flatMap(m => m.embeds || [])
+    };
+
+    // Log batch efficiency
+    LOG('BatchQueue', `Sending batch: ${batch.messages.length} messages, 1 API call (saved ${(batch.messages.length - 1) * 2}s)`);
+
+    // Add to processing queue
+    messageQueue.push({ webhook, payload: mergedPayload });
+    
+    // Clear this batch
+    batchQueue.delete(webhook);
+
+    // Start processing if not already running
     if (!processingQueue) {
         processQueue();
     }
 }
+
+/**
+ * Flushes all pending batches immediately.
+ * Useful for graceful shutdown or manual triggering.
+ */
+export function flushAllBatches() {
+    LOG('BatchQueue', `Flushing ${batchQueue.size} pending batches...`);
+    const webhooks = Array.from(batchQueue.keys());
+    for (const webhook of webhooks) {
+        sendBatch(webhook);
+    }
+}
+
+/**
+ * Flushes pending batches and waits until the Discord send queue is empty (bounded).
+ * Used before an account switch so no notification from the old account is left queued. AC-CTRL-004
+ * @returns {Promise<boolean>} True when the queue drained within timeoutMs.
+ */
+export async function drainDiscordQueue(timeoutMs = 15_000) {
+    flushAllBatches();
+    const deadline = Date.now() + timeoutMs;
+    while (messageQueue.length > 0 || processingQueue) {
+        if (Date.now() >= deadline) return false;
+        await sleep(100);
+    }
+    return true;
+}
+
+
 
 /**
  * Processes the message queue one by one, sending messages to Discord.
@@ -97,64 +242,45 @@ export async function processQueue() {
     processingQueue = false;
 }
 
-async function setRefererIfPCC(response, usedUrl) {
-  try {
-    const ct = (response.headers.get('content-type') || '');
-    if (!ct.includes('text/html')) return;
-    const clone = response.clone();
-    const html = await clone.text();
-    if (/id\s*=\s*['"]pCC['"]/.test(html)) {
-      LAST_GOOD_REFERER = usedUrl;
-    }
-  } catch {}
-} 
+
+/** An authentication failure: retrying the same request cannot fix it. */
+function sessionError(message) {
+  const err = new Error(message);
+  err.sessionInvalid = true;
+  return err;
+}
 
 /**
  * A secure fetch wrapper for Fallen Sword game URLs.
  * Handles authentication, retries, and session validation for both HTML and JSON API responses.
  */
 export async function secureFetch(url, options = {}, retries = 3) {
-  // Constants and environment setup (assuming these are defined elsewhere)
-  const FS_BASE = process.env.FS_BASE || 'https://www.fallensword.com/';
-  const RETRY_DELAY = 1000; // 1 second delay for retries
-  let LAST_GOOD_REFERER = '';
-
-  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-  // Mock functions for environment compatibility if they don't exist
-  const __swsDebugLog = typeof globalThis.__swsDebugLog === 'function' ? globalThis.__swsDebugLog : () => {};
-  const __swsDumpHtml = typeof globalThis.__swsDumpHtml === 'function' ? globalThis.__swsDumpHtml : () => {};
-  const authedFetch = typeof globalThis.authedFetch === 'function' ? globalThis.authedFetch : globalThis.fetch;
-  const ensureLogin = typeof globalThis.ensureLogin === 'function' ? globalThis.ensureLogin : async () => { throw new Error('ensureLogin not implemented.'); };
-  // Helper to normalize URLs (assuming implementation exists)
-  const normalizeFsUrl = (urlToNormalize) => urlToNormalize;
-
-
-  // --- Main Function Logic ---
-  const base = new URL(FS_BASE);
+  // Use the imported/global versions instead of redefining
+  const base = new URL(FS_BASE || 'https://www.fallensword.com/');
   base.protocol = 'https:';
   base.hostname = 'www.fallensword.com';
 
-  const finalUrl = (() => { try { return new URL(url, base).toString(); } catch { return String(url); } })();
+  const finalUrl = (() => { 
+    try { 
+      return new URL(url, base).toString(); 
+    } catch { 
+      return String(url); 
+    } 
+  })();
+  
   const isGameUrl = finalUrl.startsWith(base.toString());
 
-  if (isGameUrl) {
-    try {
-      const norm = normalizeFsUrl(finalUrl, base);
-      if (norm !== finalUrl) {
-        url = norm;
-      }
-    } catch {}
-  }
-
-  __swsDebugLog('secureFetch:start', { url: finalUrl, isGameUrl, retries });
+  // REC-TASK-002: the legacy normalizeFsUrl call was removed. It was never defined in this
+  // module (a swallowed ReferenceError) and its result was never used for the request.
 
   const f = isGameUrl ? authedFetch : globalThis.fetch;
-  __swsDebugLog('secureFetch:fetchSelected', isGameUrl ? 'authedFetch' : 'global.fetch');
 
   // Login guard (proactive check)
   if (isGameUrl && !options.__skipEnsureLogin) {
-    try { await ensureLogin(); } catch (e) {
-      __swsDebugLog('secureFetch:ensureLoginWarn', e?.message || e);
+    try { 
+      await ensureLogin(); 
+    } catch (e) {
+      console.warn('[GoGon] secureFetch: ensureLogin warning:', e?.message || e);
     }
   }
 
@@ -168,14 +294,15 @@ export async function secureFetch(url, options = {}, retries = 3) {
     if (!/text\/html/i.test(ct)) return false;
     try {
       const html = await response.clone().text();
-      return /\bid\s*=\s*["']hc-account-link["']\b/i.test(html);
+      // No trailing \b: the closing quote is followed by a space or '>', which is not a word boundary.
+      return /\bid\s*=\s*["']hc-account-link["']/i.test(html);
     } catch {
       return false;
     }
   }
 
   /**
-   * [NEW] Detects a logged-out state by checking for the JSON error signature.
+   * Detects a logged-out state by checking for the JSON error signature.
    * This handles API responses like: {"s":false,"e":{"message":"...","code":...}}
    */
   async function isLoginJson(response) {
@@ -191,19 +318,21 @@ export async function secureFetch(url, options = {}, retries = 3) {
     }
   }
 
-
-  if (typeof globalThis.__didLoginAttempt === 'undefined') {
-    globalThis.__didLoginAttempt = false;
-  }
+  // AC-AUTH-003: re-authenticate at most once per request. (A process-wide flag used to make
+  // every logout after the first one fail permanently.)
+  let didLoginAttempt = false;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const defaultHeaders = {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7',
-        'User-Agent': (process.env.SWS_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'),
-        'Origin': 'https://www.fallensword.com',
-        'Referer': (LAST_GOOD_REFERER || 'https://www.fallensword.com/index.php?'),
+        'User-Agent': (getSetting('GG_UA') || DEFAULT_UA),
       };
+      // AC-AUTH-005: game Origin/Referer headers (like the cookie jar) are sent to the game only.
+      if (isGameUrl) {
+        defaultHeaders['Origin'] = 'https://www.fallensword.com';
+        defaultHeaders['Referer'] = LAST_GOOD_REFERER || 'https://www.fallensword.com/index.php?';
+      }
       const opts = {
         method: 'POST',
         redirect: 'follow',
@@ -214,36 +343,32 @@ export async function secureFetch(url, options = {}, retries = 3) {
 
       let res = await f(finalUrl, opts);
 
-      __swsDebugLog('secureFetch:response', { url: finalUrl, status: res?.status, redirected: res?.redirected, final: res?.url });
-
       if (isGameUrl && res.ok) {
         LAST_GOOD_REFERER = res.url || finalUrl;
       }
 
-      // [MODIFIED] Check for logged-out state using BOTH HTML and JSON detectors.
+      // Check for logged-out state using BOTH HTML and JSON detectors.
       if (isGameUrl && res.ok && (await isLoginHtml(res) || await isLoginJson(res))) {
-        __swsDebugLog('secureFetch:loginDetected', { url: res.url || finalUrl });
-        const dump = await res.clone().text();
-        __swsDumpHtml('secureFetch_login_detected', res?.url || finalUrl, dump);
+        console.warn('[GoGon] secureFetch: Login page detected at', res.url || finalUrl);
 
-        if (!globalThis.__didLoginAttempt) {
-          globalThis.__didLoginAttempt = true;
+        if (!didLoginAttempt) {
+          didLoginAttempt = true;
           try {
             await ensureLogin();
             res = await f(finalUrl, opts); // Retry the fetch after re-authenticating
 
             // Check again after retry. If it's still a login page, fail hard.
             if (await isLoginHtml(res) || await isLoginJson(res)) {
-               throw new Error('Session is still invalid after re-authentication.');
+               throw sessionError('Session is still invalid after re-authentication.');
             }
             // Success!
             return res;
           } catch (e) {
-            throw (e instanceof Error ? e : new Error('Failed to re-authenticate.'));
+            throw sessionError(e instanceof Error ? e.message : 'Failed to re-authenticate.');
           }
         } else {
           // Already tried to log in once, so fail immediately.
-          throw new Error('Session invalid/expired (login page detected).');
+          throw sessionError('Session invalid/expired (login page detected).');
         }
       }
 
@@ -254,22 +379,23 @@ export async function secureFetch(url, options = {}, retries = 3) {
       // Handle non-OK responses (e.g., 500 server errors)
       const status = res.status || 0;
       if (status >= 500 && attempt < retries) {
-        __swsDebugLog('secureFetch:serverErrorRetry', { status, attempt });
+        console.warn(`[GoGon] secureFetch: Server error ${status}, retry ${attempt + 1}/${retries}`);
         await sleep(RETRY_DELAY);
-        continue; // Go to the next iteration of the loop
+        continue;
       }
 
-      throw new Error(`Request failed with status: ${status}`);
+      return res;
 
     } catch (err) {
-      if (attempt < retries) {
-        await sleep(RETRY_DELAY);
-      } else {
-        console.error('secureFetch error after all retries:', err);
+      if (attempt >= retries || err?.sessionInvalid) {
         throw err;
       }
+      console.warn(`[GoGon] secureFetch: Error on attempt ${attempt + 1}, retrying...`, err?.message);
+      await sleep(RETRY_DELAY);
     }
   }
+
+  throw new Error('secureFetch: Max retries exceeded');
 }
 
 
@@ -301,9 +427,9 @@ export async function securePost(url, form, options = {}, retries = 3) {
   const body = new URLSearchParams(form || {});
   const headers = {
     'content-type': 'application/x-www-form-urlencoded',
-    'user-agent': process.env.SWS_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+    'user-agent': (getSetting('GG_UA') || DEFAULT_UA),
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'accept-language': process.env.SWS_LANG || 'en-US,en;q=0.9,pt-BR;q=0.8',
+    'accept-language': (getSetting('GG_LANG') || DEFAULT_LANG),
     'cache-control': 'no-cache',
     'pragma': 'no-cache',
     ...(options.headers || {})
@@ -369,16 +495,6 @@ export function sendDiscordMessage(message, wTitle, colorCode, footerText, group
   };
 
   queueDiscordMessage(webhook, { content: group, embeds: [embed] });
-  /* securePost(webhook, { content: group, embeds: [embed] }).catch(err =>
-    console.error('sendDiscordMessage error:', err)
-  ); */
-}
-
-export function sendSimpleMessage(message, webhook) {
-	queueDiscordMessage(webhook, message);
-  /* securePost(webhook, { content: message }).catch(err =>
-    console.error('sendSimpleMessage error:', err)
-  ); */
 }
 
 export function sendExtraDiscordMessage(
@@ -407,9 +523,6 @@ export function sendExtraDiscordMessage(
   };
 
   queueDiscordMessage(webhook, { content: group, embeds: [embed] });
-  /* securePost(webhook, { content: group, embeds: [embed] }).catch(err =>
-    console.error('sendExtraDiscordMessage error:', err)
-  ); */
 }
 
 export function sendExtraDiscordMessageNODROP(
@@ -434,21 +547,6 @@ export function sendExtraDiscordMessageNODROP(
   };
 
   queueDiscordMessage(webhook, { content: group, embeds: [embed] });
-  /* securePost(webhook, { content: group, embeds: [embed] }).catch(err =>
-    console.error('sendExtraDiscordMessageNODROP error:', err)
-  ); */
-}
-
-// --- HELPER FUNCTIONS FOR PARSING (MOVED FROM BountyBoard.js) ---
-
-// Helper to parse HTML string into a document
-export function toDoc(html) { 
-  return new DOMParser().parseFromString(html, 'text/html'); 
-}
-
-// Helper to clean up text content from HTML elements
-export function txt(n) {
-  return (n?.textContent || '').replace(/\u00A0/g, ' ').replace(/\s+/g,' ').trim();
 }
 
 // --- DUPLICATED FUNCTIONS (NOW CENTRALIZED) ---
@@ -499,6 +597,7 @@ export async function getBuffs(targetLink, isBounty) {
 
     // The raw list of buffs from the API.
     const buffsList = data.r;
+	const parsedAt = data.t;
 
     // If we're processing for a bounty, we transform the data.
     if (isBounty) {
@@ -510,9 +609,9 @@ export async function getBuffs(targetLink, isBounty) {
       if (numberOfBuffs > 0) {
         for (const buff of buffsList) {
           const buffName = getBuffNameById(buff.id);
-          if (buffName === 'deflect') {
+          if (buffName === 'Deflect') {
             hasDeflect = true;
-          } else if (buffName === 'cloak') {
+          } else if (buffName === 'Cloak') {
             isCloaked = true;
           }
         }
@@ -521,7 +620,7 @@ export async function getBuffs(targetLink, isBounty) {
     }
 
     // If not for a bounty, return the raw buff list.
-    return buffsList;
+    return { buffsList, parsedAt };
 
   } catch (e) {
     WARN('getBuffs', `Error fetching buffs: ${e}`);

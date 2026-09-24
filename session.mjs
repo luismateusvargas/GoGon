@@ -1,6 +1,8 @@
 // session.mjs — SSO robusto + cookie bootstrap + logs opcionais
 // Node 20/22 ESM
 import { LOG } from './app_modules/core.js';
+import { ENV_ALIASES } from './app_modules/constants.js';
+import { getSetting, getBooleanSetting } from './config/runtime.mjs';
 import { CookieJar } from 'tough-cookie';
 import * as fetchCookieNS from 'fetch-cookie';
 const fetchCookie = fetchCookieNS.default ?? fetchCookieNS;
@@ -10,18 +12,58 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 // ---------- Config ----------
-const BASE = process.env.SWS_BASE || process.env.FS_BASE || 'https://www.fallensword.com';
-export const SWS_BASE = BASE;
+/**
+ * Reads a GG_ setting, falling back to its legacy SWS_/FS_ names (ENV_ALIASES). AUTH-TASK-001
+ * Empty or whitespace-only values are treated as unset.
+ */
+export function readEnv(name, defaultValue = undefined, env = process.env) {
+  for (const key of ENV_ALIASES[name] || [name]) {
+    const value = env[key];
+    if (typeof value === 'string' && value.trim() !== '') return value;
+  }
+  return defaultValue;
+}
+
+export const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
+export const DEFAULT_LANG = 'en-US,en;q=0.9,pt-BR;q=0.8';
+
+const BASE = readEnv('GG_BASE', 'https://www.fallensword.com');
+export const GG_BASE = BASE;
 export const FS_BASE = BASE;
-export const SSO_ENTRY = process.env.SWS_SSO_URL || 'https://account.huntedcow.com/auth?game=6';
+export const SSO_ENTRY = readEnv('GG_SSO_URL', 'https://account.huntedcow.com/auth?game=6');
 
+// AC-AUTH-001 / constraints: each SSO step is bounded so a network partition cannot hang boot.
+export const LOGIN_STEP_TIMEOUT_MS = 15000;
 
-const DEBUG_LOGIN = String(process.env.SWS_LOGIN_DEBUG || '').toLowerCase() === '1' || String(process.env.SWS_LOGIN_DEBUG || '').toLowerCase() === 'true';
-const DEBUG_DIR = process.env.SWS_DEBUG_DIR || path.resolve(process.cwd(), 'DEBUG');
+// Hot registry settings (CTRL-TASK-001): read per request so dashboard changes apply immediately.
+const isLoginDebug = () => getBooleanSetting('GG_LOGIN_DEBUG');
+const userAgent = () => getSetting('GG_UA') || DEFAULT_UA;
+const acceptLanguage = () => getSetting('GG_LANG') || DEFAULT_LANG;
+const DEBUG_DIR = readEnv('GG_DEBUG_DIR', path.resolve(process.cwd(), 'DEBUG'));
+
+// ---------- Credentials (CTRL-TASK-004) ----------
+// The active account's credentials come from a provider: .env by default, or the selected
+// encrypted account profile once the control plane switches accounts. A null provider fails
+// closed: every login attempt reports missing credentials until a switch succeeds.
+const envCredentials = () => ({ email: readEnv('GG_EMAIL'), password: readEnv('GG_PASSWORD') });
+let credentialProvider = envCredentials;
+
+export function setCredentialProvider(provider) {
+  credentialProvider = provider === undefined ? envCredentials : provider;
+}
+
+export function currentCredentials() {
+  return credentialProvider ? (credentialProvider() || {}) : {};
+}
 
 // ---------- Cookie jar ----------
 const jar = new CookieJar();
 export const authedFetch = fetchCookie(globalThis.fetch, jar);
+
+/** Drops every game cookie, so the next request is anonymous (account switch, AC-CTRL-004). */
+export async function resetSession() {
+  await jar.removeAllCookies();
+}
 
 // ---------- Utils ----------
 function abs(u, base = BASE) {
@@ -35,13 +77,31 @@ function nowTag() {
 }
 
 async function dbgDump(name, html) {
-  if (!DEBUG_LOGIN) return;
+  if (!isLoginDebug()) return;
   try {
     await fs.mkdir(DEBUG_DIR, { recursive: true });
     const file = path.join(DEBUG_DIR, `${nowTag()}-${name}.html`);
     await fs.writeFile(file, html, 'utf8');
     console.warn(`[login-debug] Snapshot salvo em ${file} (len=${html.length})`);
   } catch {}
+}
+
+/**
+ * Runs one login HTTP step. Network failures, timeouts, and 5xx answers become a connection
+ * error that names only the step and URL, never the submitted form. AC-AUTH-001
+ */
+async function loginStep(url, init, tag) {
+  let res;
+  try {
+    res = await authedFetch(url, { signal: AbortSignal.timeout(LOGIN_STEP_TIMEOUT_MS), ...init });
+  } catch (e) {
+    const reason = e?.name === 'TimeoutError' ? `timed out after ${LOGIN_STEP_TIMEOUT_MS}ms` : (e?.cause?.code || e?.message || 'network error');
+    throw new Error(`Connection failure during ${tag} (${new URL(url).host}): ${reason}`);
+  }
+  if (res.status >= 500) {
+    throw new Error(`Connection failure during ${tag} (${new URL(url).host}): HTTP ${res.status}`);
+  }
+  return res;
 }
 
 function pickLoginForm(document) {
@@ -77,16 +137,16 @@ function pickHiddenRelayForm(document) {
 
 async function getHtml(url, options = {}, tag = 'step') {
   const headers = {
-    'user-agent': process.env.SWS_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+    'user-agent': userAgent(),
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'accept-language': process.env.SWS_LANG || 'en-US,en;q=0.9,pt-BR;q=0.8',
+    'accept-language': acceptLanguage(),
     'cache-control': 'no-cache',
     'pragma': 'no-cache',
     ...(options.headers || {}),
   };
-  const res = await authedFetch(url, { redirect: 'follow', credentials: 'include', ...options, headers });
+  const res = await loginStep(url, { redirect: 'follow', credentials: 'include', ...options, headers }, tag);
   const html = await res.text();
-  if (DEBUG_LOGIN) console.warn(`[login-debug] GET ${url} -> ${res.status}`);
+  if (isLoginDebug()) console.warn(`[login-debug] GET ${url} -> ${res.status}`);
   await dbgDump(tag, html);
   return { res, html };
 }
@@ -94,16 +154,16 @@ async function getHtml(url, options = {}, tag = 'step') {
 async function postForm(url, body, options = {}, tag = 'post') {
   const headers = {
     'content-type': 'application/x-www-form-urlencoded',
-    'user-agent': process.env.SWS_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+    'user-agent': userAgent(),
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'accept-language': process.env.SWS_LANG || 'en-US,en;q=0.9,pt-BR;q=0.8',
+    'accept-language': acceptLanguage(),
     'cache-control': 'no-cache',
     'pragma': 'no-cache',
     ...(options.headers || {}),
   };
-  const res = await authedFetch(url, { method: 'POST', body, redirect: 'follow', credentials: 'include', ...options, headers });
+  const res = await loginStep(url, { method: 'POST', body, redirect: 'follow', credentials: 'include', ...options, headers }, tag);
   const html = await res.text();
-  if (DEBUG_LOGIN) console.warn(`[login-debug] POST ${url} -> ${res.status}`);
+  if (isLoginDebug()) console.warn(`[login-debug] POST ${url} -> ${res.status}`);
   await dbgDump(tag, html);
   return { res, html };
 }
@@ -121,7 +181,7 @@ export async function loadCookieBootstrap(file = path.resolve(process.cwd(), 'co
       await jar.setCookie(cookieStr, BASE);
       set++;
     }
-    if (set > 0 && DEBUG_LOGIN) console.warn(`[login-debug] Bootstrap de ${set} cookies aplicado do arquivo ${file}`);
+    if (set > 0 && isLoginDebug()) console.warn(`[login-debug] Bootstrap de ${set} cookies aplicado do arquivo ${file}`);
     return set > 0;
   } catch (e) {
     return false;
@@ -141,13 +201,21 @@ export async function isLoggedIn() {
   return /id\s*=\s*['"]pCC['"]/.test(html);
 }
 
-export async function login(email = process.env.SWS_EMAIL || process.env.FS_EMAIL,
-                            password = process.env.SWS_PASSWORD || process.env.FS_PASSWORD) {
-  if (!email || !password) throw new Error('Credenciais ausentes: defina SWS_EMAIL/FS_EMAIL e SWS_PASSWORD/FS_PASSWORD');
+/**
+ * @param {object} [opts] - useBootstrap: false skips cookies.bootstrap.json (an account switch
+ *   must never resume the previous account from that file).
+ */
+export async function login(email = currentCredentials().email,
+                            password = currentCredentials().password,
+                            { useBootstrap = true } = {}) {
+  if (!email || !password) throw new Error('Credentials missing: define GG_EMAIL and GG_PASSWORD in .env or activate an account profile');
 
   // 0) Tenta bootstrap de cookies (se existir)
-  await loadCookieBootstrap().catch(() => {});
-  if (await isLoggedIn()) return console.log('Account logged in');;
+  if (useBootstrap) await loadCookieBootstrap().catch(() => {});
+  if (await isLoggedIn()) {
+    console.log('Account logged in');
+    return true; // ✅ ADD THIS RETURN
+  }
 
   // 1) Abre a home
   let curUrl = abs('/index.php');
@@ -224,16 +292,21 @@ export async function login(email = process.env.SWS_EMAIL || process.env.FS_EMAI
       }, 'sso-relay');
       if (/id\s*=\s*['"]pCC['"]/.test(fin.html)) return true;
     }
-    if (await isLoggedIn()) return console.log('login successful');
+    if (await isLoggedIn()) {
+      console.log('login successful');
+      return true; // ✅ ADD THIS RETURN
+    }
   }
-  return false;
+  // AC-AUTH-001: a completed SSO sequence without #pCC means the credentials were rejected.
+  throw new Error('Authentication failed: the game did not accept the configured GG_EMAIL/GG_PASSWORD (no #pCC after SSO).');
 }
 
 export async function ensureLogin(
-  email = process.env.SWS_EMAIL || process.env.FS_EMAIL,
-  password = process.env.SWS_PASSWORD || process.env.FS_PASSWORD
+  email = currentCredentials().email,
+  password = currentCredentials().password
 ) {
   const ok = await isLoggedIn();
   if (ok) return LOG('login', `Account logged in`);
+  LOG('login', 'Session expired or invalid; re-authenticating'); // AC-AUTH-002
   return await login(email, password);
 }

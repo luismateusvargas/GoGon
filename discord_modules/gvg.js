@@ -1,8 +1,11 @@
 // discord_modules/gvg.js
 
-import { getContent } from '../_sws_data/handler/sws_database.js';
+import { getContent } from '../_gg_data/handler/gg_database.js';
+import { COOLDOWNS } from '../app_modules/constants.js';
 
 const COOLDOWN_STATE_KEY = 'gvg_cooldowns';
+const MAX_FIELDS_PER_EMBED = 25; // Discord API hard limit
+const MAX_EMBEDS_PER_MESSAGE = 10; // Discord API hard limit
 
 /**
  * Calculates remaining time from a future timestamp and formats it.
@@ -42,10 +45,12 @@ export async function handleGvgCooldownInteraction(interaction) {
     await interaction.deferReply();
 
     try {
-        const cooldownsJson = getContent(COOLDOWN_STATE_KEY);
+        const cooldownsJson = await getContent(COOLDOWN_STATE_KEY);
         const cooldowns = JSON.parse(cooldownsJson || '{}');
 
         const activeCooldowns = Object.values(cooldowns)
+            // Skip malformed entries: Discord rejects fields without a name, and bad timestamps format as NaN.
+            .filter(cd => cd && typeof cd.guildName === 'string' && cd.guildName.trim() && Number.isFinite(cd.expires))
             .map(cd => ({
                 name: cd.guildName,
                 value: formatRemainingTime(cd.expires)
@@ -56,17 +61,23 @@ export async function handleGvgCooldownInteraction(interaction) {
             await interaction.editReply('✅ There are currently no active GvG cooldowns.');
             return;
         }
-        
-        const embed = {
-            title: '⚔️ GvG Cooldown Status',
-            description: 'Time remaining before a new conflict can be initiated against these guilds:',
-            color: 0x2ECC71, // A nice green
-            fields: activeCooldowns,
-            timestamp: new Date().toISOString(),
-            footer: { text: 'Cooldowns are set for 7 days after a conflict ends.' }
-        };
 
-        await interaction.editReply({ embeds: [embed] });
+        const cooldownDays = Math.round(COOLDOWNS.GVG / 86_400_000);
+        const embeds = [];
+        // Discord allows at most 25 fields per embed and 10 embeds per message.
+        for (let i = 0; i < activeCooldowns.length && embeds.length < MAX_EMBEDS_PER_MESSAGE; i += MAX_FIELDS_PER_EMBED) {
+            const fields = activeCooldowns.slice(i, i + MAX_FIELDS_PER_EMBED);
+            embeds.push(i === 0 ? {
+                title: '⚔️ GvG Cooldown Status',
+                description: 'Time remaining before a new conflict can be initiated against these guilds:',
+                color: 0x2ECC71, // A nice green
+                fields,
+                timestamp: new Date().toISOString(),
+                footer: { text: `Cooldowns are set for ${cooldownDays} days after a conflict ends.` }
+            } : { color: 0x2ECC71, fields });
+        }
+
+        await interaction.editReply({ embeds });
 
     } catch (error) {
         console.error('Error handling /gvgcooldown interaction:', error);
