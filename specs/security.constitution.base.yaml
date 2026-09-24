@@ -1,0 +1,1105 @@
+# =============================================================================
+# SDD GLOBAL SECURITY CONSTITUTION — v2.0
+# =============================================================================
+# Scope: ALL projects. Injected into every AI turn via /sdd-spec-start and
+#         /sdd-spec-update. Covers:
+#   - OWASP Top 10 2025 (released Jan 2026 — CURRENT edition, replaces 2021)
+#   - OWASP API Security Top 10 2023 (still current, no 2025 edition exists)
+#   - OWASP Top 10 for LLM Applications v2.0 (2025)
+#   - OWASP Agentic AI Top 10 (Dec 2025)
+#   - OWASP ASVS 4.0
+#   - CWE Top 25 2025
+#   - Database-specific rules by ORM/package
+#
+# Key changes from 2021→2025 Web Top 10:
+#   - Security Misconfiguration jumps #5→#2 (100% of apps affected)
+#   - Software Supply Chain Failures — NEW at #3
+#   - Mishandling of Exceptional Conditions — NEW at #10
+#   - SSRF absorbed into A01 (Broken Access Control)
+#   - Injection drops #3→#5 (parameterization adoption improved)
+#   - Cryptographic Failures drops #2→#4
+#
+# Key additions for AI-assisted development (v2.0):
+#   - OWASP LLM Top 10 v2.0 — 10 LLM-specific risks
+#   - OWASP Agentic AI Top 10 — 10 agent-specific risks
+#   - Prompt injection defenses (direct + indirect)
+#   - AI supply chain security (model weights, embeddings, RAG)
+#   - Agent tool misuse prevention
+#
+# Data basis (2025 edition): 175,000+ CVEs, 589 CWEs, 2.8M applications
+# =============================================================================
+
+metadata:
+  version: "2.0.0"
+  last_updated: "2026-07-08"
+  based_on:
+    - "OWASP Top 10 2025 (Jan 2026)"
+    - "OWASP API Security Top 10 2023"
+    - "OWASP Top 10 for LLM Applications v2.0 (2025)"
+    - "OWASP Agentic AI Top 10 (Dec 2025)"
+    - "OWASP ASVS 4.0"
+    - "CWE Top 25 2025"
+  enforcement: "MANDATORY — ALL SECTIONS APPLY TO ALL PROJECTS"
+
+# =============================================================================
+# SECTION 1: OWASP TOP 10 2025 (CURRENT EDITION)
+# =============================================================================
+# Based on analysis of 175K+ CVEs across 2.8M applications.
+# Published January 2026. This REPLACES the 2021 edition.
+
+owasp_top_10_2025:
+
+  # --- A01:2025 Broken Access Control ---
+  # Also absorbs SSRF (was A10:2021)
+  - id: SEC-OWASP-A01-2025
+    cwe: [22, 285, 287, 352, 359, 425, 441, 566, 601, 639, 651, 668, 706, 732,
+          804, 840, 862, 863, 918, 926, 946, 952, 962, 1004, 1014, 1021, 1031,
+          1036, 1047, 1050, 1084, 1092, 1095, 1102, 1108, 1110, 1114, 1118,
+          1122, 1126, 1130, 1134, 1138, 1142, 1146, 1150, 1154, 1158, 1162,
+          1166, 1170, 1174, 1178, 1182, 1186, 1190, 1194, 1198, 1202, 1206,
+          1210, 1214, 1218, 1222, 1226, 1230, 1234, 1238, 1242, 1246, 1250,
+          1254, 1258, 1262, 1266, 1270, 1274, 1278, 1282, 1286, 1290, 1294]
+    owasp_2025: "A01:2025"
+    severity: CRITICAL
+    rules:
+      - "EVERY endpoint accessing a resource by ID MUST verify ownership/role BEFORE returning data."
+      - "Deny by default. ALL access control decisions server-side. NEVER client-side only."
+      - "JWT/PASETO/session tokens validated on EVERY request. No exceptions for 'internal' routes."
+      - "CORS: exact origins only. NEVER Access-Control-Allow-Origin: *."
+      - "Directory listing disabled on web servers and object storage."
+      - "Multi-tenant: tenant isolation at QUERY LAYER, not application logic."
+      - "API keys scoped to minimum required permissions. Rotate on revocation."
+      - "Forbidden (403) and Not Found (404) indistinguishable for unauthorized resources."
+      - "SSRF PREVENTION (absorbed into A01): User-supplied URLs validated by ALLOWLIST. Block internal IPs (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16). Resolve DNS first, then validate resolved IP. Cloud: IMDSv2 only."
+    detect:
+      - 'app\.get\(.*/:id'                                   # route with :id, no auth middleware
+      - '\.findById\(req\.params\.'                          # direct ID lookup, no ownership check
+      - 'if \(user\.role === .admin.\)'                      # client-side role check
+      - 'Access-Control-Allow-Origin: \*'                    # wildcard CORS
+      - 'fetch\(req\.|axios\(req\.|request\(.*params\.url'   # SSRF: user-controlled URL
+      - "169\.254\.169\.254"                                  # cloud metadata endpoint access
+    fix_example: |
+      # CORRECT: ownership-gated resource access
+      const resource = await db.resource.findFirst({
+        where: { id: req.params.id, ownerId: req.user.id }
+      })
+      if (!resource) return res.status(404).json({ error: 'Not found' })
+
+      # CORRECT: SSRF-safe fetch
+      const parsed = new URL(userUrl)
+      if (!allowedHosts.includes(parsed.hostname)) throw new Error('Blocked')
+      const ips = await dns.resolve(parsed.hostname)
+      if (ips.some(isPrivateIP)) throw new Error('Blocked')
+
+  # --- A02:2025 Security Misconfiguration ---
+  # Jumped from #5 → #2. Now affects 100% of tested applications.
+  - id: SEC-OWASP-A02-2025
+    cwe: [2, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 200, 209, 213, 215, 216,
+          219, 248, 260, 453, 497, 501, 548, 551, 555, 565, 573, 579, 585,
+          597, 601, 611, 616, 646, 689, 749, 755, 779, 937, 1008, 1024, 1035,
+          1104]
+    owasp_2025: "A02:2025"
+    severity: CRITICAL
+    rules:
+      - "Security headers on EVERY HTTP response: CSP (with nonces/hashes), X-Content-Type-Options: nosniff, X-Frame-Options: DENY, Strict-Transport-Security: max-age=31536000; includeSubDomains, Referrer-Policy: strict-origin-when-cross-origin, Permissions-Policy."
+      - "NEVER 'unsafe-inline' or 'unsafe-eval' in CSP. Use nonces or hashes."
+      - "Default credentials MUST be changed on first deploy. No 'admin/admin'."
+      - "Directory listing MUST be disabled on web server, S3, static file serving."
+      - "Unnecessary HTTP methods (TRACE, OPTIONS without CORS, DELETE unused) MUST be disabled."
+      - "DEBUG mode OFF in production. Debug endpoints (/debug, /graphql playground, /swagger try-it) disabled."
+      - "Cookie security: SameSite=Strict (or Lax for cross-site), Secure, HttpOnly, __Host- prefix."
+      - "Cloud metadata endpoints (169.254.169.254) blocked from app network. IMDSv2 required on AWS."
+      - "Error responses: consistent JSON. NEVER stack trace, SQL, internal path in production."
+      - "CORS: exact origin validation. No credentials with wildcard origins."
+      - "API versioning: deprecated endpoints return Sunset header. Staging endpoints NOT accessible in production."
+    detect:
+      - "debug: true|DEBUG=True|NODE_ENV=development"
+      - "unsafe-inline|unsafe-eval"
+      - "admin.*admin.*password|root.*root.*password"
+      - 'res\.status\(500\)\.json\(\{.*(err|stack|trace)'
+      - 'SameSite=None.*Secure.*false'
+
+  # --- A03:2025 Software Supply Chain Failures ---
+  # NEW for 2025. Expands "Vulnerable & Outdated Components" (A06:2021).
+  # Has highest incidence rate at 5.19%.
+  - id: SEC-OWASP-A03-2025
+    cwe: [345, 347, 494, 502, 506, 829, 830, 912, 937, 1035, 1104, 1295, 1320,
+          1321, 1381, 1383, 1385, 1387, 1389, 1391, 1393, 1395, 1397, 1399]
+    owasp_2025: "A03:2025"
+    severity: CRITICAL
+    rules:
+      - "Dependencies scanned for known CVEs. CI/CD blocks builds with CRITICAL/HIGH severity CVEs."
+      - "Dependency versions PINNED (package-lock.json, yarn.lock, Pipfile.lock, Cargo.lock, go.sum)."
+      - "Package integrity: lockfiles with integrity hashes. npm: integrity field, pip: --require-hashes."
+      - "Unused dependencies MUST be removed. Each dependency = attack surface."
+      - "NEVER import from CDN in production. Self-host or bundle. SRI hashes if CDN required."
+      - "EOL frameworks/runtimes MUST NOT be used: Python 2, Node < 18, .NET < 6, Java < 17, AngularJS 1.x."
+      - "CI/CD pipeline: verify artifact integrity (checksums, signed commits, signed container images)."
+      - "Container images: scan for CVEs (Trivy, Snyk). Pin base image by SHA256, NOT :latest tag."
+      - "SBOM (Software Bill of Materials) generated and stored with each release."
+      - "Dependabot/Renovate enabled for automated dependency updates."
+    detect:
+      - 'script src="https://.*\.js"'                     # CDN without SRI
+      - '"node": "1[0-7]|"python": "2'                     # EOL runtime
+      - ':latest'                                           # floating container tag
+      - 'react@1[5-7]|angular@1\.|vue@[12]\.'              # EOL framework versions
+
+  # --- A04:2025 Cryptographic Failures ---
+  # Dropped from #2 → #4
+  - id: SEC-OWASP-A04-2025
+    cwe: [259, 261, 296, 310, 311, 312, 313, 314, 315, 319, 320, 321, 322,
+          323, 324, 325, 326, 327, 328, 329, 330, 331, 335, 337, 347, 522,
+          523, 524, 525, 780, 818]
+    owasp_2025: "A04:2025"
+    severity: CRITICAL
+    rules:
+      - "Passwords: bcrypt (cost >= 12) or argon2id (t=2, m=65536, p=1). NEVER sha256/md5/unsalted."
+      - "Data in transit: TLS 1.3 minimum. TLS 1.2 for legacy only. NEVER HTTP for authenticated endpoints."
+      - "Data at rest: AES-256-GCM or XChaCha20-Poly1305. Key in KMS/vault, NEVER in code or env directly."
+      - "API keys, secrets, tokens: NEVER in source, config files, .env in git, client-side JS."
+      - "JWT: RS256 (RSA 2048+) or ES256 preferred. HMAC: secret >= 256 bits, stored in KMS."
+      - "JWT validation: exp, nbf, iss, aud on EVERY request. NEVER accept 'none' algorithm."
+      - "Session IDs: >= 128 bits from CSPRNG. NEVER incremental, timestamped, or Math.random()."
+      - "PII at rest: encrypted. PII in logs: redacted. PII in URLs: NEVER (use POST body or header)."
+      - "Key rotation: data encryption keys 90 days max. Signing keys 30 days max."
+      - "NEVER implement custom cryptography. Use stdlib crypto or well-known library (libsodium)."
+    detect:
+      - 'sha256\(|md5\(|\.digest\(.sha1'                   # weak hash
+      - 'Math\.random\('                                     # non-CSPRNG
+      - 'process\.env\.(SECRET|KEY|TOKEN|PASSWORD)'         # secret in env
+      - 'algorithm.*:.*none'                                 # JWT none algorithm
+      - 'http://'                                            # HTTP for any URL
+    fix_example: |
+      import bcrypt from 'bcrypt'
+      const hash = await bcrypt.hash(password, 12)
+      import { randomBytes } from 'crypto'
+      const token = randomBytes(32).toString('hex')
+
+  # --- A05:2025 Injection ---
+  # Dropped from #3 → #5 (parameterization adoption improved across industry)
+  - id: SEC-OWASP-A05-2025
+    cwe: [20, 74, 75, 77, 78, 79, 80, 83, 87, 88, 89, 90, 91, 93, 94, 95,
+          96, 97, 98, 99, 116, 138, 157, 184, 624, 643, 644, 652, 707, 790]
+    owasp_2025: "A05:2025"
+    severity: CRITICAL
+    rules:
+      - "XSS: ALL user data in HTML MUST be context-encoded. DOMPurify or framework auto-escaping. NEVER dangerouslySetInnerHTML/v-html/innerHTML with user data."
+      - "SQL Injection: parameterized queries 100%. NEVER string concatenation or template literals for query building."
+      - "OS Command Injection: NEVER user input to exec(), spawn(), system(), subprocess with shell=True. Use argument arrays."
+      - "NoSQL Injection: sanitize $where, $regex, $gt, $ne from user input. Schema validation on MongoDB."
+      - "Template Injection: NEVER render user input as template."
+      - "HTTP Header Injection: strip CRLF (\r\n) from user data in headers."
+      - "Log Injection: sanitize user input before logging. Strip newlines and control characters."
+      - "ORMs do NOT prevent injection in raw queries. Any .raw(), .query(), .execute() with user input MUST be parameterized."
+    detect:
+      - "innerHTML|dangerouslySetInnerHTML|v-html|bypassSecurityTrust"
+      - 'exec\(.*\$|spawn\(.*\$|system\(.*\$|subprocess.*shell=True'
+      - '\.raw\(.*\$\{|\.query\(.*\$\{|\.execute\(.*\$\{'
+      - "'SELECT.*\\+.*|'INSERT.*\\+.*"
+      - '\$where.*req\.|\$regex.*req\.'
+
+  # --- A06:2025 Insecure Design ---
+  # Dropped from #4 → #6
+  - id: SEC-OWASP-A06-2025
+    cwe: [209, 256, 272, 306, 307, 308, 400, 434, 451, 501, 770, 841, 1046,
+          1059, 1078, 1098, 1109, 1129, 1149, 1169, 1189, 1209, 1229, 1249,
+          1269, 1289]
+    owasp_2025: "A06:2025"
+    severity: HIGH
+    rules:
+      - "Threat model documented for every feature touching auth, payments, PII, or admin."
+      - "Rate limiting on ALL auth endpoints. Minimum: 5 req/min/IP login, 3 req/min password reset."
+      - "Idempotency keys on ALL payment/transaction endpoints. Server verifies and rejects duplicates."
+      - "Input validation: ALLOWLIST, not blocklist. Define valid, reject rest. Server-side even if client validates."
+      - "Business logic limits: max order quantity, max transfer amount, max upload size. Server-enforced."
+      - "Segregation of duties: admin functions separate service or minimum separate auth scope."
+      - "NEVER expose stack traces to clients. Generic errors in production. Structured logging for details."
+    detect:
+      - 'app\.post\(.*login'                               # login without rate limiter
+      - 'res\.status\(500\)\.json\(\{.*err'                # stack trace in 500
+      - '\.catch\(.*res\.send'                             # raw error to client
+
+  # --- A07:2025 Identification and Authentication Failures ---
+  # Renamed from "Identification and Authentication Failures"
+  - id: SEC-OWASP-A07-2025
+    cwe: [255, 259, 260, 261, 262, 263, 287, 288, 290, 291, 292, 293, 294,
+          295, 296, 297, 298, 299, 300, 301, 302, 303, 304, 305, 307, 308,
+          309, 384, 521, 549, 613, 620, 640, 798]
+    owasp_2025: "A07:2025"
+    severity: CRITICAL
+    rules:
+      - "MFA enforced for all user accounts. TOTP minimum. FIDO2/WebAuthn for sensitive operations."
+      - "Password policy: minimum 8 chars (12+ admin). Check against haveibeenpwned API. Support >= 64 chars."
+      - "Login: generic error 'Invalid credentials'. NEVER reveal email existence."
+      - "Account lockout: 5 failures → 15 min lockout. 10 failures → 1 hour + notification."
+      - "Password reset tokens: >= 128 bits, single-use, 15 min expiry. Invalidate all sessions on password change."
+      - "Session fixation: regenerate session ID on login, role change, privilege escalation."
+      - "NEVER security questions. Use email OTP, TOTP, or recovery codes."
+      - "Brute force: rate limit per IP + per account. Exponential backoff."
+    detect:
+      - 'password.*length.*[1-7]'                           # password < 8 chars
+      - 'user\.exists|email.*exist|account.*found'          # reveals user existence
+
+  # --- A08:2025 Software and Data Integrity Failures ---
+  - id: SEC-OWASP-A08-2025
+    cwe: [345, 346, 347, 348, 349, 350, 351, 352, 353, 354, 355, 356, 357,
+          358, 359, 360, 494, 502, 506, 829, 830, 912]
+    owasp_2025: "A08:2025"
+    severity: HIGH
+    rules:
+      - "CI/CD: verify artifact integrity (checksums, signed commits, signed containers)."
+      - "Dependencies: lockfiles with integrity hashes."
+      - "CSRF tokens on ALL state-changing operations. SameSite = defense-in-depth, not replacement."
+      - "Deserialization: NEVER untrusted data with pickle, Marshal.load, unserialize(), Jackson default typing. Use JSON/protobuf."
+      - "File uploads: validate MIME by magic bytes, scan with ClamAV, store outside web root, randomize filenames."
+      - "Webhook signatures: verify HMAC-SHA256 or asymmetric on every payload. Reject unverified."
+      - "NEVER eval(), new Function(), exec(), vm.runInContext() with user input."
+    detect:
+      - "eval\(req\.|eval\(user|new Function\(.*req"
+      - '\.loads\(.*request|pickle\.loads|unserialize\('
+      - "csrf.*false|csrf.*disabled|csrf.*exempt"
+
+  # --- A09:2025 Security Logging and Alerting Failures ---
+  # Renamed from "Security Logging and Monitoring Failures"
+  - id: SEC-OWASP-A09-2025
+    cwe: [117, 223, 532, 778]
+    owasp_2025: "A09:2025"
+    severity: MEDIUM
+    rules:
+      - "Log ALL auth events: login success/failure, password change, MFA, session termination, lockout."
+      - "Log ALL authorization failures: 403, permission denied, admin access denied."
+      - "Log ALL input validation failures: SQLi attempts, XSS payloads, malformed tokens."
+      - "Log format: structured JSON. timestamp(ISO8601 UTC), event_type, actor, target, outcome, correlation_id."
+      - "NEVER log: passwords, tokens, session IDs, credit cards (PCI), PII without justification."
+      - "Logs shipped to centralized system (ELK, Datadog, Splunk). NOT on app server."
+      - "Alert thresholds: 10+ failed logins from IP in 1 min. 100+ 403s in 1 min. Admin login from new IP."
+      - "Audit trail immutable. Append-only storage. Retention >= 90 days (PCI: 1 year)."
+    detect:
+      - 'console\.log\(.*password|console\.log\(.*token|console\.log\(.*secret'
+
+  # --- A10:2025 Mishandling of Exceptional Conditions ---
+  # NEW for 2025. Replaces SSRF (absorbed into A01).
+  # Covers improper error handling, fail-open logic, unexpected state transitions.
+  - id: SEC-OWASP-A10-2025
+    cwe: [209, 248, 252, 253, 390, 391, 392, 393, 394, 395, 396, 397, 467,
+          476, 477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488,
+          489, 490, 491, 492, 493, 494, 495, 496, 497, 498, 499, 500, 501,
+          502, 503, 504, 505, 506, 507, 508, 509, 510, 511, 512, 513, 514,
+          515, 516, 517, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527,
+          528, 529, 530, 531, 532, 533, 534, 535, 536, 537, 538, 539, 540,
+          541, 542, 543, 544, 545, 546, 547, 548, 549, 550, 551, 552, 553,
+          554, 555, 556, 557, 558, 559, 560, 561, 562, 563, 564, 565, 566,
+          567, 568, 569, 570, 571, 572, 573, 574, 575, 576, 577, 578, 579,
+          580, 581, 582, 583, 584, 585, 586, 587, 588, 589, 590, 591, 592,
+          593, 594, 595, 596, 597, 598, 599, 600, 703, 754, 755]
+    owasp_2025: "A10:2025"
+    severity: HIGH
+    rules:
+      - "NEVER fail open. Authentication failures, authorization failures, payment failures MUST fail closed (deny access, reject transaction)."
+      - "Catch ALL exceptions at API boundary. Return generic error to client, log full details internally."
+      - "NEVER expose internal state in error responses. No stack traces, SQL queries, file paths, DB schema, or library versions."
+      - "Transaction integrity: payment/transfer operations MUST use database transactions. Rollback on ANY failure."
+      - "Retry logic: exponential backoff with jitter. Maximum 3 retries for transient failures. Circuit breaker after threshold."
+      - "Null pointer / undefined handling: ALL user-accessible code paths MUST handle null/undefined explicitly. No unhandled promise rejections."
+      - "Input edge cases: empty strings, null, undefined, NaN, Infinity, -0, oversized arrays, deeply nested objects. MUST NOT crash the application."
+      - "Timeouts on ALL external calls: HTTP (10s), DB queries (5s), cache (2s). Reject, don't hang."
+      - "Graceful degradation: if dependent service is down, return degraded response (cached data, limited functionality) not 500 crash."
+      - "Error codes: use consistent error taxonomy. Error codes map to fixable issues, not 'something went wrong'."
+    detect:
+      - "catch.*\{.*\}"                                     # empty catch block
+      - "catch.*console\.(log|error)"                       # catch that only logs
+      - '\.then\(.*\)$'                                     # unhandled promise (no .catch)
+      - "process\.on\('unhandledRejection"                  # global handler (shouldn't need it)
+      - "res\.status\(500\).*err\.(message|stack|toString)"  # raw error to client
+      - 'setTimeout\(.*, 0\)'                               # potential race condition
+    fix_example: |
+      # CORRECT: fail-closed transaction with proper error handling
+      try {
+        await db.$transaction(async (tx) => {
+          const payment = await tx.payment.create({ data: { ... } })
+          await tx.balance.update({ where: { ... }, data: { ... } })
+          return payment
+        })
+      } catch (err) {
+        logger.error({ error: err, correlationId: req.id }, 'Payment failed')
+        return res.status(500).json({
+          error: 'Payment could not be processed',
+          code: 'PAYMENT_FAILED',
+          correlationId: req.id
+        })
+      }
+
+# =============================================================================
+# SECTION 2: OWASP API SECURITY TOP 10 2023 (STILL CURRENT)
+# =============================================================================
+# No 2025/2026 edition exists. 2023 remains the authoritative API-specific list.
+# Use this alongside OWASP Top 10 2025 — they cover different scopes.
+
+owasp_api_top_10_2023:
+
+  # --- API1:2023 Broken Object Level Authorization (BOLA) ---
+  - id: SEC-API-01-2023
+    cwe: [639]
+    owasp_api: "API1:2023"
+    severity: CRITICAL
+    rules:
+      - "EVERY API endpoint with resource ID in URL/params MUST verify requester owns or is authorized for that resource."
+      - "Use UUIDs not sequential integers. Prevents enumeration."
+      - "Authorization check BEFORE database query. Fail closed."
+      - "Nested resources: verify parent ownership first, then child belongs to parent."
+      - "Auth tests for every endpoint. Test: user A accessing user B's resource → 403/404."
+      - "BOLA present in ~40% of all API attacks (Salt Security data). This is the #1 API risk."
+    detect:
+      - '/api/\w+/:\w+/\w+/:\w+'                           # nested resource, no auth pattern
+      - 'router\.param\(.*id.*=>'                           # param resolver, no ownership
+    fix_example: |
+      const project = await db.project.findFirst({
+        where: { id: projectId, ownerId: req.user.id }
+      })
+      if (!project) return 404
+      const task = await db.task.findFirst({
+        where: { id: taskId, projectId: project.id }
+      })
+
+  # --- API2:2023 Broken Authentication ---
+  - id: SEC-API-02-2023
+    cwe: [287, 307, 384]
+    owasp_api: "API2:2023"
+    severity: CRITICAL
+    rules:
+      - "JWT validation in middleware/gateway BEFORE route handler. No exceptions."
+      - "Token blacklist: server-side revocation list. Check on every request. Short-lived access (15 min) + refresh."
+      - "OAuth 2.0: Authorization Code + PKCE. NOT Implicit Grant. Validate state. Exact redirect URI matching."
+      - "API keys: scoped, rotatable. Minimum permissions per key."
+      - "Stateless auth: must include short expiry, refresh rotation, server-side revocation."
+    detect:
+      - 'jwt\.verify.*ignoreExpiration|jwt\.verify.*algorithms.*none'
+      - 'redirect_uri.*\*'                                  # wildcard OAuth redirect
+
+  # --- API3:2023 Broken Object Property Level Authorization (BOPLA) ---
+  # Merged "Excessive Data Exposure" + "Mass Assignment" from 2019 edition
+  - id: SEC-API-03-2023
+    cwe: [915]
+    owasp_api: "API3:2023"
+    severity: HIGH
+    rules:
+      - "API responses filter fields by role. Admin sees all. User sees own. Public sees minimal."
+      - "NEVER mass assignment (Model.create(req.body), Django Model.objects.create(**request.POST)). Use allowlists."
+      - "PATCH: validate which fields requester can modify. Role-based field allowlist."
+      - "GraphQL: field-level authorization resolvers, not just query-level."
+    detect:
+      - 'Model\.create\(req\.body\)|Model\.update\(req\.body\)'
+      - '\.\.\.req\.body|Object\.assign\(.*req\.body'
+
+  # --- API4:2023 Unrestricted Resource Consumption ---
+  - id: SEC-API-04-2023
+    cwe: [770, 400]
+    owasp_api: "API4:2023"
+    severity: MEDIUM
+    rules:
+      - "Rate limiting on ALL endpoints. Tiered: auth (strict), data (moderate), static (lenient)."
+      - "Pagination: max page size server-enforced. NEVER unlimited results."
+      - "File upload: max size at API gateway + application layer. Max concurrent uploads per user."
+      - "GraphQL: query depth limit, complexity scoring, rate limiting by cost."
+      - "Timeout all external calls: HTTP 10s, DB 5s, cache 2s."
+      - "Payload size: 1MB JSON, 10MB file uploads (adjust per endpoint)."
+    detect:
+      - '\.findAll\(\)|\.find\(\{\}\)'                       # unpaginated query
+      - 'body-parser.*limit.*[0-9]+mb'                      # large body limit
+
+  # --- API5:2023 Broken Function Level Authorization (BFLA) ---
+  - id: SEC-API-05-2023
+    cwe: [285]
+    owasp_api: "API5:2023"
+    severity: CRITICAL
+    rules:
+      - "Admin endpoints require separate auth scope/token. Regular user token CANNOT access admin."
+      - "Auth middleware on route GROUPS, not individual routes. Enforced by default."
+      - "NEVER rely on client-side hiding of admin UI. Server independently verifies role."
+      - "Audit log all admin actions with actor identity."
+    detect:
+      - '/admin.*router\.use\(\)'                            # admin group, no auth middleware
+      - 'if \(user\.isAdmin'                                 # client-side admin check
+      - 'app\.use\(.*/api/admin'                             # admin routes, no auth guard
+
+  # --- API6:2023 Unrestricted Access to Sensitive Business Flows ---
+  - id: SEC-API-06-2023
+    cwe: [841]
+    owasp_api: "API6:2023"
+    severity: MEDIUM
+    rules:
+      - "Business flows costing money/resources (SMS, email, PDF generation): rate-limited + CAPTCHA for unauthenticated."
+      - "Automated abuse detection: bot patterns on signup, checkout, contact forms."
+      - "Idempotency on payments. Duplicate charge prevention via idempotency key."
+      - "Purchase limits per user/card/IP per time window."
+
+  # --- API7:2023 Server Side Request Forgery ---
+  - id: SEC-API-07-2023
+    cwe: [918]
+    owasp_api: "API7:2023"
+    severity: HIGH
+    rules:
+      - "User-controlled URLs: allowlist validation. Block internal IPs."
+      - "Resolve hostname first, validate resolved IP is not internal."
+      - "Isolated network for user-supplied URL fetching. Timeout <= 5s. Disable redirects to internal IPs."
+    detect:
+      - 'fetch\(req\.|axios\(req\.|request\(.*params\.url'
+
+  # --- API8:2023 Security Misconfiguration ---
+  - id: SEC-API-08-2023
+    cwe: [2, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    owasp_api: "API8:2023"
+    severity: HIGH
+    rules:
+      - "CORS: exact origin validation. No credentials with wildcard origins."
+      - "API version in URL (/v1/): deprecated endpoints return Sunset header."
+      - "HTTP methods: only expose GET/POST/PUT/PATCH/DELETE needed. No TRACE, no CONNECT."
+      - "Verbose errors: never reveal internal hostnames in CORS or 500 responses."
+
+  # --- API9:2023 Improper Inventory Management ---
+  - id: SEC-API-09-2023
+    cwe: [1059]
+    owasp_api: "API9:2023"
+    severity: MEDIUM
+    rules:
+      - "API inventory maintained. All endpoints documented, versioned, tracked."
+      - "30-40% of real API footprint is undocumented (shadow APIs). Runtime discovery REQUIRED."
+      - "Deprecated API versions: documented sunset timeline with migration path."
+      - "Staging/test endpoints NOT accessible in production."
+      - "OpenAPI spec accurate and used to generate gateways and SDKs."
+
+  # --- API10:2023 Unsafe Consumption of APIs ---
+  - id: SEC-API-10-2023
+    cwe: [20, 918]
+    owasp_api: "API10:2023"
+    severity: HIGH
+    rules:
+      - "NEVER trust third-party API responses. Validate and sanitize ALL external data before use."
+      - "Timeout + circuit-breaker on all third-party calls."
+      - "Third-party API keys in KMS, rotated 90 days. Scoped to minimum permissions."
+      - "Monitor third-party API usage: excessive calls, unexpected response shapes."
+
+# =============================================================================
+# SECTION 3: OWASP TOP 10 FOR LLM APPLICATIONS v2.0 (2025)
+# =============================================================================
+# CRITICAL for AI-assisted development. This covers risks introduced BY LLMs
+# in the SDD pipeline itself — prompt injection, supply chain, excessive agency.
+# These risks apply to the AI coding agent AND the code it generates.
+#
+# Key statistics (2025-2026):
+#   - 90+ organizations hit by prompt injection in 2025 (CrowdStrike 2026 Report)
+#   - AI-enabled adversary ops up 89% YoY
+#   - 65.3% of orgs lack dedicated prompt injection defenses
+#   - Only 5% feel highly confident in AI security preparedness
+
+owasp_llm_top_10_v2:
+
+  # --- LLM01: Prompt Injection ---
+  - id: SEC-LLM-01-2025
+    llm_rank: "LLM01"
+    severity: CRITICAL
+    real_world:
+      - "EchoLeak (CVE-2025-32711, CVSS 9.3): Zero-click prompt injection against Microsoft 365 Copilot"
+      - "GitHub Copilot RCE (CVE-2025-53773): Hidden instructions in source files coerced code execution"
+      - "Claude Opus 4.6: 17.8% injection success rate per attempt"
+    rules:
+      - "DIRECT injection: user input to LLM MUST be validated and sanitized. Separate trusted system prompt from untrusted user input with delimiters."
+      - "INDIRECT injection: content retrieved from external sources (web, email, docs) MUST be treated as untrusted. Sanitize before inclusion in context. Strip hidden instructions."
+      - "System prompt: place instructions AFTER user data, not before. Instructions override earlier content less reliably."
+      - "Tool use: LLM-accessible tools MUST have least privilege. NEVER give an LLM tool access to: shell execution without sandbox, database write without confirmation, API keys, file system write outside designated directories."
+      - "Human-in-the-loop: side-effectful operations (code execution, deployment, DB writes, payment) MUST require human approval. This is the Guard pattern — enforced by /sdd-spec-start."
+      - "Input filtering: strip control characters, bidirectional text markers, invisible characters from user input to LLM."
+      - "Output monitoring: detect when LLM output contains tool calls or code execution attempts. Log and alert on anomalies."
+      - "NEVER concatenate user input directly into system prompt without sanitization boundaries."
+    detect:
+      - 'system_prompt.*\+.*user_input|f["\'].*user_input.*system'  # unsanitized input in prompt
+      - 'tool.*execute|tool.*shell|tool.*exec'                      # dangerous tool without sandbox
+      - 'allow_dangerous|disable_safety|bypass_guard'               # disabled safety mechanisms
+    fix_example: |
+      # CORRECT: separated system/user boundaries
+      system = "You are a code reviewer. Find bugs. NEVER execute code."
+      user = sanitize(user_input)  # strip control chars, bidirectional markers
+      prompt = f"<system>{system}</system>\n<user>{user}</user>"
+
+  # --- LLM02: Sensitive Information Disclosure ---
+  # Moved from #6 → #2 in 2025 edition
+  - id: SEC-LLM-02-2025
+    llm_rank: "LLM02"
+    severity: CRITICAL
+    rules:
+      - "NEVER include secrets, API keys, or credentials in system prompts or context window."
+      - "PII detection inline: scan LLM output for emails, SSNs, credit cards, phone numbers. Redact before returning to user."
+      - "Training data: ensure no PII/PHI/financial data in fine-tuning datasets or RAG knowledge base."
+      - "Output filtering: post-process ALL LLM responses through PII/credential scanner. Mask matches."
+      - "Context window hygiene: clear context between users. No cross-session leakage."
+      - "RAG: retrieved documents may contain PII. Filter before inclusion in prompt."
+    detect:
+      - 'system_prompt.*api_key|system_prompt.*secret|system_prompt.*token'
+      - 'context.*password|context.*credential'
+
+  # --- LLM03: Supply Chain ---
+  - id: SEC-LLM-03-2025
+    llm_rank: "LLM03"
+    severity: CRITICAL
+    rules:
+      - "Models: pin exact model versions by hash. NEVER use 'latest' tag for model weights. Verify model signature before loading."
+      - "Frameworks: LangChain, LlamaIndex, CrewAI, AutoGen versions pinned and scanned for CVEs."
+      - "Embeddings: verify embedding model provenance. Trojaned embeddings can poison RAG retrieval."
+      - "MCP servers: each MCP tool is a supply chain dependency. Audit MCP server code. Pin versions. Review tool permissions."
+      - "Third-party prompts/agents: treat imported prompts as untrusted code. Review before use."
+      - "Dependencies of AI stack: transformers, torch, tensorflow, llama.cpp — scanned for CVEs."
+    detect:
+      - 'model.*latest|model.*@latest'
+      - 'transformers==[0-3]\.|torch==[0-1]\.'              # old AI framework versions
+
+  # --- LLM04: Data and Model Poisoning ---
+  - id: SEC-LLM-04-2025
+    llm_rank: "LLM04"
+    severity: HIGH
+    rules:
+      - "Fine-tuning data: provenance verification. NEVER fine-tune on untrusted datasets."
+      - "RAG knowledge base: access control on document ingestion. Validate document source and integrity before indexing."
+      - "RLHF feedback: validate human feedback data source. Malicious feedback can poison alignment."
+      - "Detect drift: monitor model outputs for unexpected bias or behavior shifts after data updates."
+    detect:
+      - 'fine.tune.*untrusted|dataset.*user.upload'
+
+  # --- LLM05: Improper Output Handling ---
+  - id: SEC-LLM-05-2025
+    llm_rank: "LLM05"
+    severity: CRITICAL
+    rules:
+      - "NEVER trust LLM output as safe. ALWAYS treat LLM output as untrusted user input."
+      - "If LLM output goes to SQL: parameterize it. To HTML: encode it. To shell: sanitize it. To JSON: validate schema."
+      - "Agent tool output: validate output matches expected schema BEFORE passing to next tool."
+      - "Code generation: generated code MUST pass same security checks as human-written code. Scan for injections, hardcoded secrets, unsafe patterns."
+      - "NEVER execute LLM-generated code without human review and sandboxed execution environment."
+    detect:
+      - 'eval\(.*llm|exec\(.*llm|new Function\(.*llm'
+      - '\.innerHTML.*llm|dangerouslySetInnerHTML.*llm'
+
+  # --- LLM06: Excessive Agency ---
+  - id: SEC-LLM-06-2025
+    llm_rank: "LLM06"
+    severity: CRITICAL
+    rules:
+      - "Least privilege for LLM tools: read-only when possible. Write with confirmation. Execute with sandbox + approval."
+      - "Tool scope: each tool should do ONE thing. No 'do_anything' or 'run_command' tools."
+      - "Agent autonomy boundaries: define MAX steps per task. Define operations that ALWAYS require human approval (deploy, delete, charge, email users)."
+      - "Budget limits: max token spend per task. Max API calls per task. Max wall-clock time per task."
+      - "This is the Guard pattern in /sdd-spec-start — state machine enforces boundaries."
+    detect:
+      - 'tool.*run_anything|tool.*execute_arbitrary|tool.*admin'
+      - 'max_steps.*unlimited|max_steps.*999'
+
+  # --- LLM07: System Prompt Leakage ---
+  # NEW for 2025
+  - id: SEC-LLM-07-2025
+    llm_rank: "LLM07"
+    severity: HIGH
+    rules:
+      - "NEVER put secrets, API keys, credentials, or business logic in system prompts."
+      - "System prompt design: assume it WILL be extracted. Don't include anything sensitive."
+      - "Leak detection: monitor LLM outputs for fragments of system prompt. Alert if system prompt content appears in responses."
+      - "Store sensitive instructions in external, authenticated service — not in prompt text."
+    detect:
+      - 'system.*password|system.*secret|system.*api_key'
+      - 'system.*algorithm.*proprietary|system.*business_logic'
+
+  # --- LLM08: Vector and Embedding Weaknesses ---
+  # NEW for 2025
+  - id: SEC-LLM-08-2025
+    llm_rank: "LLM08"
+    severity: MEDIUM
+    rules:
+      - "RAG: per-tenant vector namespaces. Cross-tenant embedding leakage MUST be prevented."
+      - "Embedding inversion: assume embeddings can be partially reversed to reveal source text. Don't embed PII."
+      - "Retrieval poisoning: validate retrieved documents before inclusion in prompt. Check for injection payloads."
+      - "Vector DB: access control on collection/namespace level. Audit all retrieval queries."
+    detect:
+      - 'embed.*ssn|embed.*credit_card|embed.*password'
+      - 'namespace.*shared|collection.*public'
+
+  # --- LLM09: Misinformation ---
+  # Renamed from "Overreliance" in 2025
+  - id: SEC-LLM-09-2025
+    llm_rank: "LLM09"
+    severity: MEDIUM
+    rules:
+      - "Hallucination prevention: ground LLM in retrievable facts. Require citations for factual claims."
+      - "Faithfulness evaluation: check LLM output against source documents. Flag unsupported claims."
+      - "NEVER rely on LLM for security decisions. LLM is advisory, not authoritative. Security rules are deterministic."
+      - "Confidence indicators: LLM should express uncertainty, not fabricate certainty. 'I don't know' is valid."
+      - "Generated code: verify against spec. Generated code that passes tests may still be wrong. Human review required before merge."
+    detect:
+      - 'llm.*security_decision|ai.*authorize|model.*approve'
+
+  # --- LLM10: Unbounded Consumption ---
+  # Renamed from "Model Theft" in 2025
+  - id: SEC-LLM-10-2025
+    llm_rank: "LLM10"
+    severity: MEDIUM
+    rules:
+      - "Rate limiting per user/API key on LLM calls. Prevent prompt bombs and recursion attacks."
+      - "Token budgets: max tokens per request, per user per hour, per project per day."
+      - "Input length limits: reject prompts over maximum size. Prevent context-window stuffing attacks."
+      - "Cost monitoring: alert on anomalous spend patterns. LLM API costs can be DoS vector."
+      - "Recursion prevention: detect and terminate agent loops (> N steps without progress → terminate)."
+    detect:
+      - 'max_tokens.*unlimited|max_tokens.*999999'
+      - 'while.*true.*llm|while.*1.*agent'                   # infinite agent loop risk
+
+# =============================================================================
+# SECTION 4: OWASP AGENTIC AI TOP 10 (DEC 2025)
+# =============================================================================
+# Specific to AI AGENTS — autonomous systems that make decisions and take actions.
+# Directly relevant to SDD because /sdd-spec-start and /sdd-spec-update are
+# agent-driven workflows. Each risk maps to an agent-specific threat.
+
+owasp_agentic_ai_top_10:
+
+  - id: SEC-ASI-01
+    name: "Agent Goal Hijacking"
+    severity: CRITICAL
+    rules:
+      - "Agent goals MUST be immutable after initialization. No user input can modify agent task definition."
+      - "Agent prompt: treat as security boundary. Validate goal integrity at each step."
+      - "Multi-agent systems: each agent has bounded, non-overlapping goals. No agent can redefine another agent's goal."
+
+  - id: SEC-ASI-02
+    name: "Tool Misuse & Cross-Domain Exploits"
+    severity: CRITICAL
+    rules:
+      - "Each tool has a security manifest: allowed inputs, forbidden operations, rate limits."
+      - "Tool chaining: validate that tool A's output is safe for tool B's input. Prevent injection chains."
+      - "NEVER give an agent tools from different security domains (e.g., read user email AND send payments)."
+
+  - id: SEC-ASI-03
+    name: "Identity & Privilege Abuse"
+    severity: CRITICAL
+    rules:
+      - "Agent identity: each agent runs with its OWN identity, not the user's full privileges."
+      - "Agent privilege escalation: agent MUST NOT be able to grant itself additional permissions."
+      - "Audit all agent actions with agent identity + user identity + timestamp."
+
+  - id: SEC-ASI-04
+    name: "Insecure Agent Supply Chain"
+    severity: HIGH
+    rules:
+      - "Agent definitions (agent files, tool definitions, prompts): versioned, signed, integrity-checked."
+      - "MCP server code: audited for backdoors. Pin MCP server versions."
+      - "Agent marketplaces: treat third-party agents as untrusted code. Review before installation."
+
+  - id: SEC-ASI-05
+    name: "Unexpected Code Execution"
+    severity: CRITICAL
+    rules:
+      - "Agent code execution: SANDBOXED. No network access from sandbox. Read-only filesystem. Timeout enforced."
+      - "Generated code: review before execution. NEVER auto-execute agent-generated code in production."
+      - "Code execution tool: rate-limited per agent per session. Log all executed code."
+
+  - id: SEC-ASI-06
+    name: "Agent Data Exfiltration"
+    severity: HIGH
+    rules:
+      - "Agent network access: allowlist of domains. Block all outbound by default."
+      - "Output filtering: scan agent responses for PII, credentials, internal hostnames, IPs before returning to user."
+      - "Agent cannot access more data than the user who invoked it."
+
+  - id: SEC-ASI-07
+    name: "Insecure Agent-to-Agent Communication"
+    severity: HIGH
+    rules:
+      - "Inter-agent communication: encrypted (TLS), authenticated (mutual TLS or signed tokens)."
+      - "Agent messages: validated schema. No arbitrary data passthrough between agents."
+      - "Message provenance: verify sender agent identity. Reject messages from unknown agents."
+
+  - id: SEC-ASI-08
+    name: "Agent DoS"
+    severity: MEDIUM
+    rules:
+      - "Agent loops: max steps, max time, max cost per task. Terminate on threshold."
+      - "Multi-agent spawn limit: max concurrent agents. No infinite agent fan-out."
+      - "Resource quotas per agent: CPU, memory, API calls, tokens."
+
+  - id: SEC-ASI-09
+    name: "Agent Memory & Context Poisoning"
+    severity: HIGH
+    rules:
+      - "Agent memory (conversation history, cavemem, vector store): access controlled. Validate before retrieval."
+      - "Cross-session memory: sanitize before storing. Agent can poison its own memory for future sessions. Detect anomalous memory writes."
+      - "Memory injection: user input stored in memory must be sanitized before retrieval in future sessions."
+
+  - id: SEC-ASI-10
+    name: "Agent Configuration Manipulation"
+    severity: HIGH
+    rules:
+      - "Agent config: immutable after initialization. Stored in append-only log."
+      - "Config changes: require human approval. Audit all config modifications."
+      - "Environment variables: validated on agent start. Agent cannot modify its own environment."
+
+# =============================================================================
+# SECTION 5: DATABASE-SPECIFIC SECURITY RULES
+# =============================================================================
+
+database_security:
+
+  # --- PostgreSQL + SQLAlchemy (Python) ---
+  postgresql_sqlalchemy:
+    db: PostgreSQL
+    orm: SQLAlchemy
+    language: Python
+    rules:
+      - "NEVER text() with f-strings or .format(). Use text() with :param bind parameters."
+      - "NEVER conn.execute() with string interpolation. Use Core or ORM query builders."
+      - "Enable sslmode=require in create_engine(). NEVER sslmode=disable in production."
+      - "Use pgcrypto extension for column-level encryption, not app-level cipher with hardcoded key."
+      - "Row-Level Security: enable on multi-tenant tables. SET LOCAL app.current_tenant_id."
+      - "Connection pooling: QueuePool with pool_pre_ping=True, pool_recycle=3600. Max overflow <= 10."
+      - "NEVER echo=True in production. SQL queries with PII will leak."
+      - "Migrations: Alembic transactional DDL. NEVER autogenerate against production without review."
+      - "Application role: NOT superuser. Minimum required privileges."
+      - "Sensitive columns: TypeDecorator to encrypt/decrypt transparently with KMS key."
+    detect:
+      - "text\(f['\"]"                     # f-string in text()
+      - "text\(.*\.format\("              # .format() in text()
+      - "create_engine.*sslmode=disable"  # SSL disabled
+    fix_example: |
+      from sqlalchemy import text
+      result = await session.execute(
+        text("SELECT * FROM users WHERE email = :email"),
+        {"email": user_input}
+      )
+
+  # --- PostgreSQL + Prisma (Node.js/TypeScript) ---
+  postgresql_prisma:
+    db: PostgreSQL
+    orm: Prisma
+    language: TypeScript/JavaScript
+    rules:
+      - "NEVER $queryRawUnsafe() with user input. Use $queryRaw template tag or Prisma.sql."
+      - "Prisma parameterizes by default. $queryRawUnsafe() BYPASSES parameterization."
+      - "Middleware: hash/encrypt sensitive fields on write. Log all mutations for audit."
+      - "RLS: cannot be enforced in Prisma alone. Use PostgreSQL RLS + SET LOCAL."
+      - "Connection: pgBouncer transaction mode for serverless. connection_limit per instance."
+      - "NEVER expose Prisma client to client-side code."
+      - "Migrations: prisma migrate deploy in CI/CD, not prisma db push."
+    detect:
+      - '\$queryRawUnsafe\('
+      - '\$queryRaw`.*\$\{'
+
+  # --- PostgreSQL + Drizzle ---
+  postgresql_drizzle:
+    db: PostgreSQL
+    orm: Drizzle ORM
+    language: TypeScript
+    rules:
+      - "Drizzle parameterizes by default. Verify with .toSQL() in tests."
+      - "NEVER sql.raw() with user input. Injects raw SQL without parameterization."
+      - "pg Pool with ssl: { rejectUnauthorized: true }. NEVER false in production."
+      - "RLS: db.execute(sql`SET LOCAL tenant_id = ${tenantId}`) per request."
+    detect:
+      - 'sql\.raw\(.*\$\{'
+
+  # --- PostgreSQL + TypeORM ---
+  postgresql_typeorm:
+    db: PostgreSQL
+    orm: TypeORM
+    language: TypeScript
+    rules:
+      - "NEVER query() or createQueryBuilder().where() with string interpolation."
+      - "TypeORM parameterizes by default with find/findOne. Use { where: { email: input } }."
+      - "Mass assignment: NEVER repository.save(req.body). Use allowlisted DTOs."
+      - "synchronize: true MUST be false in production."
+      - "logging: ['error'] only in production. NEVER 'all' or ['query']."
+    detect:
+      - 'synchronize.*true'
+      - '\.save\(req\.body\)'
+
+  # --- PostgreSQL + Knex ---
+  postgresql_knex:
+    db: PostgreSQL
+    orm: Knex.js
+    language: TypeScript/JavaScript
+    rules:
+      - "NEVER knex.raw() with template literals. Use knex.raw('SQL WHERE id = ?', [userId])."
+      - "knex() builder with .where() parameterizes automatically. Prefer over raw()."
+    detect:
+      - "knex\.raw\(`.*\$\{"
+
+  # --- PostgreSQL + node-postgres (raw pg) ---
+  postgresql_raw_pg:
+    db: PostgreSQL
+    orm: node-postgres (pg)
+    language: TypeScript/JavaScript
+    rules:
+      - "NEVER string concatenation with client.query(). Use client.query('SELECT ... WHERE id = $1', [userId])."
+      - "Prepared statements: client.query({ text: '...', values: [...] })."
+      - "Pool: max connections, idleTimeoutMillis: 30000. SSL in production."
+    detect:
+      - '\.query\(`.*\$\{'
+      - "'SELECT.*'\\+.*|'INSERT.*'\\+"
+
+  # --- PostgreSQL + psycopg2 / psycopg3 ---
+  postgresql_psycopg:
+    db: PostgreSQL
+    orm: psycopg2 / psycopg3
+    language: Python
+    rules:
+      - "NEVER cursor.execute() with % formatting. Use %s placeholders + params tuple."
+      - "psycopg2: cursor.execute('SELECT ... WHERE id = %s', (user_id,))."
+      - "Connection pool: psycopg_pool with min_size, max_size, max_idle."
+    detect:
+      - "execute\(f['\"].*SELECT"
+      - "execute\(.*% .*SELECT"
+
+  # --- MySQL + Prisma ---
+  mysql_prisma:
+    db: MySQL
+    orm: Prisma
+    language: TypeScript/JavaScript
+    rules:
+      - "MySQL: caching_sha2_password auth. NOT mysql_native_password."
+      - "NEVER $queryRawUnsafe() with user input."
+      - "Connection: mysql://user:pass@host:3306/db?sslaccept=strict."
+      - "utf8mb4 charset for all tables. Prevents encoding-based injection."
+    detect:
+      - 'mysql_native_password'
+      - 'sslaccept=disabled|ssl=false'
+
+  # --- MySQL + SQLAlchemy ---
+  mysql_sqlalchemy:
+    db: MySQL
+    orm: SQLAlchemy
+    language: Python
+    rules:
+      - "MySQL: caching_sha2_password. NEVER mysql_native_password."
+      - "Connection: mysql+pymysql://user:pass@host/db?ssl={'ssl': {'verify': True}}."
+
+  # --- MongoDB + Mongoose ---
+  mongodb_mongoose:
+    db: MongoDB
+    orm: Mongoose
+    language: TypeScript/JavaScript
+    rules:
+      - "NoSQL Injection: NEVER pass req.body/query/params directly to Model.find()/findOne()/updateMany()."
+      - "Sanitize query objects: strip $where, $regex, $gt, $ne, $exists, $expr from user input. Use mongo-sanitize."
+      - "Schema validation: Mongoose types + validators. reject: true."
+      - "Authentication: SCRAM-SHA-256. Disable MONGODB-CR."
+      - "requireTLS: true. IP allowlist."
+      - "Sensitive fields: { select: false } for password, tokens. Explicit .select('+password') when needed."
+      - "Indexes: create for queried fields. Missing indexes → collection scans → DoS vector."
+    detect:
+      - 'Model\.find\(req\.body\)|Model\.find\(req\.query\)'
+      - '\$where.*req\.|\$regex.*req\.'
+
+  # --- MongoDB + Native Driver ---
+  mongodb_raw:
+    db: MongoDB
+    orm: Native Driver
+    language: TypeScript/JavaScript
+    rules:
+      - "Same NoSQL injection risks as Mongoose. Sanitize user-supplied query objects."
+      - "Use collection.find(filter, { projection }) to limit returned fields."
+    detect:
+      - 'collection\.find\(req\.body\)'
+
+  # --- SQLite + better-sqlite3 ---
+  sqlite_better_sqlite3:
+    db: SQLite
+    orm: better-sqlite3
+    language: TypeScript/JavaScript
+    rules:
+      - "WAL mode (PRAGMA journal_mode=WAL)."
+      - "NEVER db.prepare().all() with string-built SQL. Use ? placeholders."
+      - "Database file outside web root. NOT accessible via HTTP."
+      - "NOT suitable for: multi-server, high-write, concurrent writes > 100/s."
+    detect:
+      - "\.prepare\(`.*\$\{"
+
+  # --- SQLite + SQLAlchemy ---
+  sqlite_sqlalchemy:
+    db: SQLite
+    orm: SQLAlchemy
+    language: Python
+    rules:
+      - "WAL mode: PRAGMA journal_mode=WAL in event listener."
+      - "Foreign keys: PRAGMA foreign_keys=ON. SQLite disables them by default."
+      - "connect_args={'check_same_thread': False} for async."
+
+  # --- ANY database, ANY ORM — universal rules ---
+  any_database:
+    db: "*"
+    orm: "*"
+    rules:
+      - "Zero-trust raw queries: ANY .raw()/.query()/.execute()/.sql()/cursor.execute() with user input MUST be parameterized."
+      - "Connection strings: environment variables or secrets manager. NEVER hardcoded."
+      - "Database credentials: NEVER in source, config in git, Docker images."
+      - "Least privilege: application user = SELECT/INSERT/UPDATE/DELETE on required tables. No DDL, DROP, CREATE."
+      - "Backups: encrypted, tested monthly. Retention >= 30 days."
+      - "Connection pooling always. Configure max, timeouts, idle cleanup."
+      - "NEVER expose DB port (5432, 3306, 27017, 6379) to public internet."
+      - "Database audit logging for all schema changes and privilege escalations."
+    detect:
+      - 'DATABASE_URL=.*://.*:.*@'
+      - '0\.0\.0\.0/0.*(5432|3306|27017|6379|1433)'
+
+# =============================================================================
+# SECTION 6: AUTHENTICATION & AUTHORIZATION PATTERNS
+# =============================================================================
+
+auth_patterns:
+  - id: SEC-AUTH-001
+    name: "OAuth 2.0 / OpenID Connect"
+    rules:
+      - "Authorization Code + PKCE for SPAs and mobile. NEVER Implicit Grant."
+      - "Validate state parameter on callback. Nonce for id_token."
+      - "Token storage: access token in memory, refresh token in httpOnly Secure SameSite=Strict cookie."
+      - "NEVER tokens in localStorage, sessionStorage, IndexedDB."
+      - "Redirect URI: exact match validation. No pattern matching, wildcards, open redirect."
+
+  - id: SEC-AUTH-002
+    name: "JWT (JSON Web Tokens)"
+    rules:
+      - "Algorithm: RS256 (RSA 2048+) or ES256. HMAC: secret >= 256 bits from KMS."
+      - "Validate exp, nbf, iat, iss, aud on EVERY request. Clock skew <= 30s."
+      - "NEVER algorithm 'none'. Specify allowed: ['RS256', 'ES256']."
+      - "Access token: 15 min max. Refresh token: 7 days, single-use, rotated on use."
+      - "Minimal payload: user ID, roles, jti. NEVER PII or permissions in payload."
+      - "Refresh rotation: new token on each use. Invalidate old. Detect reuse → revoke all."
+
+  - id: SEC-AUTH-003
+    name: "Session-Based Auth"
+    rules:
+      - "Session ID: >= 128 bits from CSPRNG. NEVER sequential or UUID v1."
+      - "Server-side storage (Redis, DB). NOT in-memory."
+      - "Cookie: __Host-sid. HttpOnly, Secure, SameSite=Lax."
+      - "Regenerate session ID on login, role change, logout."
+      - "Absolute timeout: 8h regular, 30min admin. Idle timeout: 30min all."
+
+  - id: SEC-AUTH-004
+    name: "API Key Authentication"
+    rules:
+      - "API keys: >= 128 bits CSPRNG, stored as bcrypt hash. NOT plaintext."
+      - "One key per client/service. Scoped to minimum endpoints + methods."
+      - "Rate limit per key. Monitor anomalous usage."
+      - "Rotation: 90 days max. Support rotation without downtime."
+      - "Transmission: Authorization header (Bearer or X-API-Key). NEVER in URL query params."
+
+# =============================================================================
+# SECTION 7: FRONTEND-SPECIFIC SECURITY
+# =============================================================================
+
+frontend_security:
+  rules:
+    - "CSP: nonce-based or hash-based. NEVER 'unsafe-inline' or 'unsafe-eval'."
+    - "XSS Prevention: React auto-escapes JSX (except dangerouslySetInnerHTML). Vue auto-escapes {{ }} (except v-html). Angular auto-escapes (except [innerHTML]). NEVER these escape hatches with user data."
+    - "Third-party scripts: SRI required. Self-host or pinned CDN version."
+    - "NEVER secrets in client-side code. NEXT_PUBLIC_/VITE_/REACT_APP_ prefixes BUNDLE into client JS. Server-side API routes for secrets."
+    - "NEVER access tokens in localStorage. XSS reads localStorage."
+    - "Open redirect: validate redirect_to against allowlist. No user-supplied URL without validation."
+    - "Clickjacking: X-Frame-Options: DENY or CSP frame-ancestors 'none'."
+    - "postMessage: validate origin. NEVER '*' targetOrigin with sensitive data."
+    - "CORS: exact origin when credentials: 'include'. No wildcard."
+
+# =============================================================================
+# SECTION 8: INFRASTRUCTURE & DEVOPS SECURITY
+# =============================================================================
+
+infra_security:
+  rules:
+    - "Secrets: KMS/vault (AWS Secrets Manager, HashiCorp Vault, GCP Secret Manager, Azure Key Vault). NEVER .env in production, never git-crypted secrets."
+    - "Network: least privilege. DBs not on public subnets. Services via VPC/private network."
+    - "Containers: non-root user. Read-only root filesystem. Drop all capabilities, add needed only."
+    - "Container images: scan for CVEs. Pin base image by SHA256, not :latest."
+    - "CI/CD: no secrets in build logs. Mask env vars in pipeline output."
+    - "Environment parity: staging matches production security config."
+    - "Dependencies: lockfiles committed. CI blocks CRITICAL/HIGH CVEs. Dependabot/Renovate."
+    - "IaC: Terraform/CloudFormation/Pulumi state encrypted. No secrets in state."
+    - "Monitoring: detect 403 spikes, new admin users, unusual outbound traffic. Alert within 5 min."
+
+# =============================================================================
+# SECTION 9: ABSOLUTE BLOCKERS — CODE GENERATION REJECTIONS
+# =============================================================================
+# These patterns MUST cause /sdd-spec-start to flag CRITICAL and block code generation.
+# Applied pre-generation AND at CI/CD.
+
+absolute_blockers:
+  - pattern: "Hardcoded secret"
+    detect_regex: '(api_key|apikey|secret|password|token|private_key)\s*[:=]\s*["\''][a-zA-Z0-9+/=]{20,}["\'']'
+    severity: CRITICAL
+    message: "SEC-REJECT: Hardcoded secret. Move to KMS/vault."
+
+  - pattern: "SQL string concatenation"
+    detect_regex: '("SELECT.*"\s*\+\s*|\`SELECT.*\$\{)'
+    severity: CRITICAL
+    message: "SEC-REJECT: SQL injection vector. Use parameterized queries."
+
+  - pattern: "Weak password hash"
+    detect_regex: '(md5|sha1|sha256|sha512)\(.*password'
+    severity: CRITICAL
+    message: "SEC-REJECT: Weak password hash. Use bcrypt(cost>=12) or argon2id."
+
+  - pattern: "JWT none algorithm"
+    detect_regex: 'algorithms\s*:\s*\[.*none.*\]'
+    severity: CRITICAL
+    message: "SEC-REJECT: JWT 'none' accepted. Use ['RS256', 'ES256'] only."
+
+  - pattern: "eval/exec with user data"
+    detect_regex: '(eval|exec|new Function)\(.*(req\.|user|input|params|query|body)'
+    severity: CRITICAL
+    message: "SEC-REJECT: Code injection via eval/exec with user data."
+
+  - pattern: "HTTP for sensitive endpoint"
+    detect_regex: "http://.*(auth|login|payment|checkout|signup|register)"
+    severity: CRITICAL
+    message: "SEC-REJECT: HTTP on sensitive endpoint. Must be HTTPS."
+
+  - pattern: "DB open to internet"
+    detect_regex: '0\.0\.0\.0/0.*(5432|3306|27017|6379|1433)'
+    severity: CRITICAL
+    message: "SEC-REJECT: Database exposed to public internet."
+
+  - pattern: "Unsafe deserialization"
+    detect_regex: '(pickle\.loads|yaml\.load\(|unserialize\(|Marshal\.load)'
+    severity: CRITICAL
+    message: "SEC-REJECT: Unsafe deserialization. Use JSON/protobuf."
+
+  - pattern: "LLM output execution without sanitization"
+    detect_regex: '(eval|exec|new Function|spawn|execSync)\(.*(llm|ai|completion|chat|agent)'
+    severity: CRITICAL
+    message: "SEC-REJECT: Executing LLM output without sanitization."
+
+  - pattern: "System prompt contains secret"
+    detect_regex: 'system_prompt.*=.*(api_key|secret|password|token).*["\'']'
+    severity: CRITICAL
+    message: "SEC-REJECT: Secret in system prompt. Prompts CAN be extracted."
+
+# =============================================================================
+# SECTION 10: USAGE PROTOCOL
+# =============================================================================
+
+usage_protocol:
+  injection:
+    when: "ALWAYS — start of every /sdd-spec-start and /sdd-spec-update session"
+    scope: "Global baseline. Project security spec extends this."
+
+  project_extension:
+    file: "specs/security.constitution.yaml"
+    purpose: "Project-specific additions. Only MORE restrictive than baseline."
+    rule: "ADD rules allowed. WEAKEN baseline rules FORBIDDEN."
+
+  enforcement:
+    pre_code_generation: "Scan generated code against all detect patterns. Block on CRITICAL."
+    pre_merge: "CI/CD step: grep all detect regexes against diff. Fail pipeline on CRITICAL."
+    spec_update: "/sdd-spec-update re-validates against this constitution."
+
+  database_detection:
+    method: "Scan package.json/requirements.txt/go.mod/Cargo.toml for ORM packages."
+    trigger: "Prisma, SQLAlchemy, Mongoose, Drizzle, TypeORM, Knex, Sequelize, etc."
+    action: "Inject matching database_security rules into project security spec."
+
+  llm_guard:
+    method: "SDD agent context validation"
+    trigger: "Every /sdd-spec-start and /sdd-spec-update invocation"
+    action: "Verify system prompt contains no secrets. Verify agent tools have least privilege. Verify sandbox boundaries."

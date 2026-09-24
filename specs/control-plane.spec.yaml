@@ -1,0 +1,277 @@
+# =============================================================================
+# SDD DOMAIN SPEC: Private Control Plane & Container Deployment
+# =============================================================================
+spec:
+  id: "control-plane-v1"
+  status: draft
+  version: "1.4.1"
+  created: "2026-09-23"
+  updated: "2026-09-24"
+  version_policy:
+    sync_group: "control-plane"
+    depends_on: ["auth-session-v1", "data-storage-v1", "task-engine-v1", "health-metrics-v1"]
+  changelog:
+    - version: "1.4.1"
+      date: "2026-09-24"
+      changes:
+        - "AC-CTRL-005, the encrypted-profile constraint, and CTRL-TASK-006 now consistently require MySQL state in the private gogon-mysql volume, not SQLite."
+        - "CTRL-TASK-001 enforcement now rejects direct named environment reads in application sources; health probe and control-plane bootstrap use config/runtime.mjs."
+    - version: "1.4.0"
+      date: "2026-09-24"
+      changes:
+        - "DATA-TASK-007 (data-storage 2.0.0): controlStore is async over MySQL; each mutation and its audit event share one transaction. prepareControlPlane() and switcher.applyStoredActiveProfile() are async; the server awaits the store, and denial audits are written without delaying the response."
+        - "CTRL-TASK-002 key rotation: scripts/control-plane/rotate-key.mjs re-seals every secret in one MySQL transaction (a failure changes nothing) instead of writing a SQLite snapshot first."
+        - "CTRL-TASK-006: compose.yaml bundles mysql:8.4 (no ports, internal network, volume gogon-mysql); the SQLite volume gogon-data is gone. GG_MYSQL_* are bootstrap settings (GG_MYSQL_PASSWORD secret)."
+    - version: "1.3.0"
+      date: "2026-09-24"
+      changes:
+        - "CTRL-TASK-001..008 implemented. Registry: config/registry.mjs (48 settings) + config/runtime.mjs; .env.example generated from it."
+        - "Added reloadMode bootstrap for .env-only settings (paths, ports, admin identity, keys): shown read-only, never writable from the browser."
+        - "Decisions pending owner confirmation: GG_CONTROL_ENABLED defaults to 0 outside Docker (compose sets 1) so existing local runs keep booting; the session cookie gets Secure only with GG_CONTROL_COOKIE_SECURE=1 (loopback HTTP / SSH tunnel); account profiles are the switchable accounts while GG_EMAIL/GG_PASSWORD stay the bootstrap account; mention none sends no ping."
+        - "CTRL-TASK-007: GitHub Actions deferred as the task requires (no owner Git remote yet). Browser acceptance runs in headless Firefox over WebDriver BiDi (scripts/control-plane/firefox-acceptance.mjs, 17/17 checks)."
+    - version: "1.2.0"
+      date: "2026-09-24"
+      changes:
+        - "CTRL-TASK-008 narrowed by owner decision: only the ping mention target is a web-panel setting (notifications section). Ping timing is fixed by game-monitors-v1 AC-MON-007."
+    - version: "1.1.0"
+      date: "2026-09-24"
+      changes:
+        - "Owner decision: the GuildConflicts attack ping becomes a dashboard configuration form backed by the database after the Docker upgrade. Added CTRL-TASK-008."
+    - version: "1.0.0"
+      date: "2026-09-23"
+      changes:
+        - "Defines the private authenticated dashboard, live configuration registry, account switching, and Docker deployment contract."
+
+domain:
+  name: "Private Control Plane & Container Deployment"
+  description: |
+    Supplies a private, locally published browser dashboard for observing and controlling
+    GoGon. It exposes every registered module and every supported configuration setting,
+    with live validation and audited changes. Bootstrap administrator credentials and the
+    encryption key are supplied through .env; all sensitive values are write-only and
+    never returned to the browser. The initial deployment is reachable only at loopback,
+    optionally through an owner-operated SSH tunnel.
+
+entities:
+  - name: ConfigurationDefinition
+    description: "Allow-listed configuration item with type, default, sensitivity, reload behavior, and validation."
+    fields:
+      - { name: key, type: string, constraints: [required, unique] }
+      - { name: type, type: string, constraints: [required], description: "boolean, integer, enum, string, secret, or JSON" }
+      - { name: sensitivity, type: string, constraints: [required], description: "public, private, or secret" }
+      - { name: reloadMode, type: string, constraints: [required], description: "hot, subsystem-rebind, controlled-session-switch, or bootstrap (.env-only, read-only in the dashboard)" }
+      - { name: validator, type: string, constraints: [required] }
+  - name: ModuleDefinition
+    description: "One scheduled monitor or Discord integration controllable through the engine."
+    fields:
+      - { name: id, type: string, constraints: [required, unique] }
+      - { name: enabled, type: boolean, constraints: [required] }
+      - { name: intervalMs, type: integer, constraints: [required] }
+      - { name: runtimeState, type: string, constraints: [required] }
+  - name: AccountProfile
+    description: "Named FallenSword credential profile; credential material is encrypted at rest and write-only in the API."
+    fields:
+      - { name: id, type: string, constraints: [required, unique] }
+      - { name: label, type: string, constraints: [required] }
+      - { name: emailCiphertext, type: string, constraints: [required, sensitive] }
+      - { name: passwordCiphertext, type: string, constraints: [required, sensitive] }
+      - { name: active, type: boolean, constraints: [required] }
+  - name: AuditEvent
+    description: "Redacted record of a successful or denied dashboard action."
+    fields:
+      - { name: occurredAt, type: datetime, constraints: [required] }
+      - { name: action, type: string, constraints: [required] }
+      - { name: subject, type: string, constraints: [required] }
+      - { name: outcome, type: string, constraints: [required] }
+
+acceptance_criteria:
+  - id: AC-CTRL-001
+    description: "Only the configured owner can access the control plane"
+    given: "GG_ADMIN_USERNAME, GG_ADMIN_PASSWORD_HASH, and GG_CONTROL_SESSION_SECRET are set in .env"
+    when: "A browser requests the dashboard or API"
+    then: "Unauthenticated requests receive no operational data, successful login creates an HttpOnly, SameSite=Strict session, and all state-changing requests require CSRF and Origin validation"
+    error_cases:
+      - given: "Invalid credentials, expired session, missing CSRF token, or cross-origin request"
+        when: "The request reaches the control plane"
+        then: "It is denied, rate-limited where applicable, and recorded without credential material"
+  - id: AC-CTRL-002
+    description: "Dashboard presents live module and configuration state safely"
+    given: "An authenticated owner and a running engine"
+    when: "The dashboard opens or receives a live update"
+    then: "It shows all registry entries, effective non-secret values, source and reload mode, module enabled state, interval, health, latest result, selected account label, and validation errors"
+    error_cases:
+      - given: "A registry entry is secret"
+        when: "The dashboard renders state"
+        then: "It shows only set or unset and never returns the value, ciphertext, token, cookie, password, webhook URL, or encryption key"
+  - id: AC-CTRL-003
+    description: "Allow-listed runtime configuration and module controls take effect without a container rebuild"
+    given: "An authenticated owner submits a valid update to a configuration definition or module"
+    when: "The update is accepted"
+    then: "It is persisted transactionally, audited, reflected in the live state stream, and applied according to reloadMode; hot values affect the next task run and subsystem-rebind values restart only the named subsystem"
+    error_cases:
+      - given: "Unknown key, malformed type, out-of-range interval, invalid JSON, or an unsafe target URL"
+        when: "The update is submitted"
+        then: "It is rejected with a field error, no state changes, and no arbitrary environment variable or code path can be written"
+  - id: AC-CTRL-004
+    description: "The active FallenSword account can be switched safely"
+    given: "At least two valid encrypted account profiles and active monitoring tasks"
+    when: "The owner selects a different profile"
+    then: "The engine pauses tasks, flushes pending notifications, invalidates the old cookie jar, authenticates the selected profile, records only profile labels in the audit log, and resumes the prior enabled modules after successful validation"
+    error_cases:
+      - given: "Selected profile authentication fails"
+        when: "The switch sequence runs"
+        then: "All tasks remain paused, no partial account is active, the dashboard reports a redacted failure, and the owner may retry or select another profile"
+  - id: AC-CTRL-005
+    description: "Containerized deployment is private, persistent, and minimally privileged"
+    given: "A production .env and Docker Compose deployment"
+    when: "docker compose up starts GoGon"
+    then: "The application runs as non-root, publishes the control port only to 127.0.0.1, stores persistent MySQL state in the private gogon-mysql named volume, uses a read-only root filesystem with required tmpfs paths, drops Linux capabilities, and supplies a loopback-only health check"
+    error_cases:
+      - given: "Required administrator bootstrap values, encryption key, or application configuration are missing"
+        when: "The container starts"
+        then: "It fails closed before game login and exposes no control port with partial administrative access"
+  - id: AC-CTRL-006
+    description: "The dashboard resists browser and API attacks"
+    given: "Malicious HTML, unexpected JSON, URL-like values, or repeated login attempts"
+    when: "They are submitted to the dashboard API"
+    then: "Output is encoded, inputs are schema-validated and size-bounded, no wildcard CORS is sent, security headers are set, and login/session endpoints enforce bounded rate limits"
+
+security:
+  constitutions:
+    - SEC-OWASP-A01-2025
+    - SEC-OWASP-A02-2025
+    - SEC-OWASP-A03-2025
+    - SEC-OWASP-A04-2025
+    - SEC-OWASP-A05-2025
+    - SEC-OWASP-A07-2025
+    - SEC-OWASP-A10-2025
+  project_specific:
+    - rule: "The dashboard must use an explicit configuration registry. It must never read, expose, or write arbitrary process.env keys, source files, Docker daemon settings, or compose files."
+      severity: CRITICAL
+      cwe: 15
+    - rule: "GG_ADMIN_PASSWORD_HASH must be an scrypt-compatible password hash; a plaintext dashboard password is forbidden in .env."
+      severity: CRITICAL
+      cwe: 256
+    - rule: "Account profiles, Discord tokens, webhook URLs, cookies, credentials, and GG_CONTROL_ENCRYPTION_KEY are write-only at the API boundary and redacted from logs, audit events, metrics, backups, and browser responses."
+      severity: CRITICAL
+      cwe: 312
+    - rule: "Compose publishes the control plane at 127.0.0.1 only. Remote access, if later needed, must use an owner-managed authenticated tunnel or VPN; no public port exposure is allowed by default."
+      severity: CRITICAL
+      cwe: 284
+  threat_model:
+    - threat: "A dashboard turns an internal health server into an unauthenticated remote control endpoint."
+      impact: "Account misuse, module manipulation, and credential compromise."
+      mitigation: "Loopback publication, login, session and CSRF controls, allow-listed commands, and audit logging."
+      verification: "AC-CTRL-001 and AC-CTRL-005."
+    - threat: "Configuration visibility leaks secrets or enables arbitrary code/runtime changes."
+      impact: "Credential theft, SSRF, or host compromise."
+      mitigation: "Secret-aware registry, write-only fields, strict schemas, URL allowlists, and no arbitrary environment editing."
+      verification: "AC-CTRL-002, AC-CTRL-003, and AC-CTRL-006."
+    - threat: "Switching account during active monitoring mixes state or sends notifications from the wrong account."
+      impact: "Incorrect game actions and misleading Discord notifications."
+      mitigation: "Serialized pause-flush-invalidate-authenticate-resume state machine."
+      verification: "AC-CTRL-004."
+
+constraints:
+  - "The initial private endpoint is http://127.0.0.1:${GG_CONTROL_PORT}; remote use is via owner-operated SSH tunnel or VPN, not a public bind."
+  - "The .env file supplies bootstrap administrator identity, password hash, session secret, and encryption key. It is never edited through the browser."
+  - "Every application setting must have a registry definition; secret settings are represented as set or unset rather than displayed values."
+  - "Account profile creation and credential rotation use write-only form fields encrypted in the MySQL control store with an authenticated encryption scheme keyed by GG_CONTROL_ENCRYPTION_KEY."
+  - "Docker image tags and dependency versions must be pinned; production uses Node 22, not the host Node runtime."
+  - "Implementation cannot begin until the backup reconciliation tests establish the current module contracts."
+
+dependencies:
+  - { domain: "backup-reconciliation-v1", relationship: "Establishes trustworthy module contracts before dynamic controls are added.", criticality: CRITICAL }
+  - { domain: "auth-session-v1", relationship: "Provides login, cookie invalidation, and safe account switching.", criticality: CRITICAL }
+  - { domain: "data-storage-v1", relationship: "Provides migrations and transactional persistence for overrides, profiles, and audit events.", criticality: CRITICAL }
+  - { domain: "task-engine-v1", relationship: "Provides module lifecycle and serialized task control.", criticality: CRITICAL }
+  - { domain: "health-metrics-v1", relationship: "Replaces permissive health routing with protected control-plane observability.", criticality: HIGH }
+
+git:
+  last_implementation_branch: ""
+  last_pr_url: ""
+  last_pr_merged: ""
+  last_version_tag: ""
+
+tasks:
+  - id: CTRL-TASK-001
+    description: |
+      Lock the configuration registry and .env.example contract. Classify every existing GG_,
+      FS_, and SWS_ setting by type, sensitivity, validation, default, module ownership, and
+      reload mode. Add only bootstrap admin/password-hash/session-secret/encryption-key values
+      to .env; do not read or copy the real .env into tests or documentation.
+    affects: "config/, configValidator.mjs, .env.example, specs/control-plane.spec.yaml"
+    depends_on: ["backup-reconciliation-v1:REC-TASK-001", "auth-session-v1:AUTH-TASK-001"]
+    source: "AC-CTRL-002, AC-CTRL-003"
+    status: DONE
+  - id: CTRL-TASK-002
+    description: |
+      Add migrations and a data access module for configuration overrides, module preferences,
+      encrypted account profiles, and redacted audit events. Implement transactional encryption,
+      key rotation procedure, and snapshot-safe backup behavior without storing plaintext secrets.
+    affects: "_gg_data/migrations/, _gg_data/handler/, tests/"
+    depends_on: ["CTRL-TASK-001", "data-storage-v1:DATA-TASK-001", "data-storage-v1:DATA-TASK-003"]
+    source: "AC-CTRL-003, AC-CTRL-004"
+    status: DONE
+  - id: CTRL-TASK-003
+    description: |
+      Refactor engine.js into a registry-backed runtime controller with stable module identifiers,
+      persisted enablement and intervals, serialized lifecycle transitions, next-run reload of hot
+      values, and pause/flush/resume primitives. Preserve non-overlap behavior.
+    affects: "engine.js, app_modules/, utils.js, tests/task-engine.test.mjs"
+    depends_on: ["CTRL-TASK-001", "backup-reconciliation-v1:REC-TASK-006", "task-engine-v1:ENG-TASK-002"]
+    source: "AC-CTRL-002, AC-CTRL-003, AC-CTRL-004"
+    status: DONE
+  - id: CTRL-TASK-004
+    description: |
+      Implement the account-profile switch coordinator. It must serialize the switch, pause
+      modules, flush batches, clear old session state, authenticate the target profile, validate
+      it, and resume only after success. Include a fail-closed recovery state and redacted events.
+    affects: "session.mjs, app.mjs, engine.js, discordBot.mjs, tests/account-switch.test.mjs"
+    depends_on: ["CTRL-TASK-002", "CTRL-TASK-003", "auth-session-v1:AUTH-TASK-002"]
+    source: "AC-CTRL-004"
+    status: DONE
+  - id: CTRL-TASK-005
+    description: |
+      Replace the current unauthenticated, wildcard-CORS health surface with an authenticated
+      control-plane HTTP API and server-rendered or static dashboard. Add login throttling,
+      secure cookies, CSRF/Origin checks, CSP and other security headers, schema validation,
+      safe HTML rendering, live state updates, and a separate loopback-only probe endpoint.
+    affects: "healthCheck.mjs, control-plane/, public/, package.json, tests/control-plane.test.mjs"
+    depends_on: ["CTRL-TASK-001", "CTRL-TASK-002", "CTRL-TASK-003", "health-metrics-v1:HLTH-TASK-001", "health-metrics-v1:HLTH-TASK-002"]
+    source: "AC-CTRL-001, AC-CTRL-002, AC-CTRL-003, AC-CTRL-006"
+    status: DONE
+  - id: CTRL-TASK-006
+    description: |
+      Add a pinned Node 22 Dockerfile, compose.yaml, .dockerignore, non-root runtime user,
+      read-only root filesystem, tmpfs, dropped capabilities, private named MySQL volume, loopback port
+      publication, and a healthcheck. Provide .env.example and owner SSH-tunnel instructions;
+      never publish the dashboard to all interfaces by default.
+    affects: "Dockerfile, compose.yaml, .dockerignore, .env.example, docs/deployment.md"
+    depends_on: ["CTRL-TASK-005"]
+    source: "AC-CTRL-005"
+    status: DONE
+  - id: CTRL-TASK-007
+    description: |
+      Add unit, integration, and browser acceptance tests for authentication, redaction, every
+      registry item, module lifecycle, live updates, account-switch failure recovery, Docker
+      security options, and no-live-network enforcement. Add GitHub Actions only after the owner
+      initializes an owner-controlled Git remote and confirms repository secrets policy.
+    affects: "tests/, .github/workflows/, package.json, CHANGELOG.md"
+    depends_on: ["CTRL-TASK-004", "CTRL-TASK-005", "CTRL-TASK-006"]
+    source: "AC-CTRL-001, AC-CTRL-002, AC-CTRL-003, AC-CTRL-004, AC-CTRL-005, AC-CTRL-006"
+    status: DONE
+    note: "GitHub Actions not added: the task makes CI conditional on an owner-controlled Git remote and secrets policy, which do not exist yet."
+  - id: CTRL-TASK-008
+    description: |
+      Owner decision (2026-09-24): the GuildConflicts attack-ping mention (who to mention) is set
+      in the notifications section of the web panel. Add one hot-reload registry definition:
+      mention target (enum: none, @everyone, or a Discord role ID validated as a snowflake;
+      default @everyone). Persist it through the CTRL-TASK-002 override store and render it as a
+      form field in the notifications panel. GuildConflicts.js reads the effective value on each
+      run in place of CONFLICT_PING.DEFAULT_MENTION. No role ID may be hardcoded.
+      When to ping is fixed by game-monitors-v1 AC-MON-007 and is not a panel setting.
+    affects: "config/, app_modules/GuildConflicts.js, control-plane/, public/, tests/"
+    depends_on: ["CTRL-TASK-001", "CTRL-TASK-002", "CTRL-TASK-005", "game-monitors-v1:MON-TASK-005"]
+    source: "AC-CTRL-002, AC-CTRL-003"
+    status: DONE

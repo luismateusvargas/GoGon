@@ -1,0 +1,35 @@
+# Environment variables (NEVER COMMIT!)
+.env
+.env.local
+.env.*.local
+
+# Database files
+_gg_data/database/*.db
+_gg_data/database/*.db-shm
+_gg_data/database/*.db-wal
+# Pre-import / pre-rollback / pre-rotation snapshots (REC-TASK-005, CTRL-TASK-002)
+_gg_data/database/snapshots/
+# Legacy database directory
+_sws_data/database/*.db
+_sws_data/database/*.db-shm
+_sws_data/database/*.db-wal
+
+# Debug output
+DEBUG/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Node modules
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+backup/

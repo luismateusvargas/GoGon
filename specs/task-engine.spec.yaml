@@ -1,0 +1,240 @@
+# =============================================================================
+# SDD DOMAIN SPEC: Task Engine & Lifecycle Management
+# =============================================================================
+spec:
+  id: "task-engine-v1"
+  status: draft
+  version: "1.3.0"
+  created: "2026-09-22"
+  updated: "2026-09-24"
+
+  version_policy:
+    sync_group: "business-domain"
+    depends_on: ["security"]
+
+  changelog:
+    - version: "1.3.0"
+      date: "2026-09-24"
+      changes:
+        - "ENG-TASK-002 DONE: tests/task-engine/scheduling.test.mjs covers AC-ENG-001 (2000 ms stagger, unconfigured AutoGearSwap skipped), AC-ENG-002 (no overlap, errors rescheduled), AC-ENG-003 (immediate start, stop, unknown names), AC-ENG-004 (validateAndExit), AC-ENG-005 (flush and stop on shutdown)."
+        - "AC-ENG-003: unknown task names now log ERR 'Task ... not found in registry' as specified (was a WARN with other wording)."
+        - "CTRL-TASK-003 (control-plane-v1) extends engine.js with persisted preferences, serialized transitions, pauseAll/resumeAll, and per-run results; tests/task-engine/controller.test.mjs."
+    - version: "1.2.0"
+      date: "2026-09-24"
+      changes:
+        - "Owner decision: stopping a task kills it, and startTask checks for a running instance first. Added an AC-ENG-003 error case for this."
+        - "ENG-TASK-003 DONE (AC-ENG-002, AC-ENG-003): each start gets a run generation; stopTask aborts the in-flight run's AbortSignal and invalidates its loop; startTask refuses while a run is in flight; start/stop return booleans; getTasksStatus reports isRunning. Resolves the second-loop gap noted in 1.1.0. Tests: tests/task-engine/lifecycle.test.mjs."
+    - version: "1.1.0"
+      date: "2026-09-24"
+      changes:
+        - "ENG-TASK-001 DONE (AC-ENG-005): engine.js verified pure ESM with flushAllBatches imported; shutdown cancels pending staggered starts and ignores repeated signals; handleShutdownSignal exported as a test seam. Tests: tests/task-engine/shutdown.test.mjs."
+        - "Open for ENG-TASK-002: restarting a task while its previous handler is still running can create a second loop (non-overlap)."
+    - version: "1.0.0"
+      date: "2026-09-22"
+      changes:
+        - "Initial domain specification for task scheduler, non-overlapping execution, pre-flight validation, and graceful shutdown."
+
+domain:
+  name: "Task Engine & Lifecycle Management"
+  description: |
+    Orchestrates recurring monitoring tasks, non-overlapping scheduling using setTimeout,
+    staggered application initialization to prevent request bursts, startup configuration validation,
+    and clean shutdown hooks that flush pending Discord notifications upon process termination.
+
+entities:
+  - name: ScheduledTask
+    description: "Definition of a recurring monitoring routine managed by the engine."
+    fields:
+      - name: name
+        type: string
+        constraints: [required, unique]
+        description: "Unique identifier for the task (e.g., 'SuperElites', 'BountyBoard')."
+        example: "SuperElites"
+      - name: interval
+        type: integer
+        constraints: [required]
+        description: "Frequency of task execution in milliseconds."
+        example: 15000
+      - name: fn
+        type: string
+        constraints: [required]
+        description: "Async worker function executed on each iteration."
+        example: "checkSuperElites"
+      - name: activeOnStart
+        type: boolean
+        constraints: [required]
+        description: "Flag whether task should automatically launch during initEngine()."
+        example: true
+      - name: timerId
+        type: integer
+        constraints: []
+        description: "Active setTimeout reference identifier when scheduled."
+        example: 104
+
+  - name: EngineState
+    description: "Runtime snapshot of the engine and all registered tasks."
+    fields:
+      - name: totalTasks
+        type: integer
+        constraints: [required]
+        description: "Count of all registered tasks in the registry."
+        example: 12
+      - name: activeCount
+        type: integer
+        constraints: [required]
+        description: "Count of tasks actively scheduled or running."
+        example: 11
+      - name: isShuttingDown
+        type: boolean
+        constraints: [required]
+        description: "Flag indicating whether graceful shutdown sequence is in progress."
+        example: false
+
+  - name: ConfigValidationResult
+    description: "Outcome of pre-flight environment configuration validation."
+    fields:
+      - name: isValid
+        type: boolean
+        constraints: [required]
+        description: "Whether all required critical environment variables are present."
+        example: true
+      - name: criticalErrors
+        type: json
+        constraints: [required]
+        description: "Array of missing critical variables that prevent startup."
+        example: '["GG_EMAIL", "GG_PASSWORD"]'
+      - name: warnings
+        type: json
+        constraints: [required]
+        description: "Array of optional variables that degrade specific functionality."
+        example: '["GG_BOT_ID_CHARACTER not configured; AutoGearSwap disabled"]'
+
+acceptance_criteria:
+  - id: AC-ENG-001
+    description: "Staggered task initialization prevents network and CPU spikes"
+    given: "Engine initialized with 12 registered monitoring modules"
+    when: "initEngine() is executed during boot"
+    then: "Tasks with activeOnStart=true start sequentially with a 2000ms delay between each task start"
+    error_cases:
+      - given: "A module lacks required configuration (e.g., AutoGearSwap without GG_BOT_ID_CHARACTER)"
+        when: "initEngine() evaluates task prerequisites"
+        then: "Logs a warning, sets activeOnStart=false, and skips scheduling that task without halting engine"
+
+  - id: AC-ENG-002
+    description: "Non-overlapping task execution loop"
+    given: "A running task with configured interval N ms"
+    when: "Task worker function takes longer than N ms to complete or network lags"
+    then: "Next iteration is scheduled via setTimeout ONLY after current run resolves, preventing concurrent overlapping executions"
+    error_cases:
+      - given: "Task worker throws an unhandled error"
+        when: "scheduleNextRun() catches the exception"
+        then: "Logs error to ERR logger and still schedules next run after configured interval"
+
+  - id: AC-ENG-003
+    description: "Dynamic task management via API"
+    given: "Running engine instance"
+    when: "startTask(name) or stopTask(name) is called at runtime"
+    then: "startTask initiates immediate execution and schedules loop; stopTask clears active timer and sets timerId to null"
+    error_cases:
+      - given: "Non-existent task name provided to startTask or stopTask"
+        when: "Function is called"
+        then: "Logs error 'Task ... not found in registry' and returns false without crashing"
+      - given: "A task was stopped while its handler run was still in flight"
+        when: "stopTask(name) and then startTask(name) are called before that run resolves"
+        then: "stopTask aborts the run's AbortSignal and invalidates its loop; startTask logs a warning and returns false; the old run never schedules another iteration, so at most one instance of the task exists"
+
+  - id: AC-ENG-004
+    description: "Pre-flight configuration validation blocks broken boots"
+    given: "Missing critical environment variables (e.g. GG_EMAIL or GG_PASSWORD)"
+    when: "validateAndExit() runs at the start of app.mjs"
+    then: "Prints formatted validation error table with remediation instructions and exits process with code 1"
+    error_cases:
+      - given: "All critical variables present but optional webhook missing"
+        when: "validateAndExit() evaluates environment"
+        then: "Prints warning for missing optional components and permits boot sequence to continue"
+
+  - id: AC-ENG-005
+    description: "Graceful shutdown flushes batches and stops tasks"
+    given: "Running application with active tasks and pending Discord message batches"
+    when: "Process receives SIGINT (Ctrl+C) or SIGTERM"
+    then: "Engine cancels all pending setTimeout timers, calls flushAllBatches() to deliver queued messages, and exits after 5-second drain window"
+    error_cases:
+      - given: "Discord webhook endpoint hangs during shutdown flush"
+        when: "5-second shutdown timer elapses"
+        then: "Forcibly terminates process with code 0 to prevent zombie process"
+
+security:
+  constitutions:
+    - SEC-OWASP-A02-2025   # Security Misconfiguration (Fail-closed on invalid config)
+    - SEC-OWASP-A06-2025   # Insecure Design (Rate protection, non-overlapping tasks)
+    - SEC-OWASP-A10-2025   # Mishandling of Exceptional Conditions (Graceful degradation & shutdown)
+
+  project_specific:
+    - rule: "Application must never start if critical credentials (email, password) are absent or empty strings."
+      severity: CRITICAL
+      cwe: 258
+      scope: "configValidator.mjs, app.mjs"
+    - rule: "All unhandled rejections and uncaught exceptions must be logged with structured errors and prevented from crashing the event loop silently."
+      severity: HIGH
+      cwe: 248
+      scope: "app.mjs, engine.js"
+
+  threat_model:
+    - threat: "Denial of service against game servers due to unbounded concurrent scrapers"
+      impact: "Game account IP ban or rate limit lockout"
+      mitigation: "Enforce strict non-overlapping setTimeout loop and 2-second boot stagger across all modules"
+      verification: "Unit tests simulating slow responses and verifying single-thread sequential invocation"
+    - threat: "Message loss during container restart or server deployment"
+      impact: "Critical game alerts (relics, GvG conflicts) dropped"
+      mitigation: "SIGTERM/SIGINT signal listeners trigger immediate flushAllBatches() before process termination"
+      verification: "Test triggering SIGTERM while items are in queue and confirming delivery call"
+
+constraints:
+  - "Stagger interval between task starts must be exactly 2000 milliseconds."
+  - "Graceful shutdown drain timeout must not exceed 5000 milliseconds."
+  - "All tasks must be registered in the engine registry with defined intervals."
+
+dependencies:
+  - domain: "auth-session"
+    relationship: "Engine depends on valid session before initiating scheduled tasks."
+    criticality: CRITICAL
+  - domain: "discord-integration"
+    relationship: "Engine flushes pending Discord notifications during shutdown."
+    criticality: HIGH
+
+git:
+  last_implementation_branch: ""
+  last_pr_url: ""
+  last_pr_merged: ""
+  last_version_tag: ""
+
+tasks:
+  - id: ENG-TASK-001
+    description: |
+      Validate ESM compatibility and signal handling in engine.js.
+      Confirm require() calls are eliminated from shutdown handlers and flushAllBatches() is properly imported.
+    affects: "engine.js"
+    depends_on: []
+    source: "AC-ENG-005"
+    status: DONE
+
+  - id: ENG-TASK-002
+    description: |
+      Create automated unit tests for engine.js verifying staggered startup,
+      startTask/stopTask state changes, non-overlapping execution, and shutdown handlers.
+    affects: "tests/task-engine/scheduling.test.mjs, engine.js"
+    depends_on: ["ENG-TASK-001"]
+    source: "acceptance_criteria"
+    status: DONE
+
+  - id: ENG-TASK-003
+    description: |
+      Owner decision: stopping a task kills it, and a new start checks whether one is still running.
+      stopTask invalidates the task's run generation and aborts the in-flight run's AbortSignal;
+      startTask refuses (returns false) while a previous run is in flight, preventing a second loop.
+      JavaScript cannot preempt a running promise: an in-flight handler that ignores the signal
+      finishes its current step, but its result can never reschedule the task.
+    affects: "engine.js, tests/task-engine/lifecycle.test.mjs"
+    depends_on: ["ENG-TASK-001"]
+    source: "AC-ENG-002, AC-ENG-003"
+    status: DONE

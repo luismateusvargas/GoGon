@@ -1,0 +1,200 @@
+# =============================================================================
+# SDD DOMAIN SPEC: Health Monitoring & Telemetry Metrics
+# =============================================================================
+spec:
+  id: "health-metrics-v1"
+  status: draft
+  version: "2.0.1"
+  created: "2026-09-22"
+  updated: "2026-09-24"
+
+  version_policy:
+    sync_group: "api-surface"
+    depends_on: ["business-domain", "security"]
+
+  changelog:
+    - version: "2.0.1"
+      date: "2026-09-24"
+      changes:
+        - "DATA-TASK-006 (data-storage 2.0.0): healthReport() and the database check are async; the check is SELECT 1 on MySQL with a 3 s timeout, and a failed or slow database answers 503 unhealthy."
+    - version: "2.0.0"
+      date: "2026-09-24"
+      changes:
+        - "BREAKING (control-plane-v1 CTRL-TASK-005): the unauthenticated server is now a loopback-only probe serving GET /health (alias /healthz) with no CORS. /tasks, /cache, /config, and /metrics moved behind the authenticated control plane (/api/state, /api/health, /api/metrics)."
+        - "HLTH-TASK-001 DONE: the configuration summary and dashboard state never contain secret values (tests). HLTH-TASK-002 DONE: tests/health-metrics/probe.test.mjs covers AC-HLTH-001, 003, 004, and 005."
+        - "AC-HLTH-001 error case implemented: a failing database or engine answers 503 unhealthy. AC-HLTH-002: metrics include memory statistics."
+    - version: "1.0.0"
+      date: "2026-09-22"
+      changes:
+        - "Initial domain specification for HTTP health check daemon, system metrics telemetry, rate limiting, and sanitized config inspection."
+
+domain:
+  name: "Health Monitoring & Telemetry Metrics"
+  description: |
+    Provides an embedded HTTP server hosting operational monitoring endpoints (/health, /metrics, /config).
+    Exposes process uptime, task execution health, database cache statistics, Discord batching efficiency,
+    and sanitized configuration summaries, protected by per-IP rate limiting (60 req/min).
+
+entities:
+  - name: HealthReport
+    description: "Operational status payload served by the /health endpoint."
+    fields:
+      - name: status
+        type: string
+        constraints: [required]
+        description: "Overall health status string ('healthy', 'degraded', 'unhealthy')."
+        example: "healthy"
+      - name: uptime
+        type: string
+        constraints: [required]
+        description: "Human-readable uptime duration."
+        example: "2d 4h 15m 30s"
+      - name: tasks
+        type: json
+        constraints: [required]
+        description: "Map of registered tasks with their current running status and intervals."
+        example: '{"SuperElites": {"active": true, "interval": 15000}}'
+      - name: cacheStats
+        type: json
+        constraints: []
+        description: "Hit and miss counts for database entity caches."
+        example: '{"items": {"size": 42, "hits": 120, "misses": 5}}'
+
+  - name: SystemMetrics
+    description: "Detailed system and process telemetry served by the /metrics endpoint."
+    fields:
+      - name: memory
+        type: json
+        constraints: [required]
+        description: "Process memory consumption (heapUsed, heapTotal, rss) in MB."
+        example: '{"heapUsedMB": 68.4, "rssMB": 112.1}'
+      - name: discordBatching
+        type: json
+        constraints: [required]
+        description: "Discord message batching metrics (queued, sent, saved HTTP calls)."
+        example: '{"totalBatches": 15, "messagesCombined": 85, "savedCalls": 70}'
+
+  - name: ConfigReport
+    description: "Sanitized overview of active environment configurations served by /config."
+    fields:
+      - name: configuredVariables
+        type: json
+        constraints: [required]
+        description: "List of variable keys indicating configuration presence without displaying secret values."
+        example: '{"GG_EMAIL": "Configured (Present)", "GG_PASSWORD": "Configured (Redacted)"}'
+
+acceptance_criteria:
+  - id: AC-HLTH-001
+    description: "Health endpoint returns system status and task health"
+    given: "GoGon process running with health check server started"
+    when: "HTTP GET request is sent to /health"
+    then: "Server responds with HTTP 200, Content-Type application/json, uptime, and dictionary of active tasks"
+    error_cases:
+      - given: "Database or engine reports fatal errors"
+        when: "GET /health is evaluated"
+        then: "Returns HTTP 503 with status 'unhealthy' and diagnostic error details"
+
+  - id: AC-HLTH-002
+    description: "Metrics endpoint reports operational telemetry"
+    given: "Active monitoring activity with cached queries and batched Discord dispatches"
+    when: "An authenticated owner sends GET /api/metrics to the control plane"
+    then: "Server responds with HTTP 200 containing memory stats, task execution metrics, Discord batch savings, and cache hit ratios"
+    error_cases:
+      - given: "Metrics module encounters internal calculation error"
+        when: "GET /metrics is requested"
+        then: "Returns fallback status HTTP 500 without crashing the main process"
+
+  - id: AC-HLTH-003
+    description: "Config endpoint redacts sensitive secrets and passwords"
+    given: "Valid environment configuration containing credentials and webhook URLs"
+    when: "An authenticated owner reads the configuration summary (/api/state validation) from the control plane"
+    then: "Server returns HTTP 200 showing configuration completeness, with passwords, tokens, and sensitive URLs completely redacted"
+    error_cases:
+      - given: "Caller attempts to extract raw GG_PASSWORD or GG_DISCORD_TOKEN, or requests /config on the probe"
+        when: "Response body is generated"
+        then: "Output displays only presence flags (e.g. 'SET' or 'REDACTED'), never raw secret text; the probe answers 404"
+
+  - id: AC-HLTH-004
+    description: "Per-IP rate limiting prevents health server abuse"
+    given: "Configured rate limit window of 60 seconds with max 60 requests"
+    when: "A single IP client issues more than 60 requests within 60 seconds"
+    then: "Server rejects excess requests with HTTP 429 Too Many Requests and sets 'Retry-After: 60' response header"
+    error_cases:
+      - given: "60-second window elapses"
+        when: "Client makes subsequent request"
+        then: "Counter resets and request succeeds with HTTP 200"
+
+  - id: AC-HLTH-005
+    description: "Server lifecycle and enable/disable toggle"
+    given: "Environment variable GG_HEALTH_CHECK_ENABLED set to '0'"
+    when: "app.mjs boots"
+    then: "Health check server is not started and port is not bound, logging 'Health check server disabled'"
+    error_cases:
+      - given: "Configured port is already occupied by another process"
+        when: "startHealthCheckServer() attempts to listen"
+        then: "Logs error to console and allows bot engine to continue running without crash"
+
+security:
+  constitutions:
+    - SEC-OWASP-A01-2025   # Broken Access Control (Localhost default binding)
+    - SEC-OWASP-A02-2025   # Security Misconfiguration (Secret redaction in diagnostics)
+    - SEC-OWASP-A04-2025   # Cryptographic Failures (Never expose tokens/passwords)
+    - SEC-OWASP-A06-2025   # Insecure Design (Rate limiting protection)
+
+  project_specific:
+    - rule: "The health check server must default to binding on 127.0.0.1 to avoid exposing operational endpoints to public networks unless explicitly configured."
+      severity: HIGH
+      cwe: 1327
+      scope: "healthCheck.mjs"
+    - rule: "Under no circumstances may /config or /metrics expose credentials (GG_PASSWORD, FS_PASSWORD, GG_DISCORD_TOKEN, webhooks) in clear text."
+      severity: CRITICAL
+      cwe: 312
+      scope: "healthCheck.mjs, configValidator.mjs"
+
+  threat_model:
+    - threat: "Denial of service via HTTP endpoint flooding on health port"
+      impact: "Process CPU/memory starvation impacting game scraping intervals"
+      mitigation: "IP-based sliding rate limiter (60 req/min) returning 429"
+      verification: "Simulate 70 requests from single IP and assert 429 on requests 61+"
+    - threat: "Information disclosure of credentials via diagnostic /config endpoint"
+      impact: "Unauthorized attackers obtain game password or Discord bot token"
+      mitigation: "Strict redaction whitelist for all environment variables before serialization"
+      verification: "Assert that output of /config does not contain substrings of actual credentials"
+
+constraints:
+  - "Default binding: 127.0.0.1:3000."
+  - "Rate limit: 60 requests per 60-second sliding window per IP."
+  - "Response payload size for /health must not exceed 64 KB."
+
+dependencies:
+  - domain: "task-engine"
+    relationship: "Health check queries task status from engine."
+    criticality: HIGH
+  - domain: "data-storage"
+    relationship: "Health check queries cache performance stats from database layer."
+    criticality: MEDIUM
+
+git:
+  last_implementation_branch: ""
+  last_pr_url: ""
+  last_pr_merged: ""
+  last_version_tag: ""
+
+tasks:
+  - id: HLTH-TASK-001
+    description: |
+      Verify secret redaction in healthCheck.mjs and configValidator.mjs.
+      Confirm that GG_PASSWORD, GG_DISCORD_TOKEN, and webhook URLs are masked in /config.
+    affects: "healthCheck.mjs, configValidator.mjs"
+    depends_on: []
+    source: "AC-HLTH-003"
+    status: DONE
+
+  - id: HLTH-TASK-002
+    description: |
+      Build automated tests for healthCheck.mjs verifying /health, /metrics, /config,
+      and rate limit enforcement (429 Too Many Requests).
+    affects: "tests/health-metrics/probe.test.mjs, healthCheck.mjs, metrics.mjs"
+    depends_on: ["HLTH-TASK-001"]
+    source: "acceptance_criteria"
+    status: DONE

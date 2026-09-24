@@ -1,0 +1,88 @@
+/* control-plane/public/styles.css - GoGon owner dashboard */
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --text: #1d2330; --muted: #5d6677; --line: #dde1e8;
+  --accent: #2f6fde; --ok: #1f8a4c; --warn: #b7791f; --bad: #c0392b;
+  --ok-bg: #e5f5ec; --warn-bg: #fdf3e1; --bad-bg: #fbe9e7; --chip: #eef1f6;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171d; --surface: #1c2029; --text: #e7eaf0; --muted: #9aa3b2; --line: #2d3340;
+    --accent: #6d9cf0; --ok: #4cc37f; --warn: #e2b04e; --bad: #f07a6a;
+    --ok-bg: #173323; --warn-bg: #3a2f17; --bad-bg: #3d1e1a; --chip: #262c38;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+code, pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+h2 { margin: 0 0 4px; font-size: 20px; }
+h3 { margin: 24px 0 8px; font-size: 15px; }
+.muted { color: var(--muted); }
+.error { color: var(--bad); }
+
+.topbar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
+.brand { font-weight: 700; font-size: 16px; }
+.brand span { color: var(--accent); }
+.status-strip { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
+.tabs { display: flex; gap: 4px; padding: 0 20px; background: var(--surface); border-bottom: 1px solid var(--line); overflow-x: auto; }
+.tabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); padding: 10px 12px; }
+.tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+
+.pill, .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--chip); font-size: 12px; white-space: nowrap; }
+.pill-ok, .badge.ok { background: var(--ok-bg); color: var(--ok); }
+.pill-warn, .badge.warn, .pill-waiting { background: var(--warn-bg); color: var(--warn); }
+.pill-bad, .pill-failing { background: var(--bad-bg); color: var(--bad); }
+.pill-disabled, .pill-muted { color: var(--muted); }
+.badges { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
+.banner { margin: 12px 20px 0; padding: 10px 14px; border-radius: 8px; }
+.banner-error { background: var(--bad-bg); color: var(--bad); }
+.banner-ok { background: var(--ok-bg); color: var(--ok); }
+
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; margin-top: 12px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td.actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+input, button { font: inherit; }
+input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 0; }
+input:disabled { opacity: .7; }
+input.interval { width: 90px; }
+button { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+button.ghost { background: transparent; color: var(--accent); }
+button.danger { color: var(--bad); border-color: var(--bad); }
+button[hidden] { display: none; }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-top: 12px; }
+.form-grid { display: grid; grid-template-columns: max-content 1fr; gap: 8px 12px; align-items: center; max-width: 560px; }
+.form-grid h3, .form-grid button, .form-grid .field-error { grid-column: 1 / -1; margin: 0; }
+.form-grid button { justify-self: start; }
+.inline-form { display: flex; gap: 6px; flex-wrap: wrap; }
+.inline-form[hidden] { display: none; }
+
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; margin-top: 12px; }
+.setting { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.setting-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.setting-label { font-weight: 600; }
+.setting-desc { margin: 0; font-size: 12.5px; }
+.setting-row { display: flex; gap: 6px; }
+.setting-row input { flex: 1; }
+.field-error { margin: 0; font-size: 12.5px; }
+.validation { margin-top: 12px; padding: 10px 14px; border-radius: 8px; background: var(--warn-bg); }
+.validation pre { white-space: pre-wrap; margin: 6px 0 0; }
+
+.login-page { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
+.login-card { width: 100%; max-width: 360px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
+.login-card h1 { margin: 0 0 4px; font-size: 20px; }
+.login-card form { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.login-card button { margin-top: 8px; }
+
+@media (max-width: 640px) {
+  main { padding: 12px 16px; }
+  .settings-grid { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
+}

@@ -1,0 +1,389 @@
+# =============================================================================
+# SDD DOMAIN SPEC: Data Storage, Migrations & Entity Caching
+# =============================================================================
+spec:
+  id: "data-storage-v1"
+  status: locked
+  version: "2.0.1"
+  created: "2026-09-22"
+  updated: "2026-09-24"
+
+  version_policy:
+    sync_group: "data-model"
+    depends_on: []
+
+  changelog:
+    - version: "2.0.1"
+      date: "2026-09-24"
+      changes:
+        - "DATA-TASK-010 DONE: deleted the retired SQLite import test after the owner confirmed legacy SQLite data is disposable; better-sqlite3 is no longer a project dependency."
+    - version: "2.0.0"
+      date: "2026-09-24"
+      changes:
+        - "BREAKING: the live database is MySQL (mysql2 pool), run as a service bundled in compose.yaml (owner decision 2026-09-24). better-sqlite3 leaves the live path. Every data-layer function is now async and must be awaited."
+        - "Tests fake MySQL in-process (tests/helpers/fake-mysql.mjs over node:sqlite). With GG_TEST_MYSQL_URL set, the same data-layer tests run against a real MySQL (CI). AC-DATA-007 and AC-DATA-008 added."
+        - "AC-DATA-001 reworded: MySQL commits DDL implicitly, so a failed migration stops the run and is not recorded, and every migration statement must be idempotent."
+        - "AC-DATA-006 RETIRED: backupDatabase() (SQLite file copy) is removed. Legacy SQLite data and snapshots are disposable (owner decision). A MySQL backup policy is an open owner decision."
+        - "MySQL starts empty: master data (items, creatures, realms, master_realms, relics) is not seeded from SQLite; scrapers and scripts/populate_db.mjs repopulate it (owner decision)."
+        - "Tasks DATA-TASK-004..010 added. DATA-TASK-004..009 DONE; DATA-TASK-010 waits on the owner to confirm deleting the SQLite import tool."
+        - "Found while porting: populate_db inserted relics without an id, which SQLite filled in and MySQL would reject; relics.id is now AUTO_INCREMENT."
+    - version: "1.2.0"
+      date: "2026-09-24"
+      changes:
+        - "DATA-TASK-002 DONE: master data imported from the legacy SWS database through the staged REC-TASK-005 tool (items 16317, creatures 7803, realms 6822, master_realms 324, relics 577). Report in reconciliation/import-reports/; rollback exercised and re-imported."
+        - "DATA-TASK-003 DONE: tests/data-storage/operations.test.mjs covers AC-DATA-001 (ordered, transactional migrations and rollback), AC-DATA-002 (FIFO cap and corrupt-state reset), AC-DATA-005 (LRU hit without disk I/O, misses not cached, eviction), AC-DATA-006 (backup)."
+        - "AC-DATA-006 fix: backupDatabase() now awaits better-sqlite3 db.backup() (asynchronous) and returns a Promise; an invalid path resolves null instead of an unhandled rejection. AC-DATA-002: setContent logs a warning for corrupt or non-list state."
+    - version: "1.1.0"
+      date: "2026-09-24"
+      changes:
+        - "DATA-TASK-001 DONE (AC-DATA-003, AC-DATA-004): setObject and deleteContent restored in _gg_data/handler/gg_database.js; setObject(key, undefined) deletes the key; deleteContent returns the affected row count. Tests: tests/data-storage/state-persistence.test.mjs."
+        - "Added getObject(key, default) (for MON-TASK-002): reads legacy multiply-stringified and setContent list-wrapped states."
+    - version: "1.0.0"
+      date: "2026-09-22"
+      changes:
+        - "Initial domain specification for SQLite database layer, schema migrations, LRU caching, and single-object/list state management."
+
+domain:
+  name: "Data Storage, Migrations & Entity Caching"
+  description: |
+    Provides asynchronous MySQL database operations through a mysql2 connection pool, ordered schema
+    migrations, in-memory LRU caching for high-frequency entity lookups (items, creatures, realms), and
+    key-value persistence supporting both FIFO capped history lists and atomic scalar/object states.
+    The live database is the MySQL service bundled in compose.yaml. Tests use an in-process fake
+    of mysql2, and CI also runs the data-layer tests against a real MySQL.
+
+entities:
+  - name: KeyValueStore
+    description: "Generic key-value storage for application state and processed event IDs."
+    fields:
+      - name: key
+        type: string
+        constraints: [required, unique]
+        description: "Unique string key identifier."
+        example: "processed_se_kill_ids"
+      - name: value
+        type: string
+        constraints: [required]
+        description: "JSON serialized string payload."
+        example: '["101","102","103"]'
+
+  - name: Item
+    description: "FallenSword equipment or usable item definition."
+    fields:
+      - name: id
+        type: integer
+        constraints: [required, unique, indexed]
+        description: "Numerical item ID."
+        example: 582558641
+      - name: name
+        type: string
+        constraints: [required]
+        description: "Item name."
+        example: "Cuirass of the Fallen"
+      - name: stats
+        type: json
+        constraints: []
+        description: "Item combat stats (attack, defense, armor, hp, damage)."
+        example: '{"attack": 120, "defense": 85}'
+      - name: imageUrl
+        type: string
+        constraints: []
+        description: "Path or URL to item graphic."
+        example: "https://cdn2.fallensword.com/items/582558641.gif"
+
+  - name: Creature
+    description: "FallenSword monster, titan, or super elite creature definition."
+    fields:
+      - name: id
+        type: integer
+        constraints: [required, unique, indexed]
+        description: "Numerical creature ID."
+        example: 1542
+      - name: name
+        type: string
+        constraints: [required]
+        description: "Creature name."
+        example: "Chupacabra (Super Elite)"
+      - name: level
+        type: integer
+        constraints: []
+        description: "Creature level."
+        example: 850
+      - name: imageUrl
+        type: string
+        constraints: []
+        description: "Path or URL to creature graphic."
+        example: "https://cdn2.fallensword.com/creatures/1542.jpg"
+
+  - name: Realm
+    description: "FallenSword realm/map definition."
+    fields:
+      - name: id
+        type: integer
+        constraints: [required, unique, indexed]
+        description: "Numerical realm ID."
+        example: 412
+      - name: name
+        type: string
+        constraints: [required]
+        description: "Realm name."
+        example: "Eldham (North)"
+
+  - name: SchemaMigration
+    description: "Record of executed SQL migrations."
+    fields:
+      - name: version
+        type: string
+        constraints: [required, unique]
+        description: "Migration filename or sequential version."
+        example: "001_initial_schema.sql"
+      - name: applied_at
+        type: datetime
+        constraints: [required]
+        description: "Timestamp when migration ran."
+        example: "2026-01-28T15:00:00Z"
+
+acceptance_criteria:
+  - id: AC-DATA-001
+    description: "Ordered schema migrations before first use"
+    given: "An empty or partially migrated MySQL database named by GG_MYSQL_DATABASE"
+    when: "initDatabase() runs, or any data-layer function is first awaited"
+    then: "Creates schema_migrations if missing, applies the pending _gg_data/migrations/*.sql files in file-name order one statement at a time, records each applied file name, and runs the migrations only once per process even when called concurrently"
+    error_cases:
+      - given: "A migration file contains an invalid statement"
+        when: "The migration runs"
+        then: "Stops at that file, does not record its version, logs the file name, and rejects; earlier migrations stay recorded. MySQL commits DDL implicitly, so every migration statement is idempotent (CREATE TABLE IF NOT EXISTS) and the fixed file can be re-run"
+
+  - id: AC-DATA-002
+    description: "FIFO capped list persistence via setContent"
+    given: "A list of stored event IDs with max capacity N (default 100)"
+    when: "await setContent(key, newItem, maxSize) is called with a new ID"
+    then: "Inside one transaction that locks the row (SELECT ... FOR UPDATE), appends newItem, trims the oldest items beyond maxSize, and writes the JSON array back to key_value_store; concurrent calls on the same key lose no item"
+    error_cases:
+      - given: "Stored value in database is corrupted non-array JSON"
+        when: "setContent() attempts to append"
+        then: "Logs warning, resets key to fresh single-item array, and saves successfully"
+
+  - id: AC-DATA-003
+    description: "Atomic single object persistence via setObject"
+    given: "A scalar or structured state object (e.g. current_gear_state='peace' or conflict state map)"
+    when: "await setObject(key, value) is called"
+    then: "Serializes value directly to JSON without wrapping in an array, saving to key_value_store"
+    error_cases:
+      - given: "Value is undefined"
+        when: "setObject() executes"
+        then: "Does not crash; deletes the entry cleanly"
+
+  - id: AC-DATA-004
+    description: "State deletion via deleteContent"
+    given: "An existing entry in key_value_store"
+    when: "await deleteContent(key) is called"
+    then: "Executes DELETE FROM key_value_store WHERE `key` = ? and resolves the number of removed rows"
+    error_cases:
+      - given: "Key does not exist in database"
+        when: "deleteContent(key) is called"
+        then: "Resolves 0 without error"
+
+  - id: AC-DATA-005
+    description: "In-memory LRU caching for item, creature, and realm queries"
+    given: "Configured LRU cache for items, creatures, and realms (default capacity 500)"
+    when: "getItemById(id), getCreatureById(id), or getRealmById(id) is awaited repeatedly"
+    then: "First call queries MySQL and populates cache; subsequent calls return the cached object without a database query"
+    error_cases:
+      - given: "Requested ID does not exist in database"
+        when: "Lookup function executes"
+        then: "Resolves undefined, without caching the miss"
+
+  - id: AC-DATA-006
+    status: RETIRED
+    description: "Database backup creation (retired in 2.0.0)"
+    given: "The SQLite database file"
+    when: "backupDatabase(backupPath) was executed"
+    then: "Retired: backupDatabase() is removed with SQLite. A MySQL backup policy is an open owner decision."
+
+  - id: AC-DATA-007
+    description: "MySQL connection configuration"
+    given: "GG_MYSQL_HOST, GG_MYSQL_PORT, GG_MYSQL_USER, GG_MYSQL_PASSWORD, and GG_MYSQL_DATABASE registered in config/registry.mjs"
+    when: "The pool is first created"
+    then: "Connects with those values read through getSetting(), with a bounded pool (connectionLimit 5), utf8mb4, and multi-statement queries disabled"
+    error_cases:
+      - given: "GG_MYSQL_PASSWORD is empty, or MySQL is unreachable"
+        when: "initDatabase() runs at startup"
+        then: "Rejects with a message naming the setting or host:port, never the password; app.mjs exits with code 1 before the first game login"
+
+  - id: AC-DATA-008
+    description: "Test fake and real-MySQL parity"
+    given: "The npm test preload"
+    when: "Tests import the data layer"
+    then: "mysql2/promise is replaced by an in-process fake (a fresh, empty database per test process) that runs the same SQL; with GG_TEST_MYSQL_URL set, the fake is not installed and each test process uses its own throwaway database on that server, dropped at exit"
+    error_cases:
+      - given: "A statement uses MySQL syntax the fake does not translate"
+        when: "The fake executes it"
+        then: "Throws an error naming the statement, so the gap is fixed in the fake rather than silently ignored"
+
+security:
+  constitutions:
+    - SEC-OWASP-A01-2025   # Broken Access Control (Direct object query isolation)
+    - SEC-OWASP-A05-2025   # Injection (SQL Parameterization)
+    - SEC-OWASP-A08-2025   # Software and Data Integrity Failures (Schema migrations)
+    - SEC-OWASP-A10-2025   # Mishandling of Exceptional Conditions (Fail-closed transactions)
+
+  project_specific:
+    - rule: "All database values are bound through ? placeholders by the mysql2 driver. Building values into SQL by string concatenation or template literals is strictly prohibited; only whitelisted table names and column names taken from code may be interpolated."
+      severity: CRITICAL
+      cwe: 89
+      scope: "_gg_data/handler/gg_database.js, _gg_data/handler/mysqlClient.js, _gg_data/handler/migrationRunner.js, _gg_data/handler/controlStore.js"
+    - rule: "GG_MYSQL_PASSWORD is a registry secret: read only through getSetting(), never logged, never returned by the dashboard, and never included in error messages. The MySQL service publishes no host port."
+      severity: HIGH
+      cwe: 532
+      scope: "_gg_data/handler/mysqlClient.js, compose.yaml"
+    - rule: "Table names in dynamic queries must be validated against a strict hardcoded whitelist ('items', 'creatures', 'realms', 'key_value_store')."
+      severity: HIGH
+      cwe: 89
+      scope: "_gg_data/handler/gg_database.js"
+    - rule: "JSON parsed from database columns must use safeJsonParse with fallback defaults to prevent prototype pollution or runtime parse crashes."
+      severity: HIGH
+      cwe: 20
+      scope: "_gg_data/handler/gg_database.js"
+
+  threat_model:
+    - threat: "SQL injection through untrusted entity IDs or table parameters"
+      impact: "Database corruption, data leakage, or loss of state"
+      mitigation: "Bind every value through mysql2 ? placeholders and validate table names with whitelist"
+      verification: "Unit tests asserting statement preparation and rejecting invalid table names"
+    - threat: "Database credentials exposed through logs, the dashboard, or a published port"
+      impact: "Direct access to encrypted profiles, audit history, and bot state"
+      mitigation: "The password is a registry secret; the MySQL service is on the compose private network only"
+      verification: "Registry test (secret sensitivity) and docker test (no ports on the mysql service)"
+    - threat: "State corruption from overlapping writes to key_value_store"
+      impact: "Loss of event deduplication history, causing flood of duplicate Discord alerts"
+      mitigation: "setContent reads with SELECT ... FOR UPDATE inside a transaction; setObject is a single REPLACE statement"
+      verification: "Concurrent execution test verifying FIFO array consistency"
+
+constraints:
+  - "Default max items stored per FIFO key is 100, except relics (500) and superelites (200)."
+  - "Entity cache size limit: 500 items, 500 creatures, 200 realms."
+  - "The live database is MySQL 8.4 (compose service mysql). Tables use InnoDB and utf8mb4_bin, so key comparison stays exact and case-sensitive as it was in SQLite."
+  - "No foreign keys between master-data tables: scrapers bulk-replace tables in any order."
+  - "MySQL starts empty; master data is repopulated by scrapers and scripts/populate_db.mjs, never seeded from SQLite."
+  - "Timestamps are ISO-8601 UTC strings written by the application, so the same SQL runs on MySQL and on the test fake."
+
+dependencies:
+  - domain: "task-engine"
+    relationship: "Storage layer is initialized and validated during engine startup."
+    criticality: CRITICAL
+  - domain: "control-plane"
+    relationship: "controlStore keeps overrides, module preferences, encrypted profiles, and audit events in MySQL."
+    criticality: CRITICAL
+
+git:
+  last_implementation_branch: ""
+  last_pr_url: ""
+  last_pr_merged: ""
+  last_version_tag: ""
+
+tasks:
+  - id: DATA-TASK-001
+    description: |
+      Restore setObject(key, value) and deleteContent(key) exports in _gg_data/handler/gg_database.js.
+      Fixes critical regression where single-object state (such as current_gear_state in QoL.js and
+      conflict states in GuildConflicts.js) was corrupted by setContent treating all inputs as arrays.
+    affects: "_gg_data/handler/gg_database.js"
+    depends_on: []
+    source: "AC-DATA-003, AC-DATA-004"
+    status: DONE
+
+  - id: DATA-TASK-002
+    description: |
+      Reconcile master game database data from backup/_sws_data/database/sws_data.db (19MB) into
+      _gg_data/database/gg_data.db. Verify items, creatures, and realms are populated so scrapers
+      do not encounter empty tables.
+    affects: "_gg_data/database/gg_data.db, scripts/populate_db.mjs"
+    depends_on: ["DATA-TASK-001"]
+    source: "entities"
+    status: DONE
+    evidence: "scripts/reconciliation/import-legacy-db.mjs, reconciliation/import-reports/import-2026-09-24T18-13-54-046Z.json"
+
+  - id: DATA-TASK-003
+    description: |
+      Build automated test suite for database operations, migrations runner, LRU cache layer,
+      and FIFO/single-object state management.
+    affects: "tests/data-storage/operations.test.mjs, _gg_data/handler/gg_database.js"
+    depends_on: ["DATA-TASK-001"]
+    source: "acceptance_criteria"
+    status: DONE
+
+  - id: DATA-TASK-004
+    description: |
+      Async MySQL data layer: _gg_data/handler/mysqlClient.js (mysql2 pool, query, transaction),
+      async gg_database.js (initDatabase, closeDatabase, getConnection), async migrationRunner.js
+      (statement by statement, once per process), MySQL-dialect migrations, and GG_MYSQL_* registry
+      settings replacing GG_DB_DIR/GG_DB_PATH.
+    affects: "_gg_data/handler/mysqlClient.js, _gg_data/handler/gg_database.js, _gg_data/handler/migrationRunner.js, _gg_data/migrations/*.sql, config/registry.mjs, package.json"
+    depends_on: []
+    source: "AC-DATA-001, AC-DATA-002, AC-DATA-003, AC-DATA-004, AC-DATA-005, AC-DATA-007"
+    status: DONE
+    evidence: "_gg_data/handler/mysqlClient.js, _gg_data/handler/gg_database.js, _gg_data/handler/migrationRunner.js, _gg_data/migrations/*.sql, config/registry.mjs"
+
+  - id: DATA-TASK-005
+    description: |
+      In-process mysql2 fake over node:sqlite, installed by the npm test preload unless
+      GG_TEST_MYSQL_URL is set; port tests/data-storage/* to it.
+    affects: "tests/helpers/fake-mysql.mjs, tests/helpers/test-database.mjs, tests/data-storage/*.test.mjs, package.json"
+    depends_on: ["DATA-TASK-004"]
+    source: "AC-DATA-008"
+    status: DONE
+    evidence: "tests/helpers/fake-mysql.mjs, tests/helpers/test-database.mjs, tests/helpers/db-client.mjs, tests/data-storage/*.test.mjs (29 tests)"
+
+  - id: DATA-TASK-006
+    description: |
+      Await the data layer in every caller: app_modules/*, discord_modules/gvg.js, healthCheck.mjs,
+      app.mjs (initDatabase before login; exit 1 when MySQL is unavailable); update their tests.
+      metrics.mjs reads only in-memory cache stats and stays synchronous. The pool is not closed on
+      SIGTERM: the engine drain window may still be writing, and process exit drops the sockets.
+    affects: "app_modules/*.js, discord_modules/gvg.js, healthCheck.mjs, metrics.mjs, app.mjs, tests/**"
+    depends_on: ["DATA-TASK-005"]
+    source: "AC-DATA-002, AC-DATA-003, AC-DATA-004, AC-DATA-005, AC-DATA-007"
+    status: DONE
+    evidence: "app_modules/*.js, discord_modules/gvg.js, healthCheck.mjs, app.mjs, tests/control-plane/boot-fail-closed.test.mjs"
+
+  - id: DATA-TASK-007
+    description: |
+      Async controlStore on the MySQL client; the control-plane bootstrap, server, and account
+      switcher await it; rotate-key re-seals in one MySQL transaction (no SQLite snapshot).
+    affects: "_gg_data/handler/controlStore.js, control-plane/*.mjs, scripts/control-plane/*.mjs, tests/control-plane/*.test.mjs"
+    depends_on: ["DATA-TASK-005"]
+    source: "AC-DATA-007; control-plane AC-CTRL-003, AC-CTRL-004"
+    status: DONE
+    evidence: "_gg_data/handler/controlStore.js, control-plane/*.mjs, scripts/control-plane/rotate-key.mjs, tests/control-plane/store.test.mjs"
+
+  - id: DATA-TASK-008
+    description: |
+      compose.yaml mysql:8.4 service (private network, named volume, healthcheck, no published
+      port); gogon depends_on mysql healthy; drop the SQLite volume; regenerate .env.example.
+    affects: "compose.yaml, Dockerfile, .env.example, tests/control-plane/docker.test.mjs"
+    depends_on: ["DATA-TASK-004"]
+    source: "AC-DATA-007; owner decision 2026-09-24"
+    status: DONE
+    evidence: "compose.yaml, Dockerfile, .env.example, docs/deployment.md, tests/control-plane/docker.test.mjs"
+
+  - id: DATA-TASK-009
+    description: |
+      GitHub Actions CI on tracked code only: Node 22 test suite (fake), data-layer and
+      control-store tests against a MySQL 8.4 service (GG_TEST_MYSQL_URL), and a Docker image
+      build plus a compose config check. No reconciliation and no backup/ access (owner decision).
+    affects: ".github/workflows/ci.yml"
+    depends_on: ["DATA-TASK-005", "DATA-TASK-008"]
+    source: "AC-DATA-008; owner decision 2026-09-24 (CI tests live code)"
+    status: DONE
+    evidence: ".github/workflows/ci.yml (not yet run: no pushed remote branch)"
+
+  - id: DATA-TASK-010
+    description: |
+      Retire SQLite from the live path: remove better-sqlite3, backupDatabase(), and the SQLite
+      import tool with its snapshot workflow; port scripts/populate_db.mjs to the async API.
+    affects: "package.json, scripts/populate_db.mjs, scripts/reconciliation/import-legacy-db.mjs, tests/reconciliation/import-legacy-db.test.mjs"
+    depends_on: ["DATA-TASK-006", "DATA-TASK-007"]
+    source: "AC-DATA-006 retired; owner decision 2026-09-24 (SQLite disposable)"
+    status: DONE
+    progress: "populate_db.mjs uses the async MySQL API and replaces only master tables in one transaction. The retired SQLite import tool was deleted and its test removed after the owner confirmed legacy SQLite data is disposable. better-sqlite3 is no longer a project dependency."

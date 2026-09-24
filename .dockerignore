@@ -1,0 +1,25 @@
+# .dockerignore - CTRL-TASK-006: secrets, local state, and development files never enter the image.
+.env
+.env.*
+!.env.example
+cookies.bootstrap.json
+node_modules
+_gg_data/database
+DEBUG
+_sws_dumps
+backup
+tests
+specs
+reconciliation
+scripts/reconciliation
+obj
+bin
+*.esproj
+*.log
+.git
+.vs
+.vscode
+.idea
+Dockerfile
+compose.yaml
+.dockerignore

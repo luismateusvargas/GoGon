@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GoGon Control</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">GoGon <span>Control</span></div>
+    <div class="status-strip">
+      <span id="live-indicator" class="pill pill-muted">connecting</span>
+      <span id="engine-indicator" class="pill"></span>
+      <span id="account-indicator" class="pill"></span>
+    </div>
+    <button id="logout" class="ghost" type="button">Sign out</button>
+  </header>
+
+  <div id="banner" class="banner" role="alert" hidden></div>
+
+  <nav class="tabs" aria-label="Sections">
+    <button type="button" data-tab="modules" class="active">Modules</button>
+    <button type="button" data-tab="notifications">Notifications</button>
+    <button type="button" data-tab="settings">Settings</button>
+    <button type="button" data-tab="accounts">Accounts</button>
+    <button type="button" data-tab="activity">Activity</button>
+  </nav>
+
+  <main>
+    <section id="tab-modules" class="tab">
+      <h2>Modules</h2>
+      <p class="muted">Enable, disable, or change the interval of each monitor. Interval changes apply after the current run.</p>
+      <div class="table-wrap">
+        <table class="modules">
+          <thead><tr><th>Module</th><th>Health</th><th>Enabled</th><th>Interval (s)</th><th>Last run</th><th>Result</th></tr></thead>
+          <tbody id="modules-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-notifications" class="tab" hidden>
+      <h2>Notifications</h2>
+      <p class="muted">Webhooks, role mentions, and the guild-conflict attack ping. Changes apply to the next notification.</p>
+      <div id="notifications-settings" class="settings-grid"></div>
+    </section>
+
+    <section id="tab-settings" class="tab" hidden>
+      <h2>Settings</h2>
+      <p class="muted">Every supported setting. Secret values are write-only; the dashboard only shows whether they are set.
+        <code>.env</code>-only settings are shown read-only.</p>
+      <div id="validation" class="validation" hidden></div>
+      <div id="all-settings"></div>
+    </section>
+
+    <section id="tab-accounts" class="tab" hidden>
+      <h2>Game accounts</h2>
+      <p class="muted">Credentials are encrypted at rest and never shown again. Switching pauses every module, signs in to the
+        selected account, and resumes only after the sign-in is verified.</p>
+      <div id="account-state" class="card"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Label</th><th>Status</th><th>Updated</th><th></th></tr></thead>
+          <tbody id="profiles-body"></tbody>
+        </table>
+      </div>
+      <form id="profile-form" class="card form-grid" autocomplete="off">
+        <h3>Add account profile</h3>
+        <label for="p-label">Label</label><input id="p-label" name="label" maxlength="64" required>
+        <label for="p-email">Email</label><input id="p-email" name="email" type="email" maxlength="254" required autocomplete="off">
+        <label for="p-password">Password</label><input id="p-password" name="password" type="password" maxlength="256" required autocomplete="new-password">
+        <button type="submit">Add profile</button>
+        <p class="error field-error" data-for="profile-form" hidden></p>
+      </form>
+    </section>
+
+    <section id="tab-activity" class="tab" hidden>
+      <h2>Activity</h2>
+      <p class="muted">Audited dashboard actions. Values of secrets are never recorded.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Subject</th><th>Outcome</th></tr></thead>
+          <tbody id="audit-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <template id="setting-template">
+    <form class="setting" novalidate>
+      <div class="setting-head">
+        <label class="setting-label"></label>
+        <span class="badges"></span>
+      </div>
+      <p class="setting-desc muted"></p>
+      <div class="setting-row">
+        <input class="setting-input" autocomplete="off" spellcheck="false">
+        <button type="submit" class="save">Save</button>
+        <button type="button" class="ghost revert">Use .env/default</button>
+      </div>
+      <p class="error field-error" hidden></p>
+    </form>
+  </template>
+</body>
+</html>

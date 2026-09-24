@@ -1,0 +1,271 @@
+# =============================================================================
+# SDD DOMAIN SPEC: Discord Integration, Commands & Webhook Delivery
+# =============================================================================
+spec:
+  id: "discord-integration-v1"
+  status: draft
+  version: "1.3.0"
+  created: "2026-09-22"
+  updated: "2026-09-24"
+
+  version_policy:
+    sync_group: "api-surface"
+    depends_on: ["business-domain", "security"]
+
+  changelog:
+    - version: "1.3.0"
+      date: "2026-09-24"
+      changes:
+        - "DISC-TASK-006 DONE (AC-DISC-001): tests/discord-integration/bot.test.mjs covers slash command registration (four commands with required options on the guild route, /guide unregistered), routing to each handler, ignored component/unknown interactions, error replies, and failed registration rejecting before login. discord.js Client/REST are faked; app.mjs's credential gate and engine-before-bot order are checked statically. No source changes."
+    - version: "1.2.0"
+      date: "2026-09-24"
+      changes:
+        - "Owner decision: /bebuff is not role-gated. Removed the GG_BE_ROLE_ID role check (dead, commented-out code) and its env read from inventory.js, the role requirement from AC-DISC-003, and the /bebuff role security rule."
+        - "Recorded the /gvgcooldown 6000-character message limit as an accepted risk (constraints)."
+        - "Added DISC-TASK-006 (TODO): tests for discordBot.mjs command registration and routing (AC-DISC-001)."
+    - version: "1.1.0"
+      date: "2026-09-24"
+      changes:
+        - "DISC-TASK-001/002 DONE: buffs.js and inventory.js read the getBuffs() { buffsList, parsedAt } shape through toBuffsList(), which also accepts a bare list or a failed (undefined) result; /checkbuffs replies 'has no active buffs' instead of failing when getBuffs fails."
+        - "DISC-TASK-003 DONE (AC-DISC-004): gvg.js drops malformed cooldowns (non-string or blank guildName, non-finite expires) and splits fields into 25-field embeds, at most 10 per reply. Footer now reads the 10-day COOLDOWNS.GVG."
+        - "DISC-TASK-004 DONE: 'epics' keyword and EPICS_IDS restored. NAME_TO_ID is keyed by normalized name, so named buffs resolve against the Title Case buff_data.json (they previously never matched)."
+        - "DISC-TASK-005 DONE: fixture-only tests in tests/discord-integration/ (commands, gvg, delivery) cover the handlers above, 100ms/10-embed burst batching, the character-budget split, flushAllBatches, the 2000ms inter-post delay, and 429 retry_after backoff. discordBot.mjs command registration (AC-DISC-001) is not covered."
+    - version: "1.0.0"
+      date: "2026-09-22"
+      changes:
+        - "Initial domain specification for Discord bot slash commands, webhook delivery queue, 25-field embed chunking, and burst message batching."
+
+domain:
+  name: "Discord Integration, Commands & Webhook Delivery"
+  description: |
+    Handles Discord Bot lifecycle, gateway connection, slash command interactions (/buff, /bebuff,
+    /checkbuffs, /gvgcooldown), permissions/role gating, and the outbound webhook delivery pipeline
+    incorporating rate-limited sequential queues and burst message batching (up to 10 embeds per payload).
+
+entities:
+  - name: DiscordCommandInteraction
+    description: "Inbound interaction received from Discord slash commands."
+    fields:
+      - name: commandName
+        type: string
+        constraints: [required]
+        description: "Name of the invoked slash command (buff, bebuff, checkbuffs, gvgcooldown)."
+        example: "checkbuffs"
+      - name: userId
+        type: string
+        constraints: [required]
+        description: "Discord user snowflake ID of the command issuer."
+        example: "880193874662916166"
+      - name: options
+        type: json
+        constraints: []
+        description: "Arguments supplied to the command."
+        example: '{"target": "ShadowHunter"}'
+
+  - name: WebhookNotification
+    description: "Outbound notification payload destined for a Discord webhook."
+    fields:
+      - name: webhookUrl
+        type: string
+        constraints: [required, sensitive]
+        description: "Discord webhook endpoint URL loaded from .env."
+        example: "https://discord.com/api/webhooks/123/abc"
+      - name: content
+        type: string
+        constraints: []
+        description: "Optional role mention text prefix (e.g. '<@&1142926613009408000>')."
+        example: "<@&1142926613009408000>"
+      - name: embeds
+        type: json
+        constraints: [required]
+        description: "Array of Discord embed objects (up to 10 per message)."
+        example: '[{"title": "Super Elite Spawn", "color": 15466240}]'
+
+  - name: MessageBatch
+    description: "Batched embed collection held in memory during burst notification events."
+    fields:
+      - name: webhookUrl
+        type: string
+        constraints: [required]
+        description: "Target webhook for the batch."
+        example: "https://discord.com/api/webhooks/..."
+      - name: items
+        type: json
+        constraints: [required]
+        description: "Array of pending embed payloads awaiting flush (max 10)."
+        example: '[...]'
+      - name: idleTimeout
+        type: integer
+        constraints: [required]
+        description: "Delay in ms before flushing pending batch (100ms)."
+        example: 100
+
+acceptance_criteria:
+  - id: AC-DISC-001
+    description: "Slash command registration and command routing"
+    given: "Valid GG_DISCORD_TOKEN, GG_DISCORD_APP_ID, and GG_DISCORD_GUILD_ID in .env"
+    when: "setupDiscord() is called during startup"
+    then: "Registers /buff, /bebuff, /checkbuffs, and /gvgcooldown with Discord REST API and binds interaction event listeners"
+    error_cases:
+      - given: "Discord credentials missing from .env"
+        when: "setupDiscord() is evaluated in app.mjs"
+        then: "Logs warning and skips bot initialization without preventing scraper engine execution"
+
+  - id: AC-DISC-002
+    description: "Checkbuffs pagination and duration calculation"
+    given: "A player name provided to /checkbuffs"
+    when: "handleCheckBuffsInteraction() executes"
+    then: "Fetches active buffs and server timestamp (parsedAt) via getBuffs(), computes remaining duration (expire_time - parsedAt), and formats paginated embed with Next/Previous buttons"
+    error_cases:
+      - given: "Player has no active buffs or player does not exist"
+        when: "Command runs"
+        then: "Replies with polite informational message '**[Username]** has no active buffs' without throwing error"
+
+  - id: AC-DISC-003
+    description: "Buff casting and Buff Enhancer sequence"
+    given: "User issues /buff or /bebuff command"
+    when: "Command handler runs (no role gating; owner decision 2026-09-24)"
+    then: "Executes buff sequence, verifies minimum required levels, and reports cast summary to Discord"
+    error_cases:
+      - given: "Stamina is insufficient or required potions are missing"
+        when: "Command runs"
+        then: "Replies with descriptive rejection message and does not cast buffs"
+
+  - id: AC-DISC-004
+    description: "GvG cooldown listing with 25-field embed chunking"
+    given: "Active GvG cooldown records stored in SQLite"
+    when: "/gvgcooldown command is triggered"
+    then: "Filters valid entries with string guildName and numeric expires, formats remaining time, and splits fields into chunks of maximum 25 fields across multiple embeds"
+    error_cases:
+      - given: "More than 25 active cooldowns exist simultaneously"
+        when: "Embed is constructed"
+        then: "Chunks fields into multiple embeds (max 25 fields per embed) to avoid Discord 400 Bad Request error"
+      - given: "No active cooldowns exist"
+        when: "Command is invoked"
+        then: "Replies with '✅ There are currently no active GvG cooldowns.'"
+
+  - id: AC-DISC-005
+    description: "Webhook delivery rate limiting and backoff"
+    given: "Outbound messages added to Discord delivery queue"
+    when: "processQueue() runs"
+    then: "Enforces minimum 2000ms delay between consecutive webhook posts and backs off on HTTP 429 rate limit"
+    error_cases:
+      - given: "Webhook returns 429 Too Many Requests with retry_after header"
+        when: "Response is processed"
+        then: "Pauses queue for indicated retry duration and retries failed message"
+
+  - id: AC-DISC-006
+    description: "Burst notification batching"
+    given: "Rapid burst of notifications arriving at the same webhook (e.g. 15 SE kills or 20 ladder bands)"
+    when: "Messages enter batching queue"
+    then: "Combines up to 10 embeds into a single webhook POST after 100ms idle timeout, cutting HTTP calls by up to 10x"
+    error_cases:
+      - given: "Application initiates shutdown while messages are in batch queue"
+        when: "flushAllBatches() is called"
+        then: "Immediately posts all pending batched embeds synchronously before process termination"
+
+security:
+  constitutions:
+    - SEC-OWASP-A01-2025   # Broken Access Control (slash commands are intentionally not role-gated; owner decision 2026-09-24)
+    - SEC-OWASP-A02-2025   # Security Misconfiguration (Environment-backed webhook URLs)
+    - SEC-OWASP-A04-2025   # Cryptographic Failures (Token protection)
+    - SEC-OWASP-A10-2025   # Mishandling of Exceptional Conditions (Discord API rate limiting)
+
+  project_specific:
+    - rule: "Discord Bot token (GG_DISCORD_TOKEN) and Webhook URLs must never be hardcoded in source code or exposed in Git commits."
+      severity: CRITICAL
+      cwe: 798
+      scope: "webhooks.js, discordBot.mjs, .env"
+    - rule: "Discord webhook URLs must only target official Discord domains (https://discord.com/api/webhooks/ or https://discordapp.com/api/webhooks/)."
+      severity: HIGH
+      cwe: 918
+      scope: "utils.js"
+
+  threat_model:
+    - threat: "Exhaustion of Discord API rate limits causing dropped game alerts"
+      impact: "Critical alerts delayed or discarded; bot banned from Discord API"
+      mitigation: "Centralized sequential queue with 2000ms inter-message delay and 10-embed burst batching"
+      verification: "Stress test queue with 50 concurrent items and verify delivery timing and batch sizing"
+    - threat: "Crash of bot interaction loop due to malformed getBuffs return value"
+      impact: "Slash commands freeze and users receive 'Application did not respond'"
+      mitigation: "Standardize getBuffs signature and handle both object { buffsList, parsedAt } and direct list consumers defensively"
+      verification: "Unit test executing ensureMetaBuffs and checkPotionBuffs against getBuffs return value"
+
+constraints:
+  - "Maximum 25 fields per Discord embed (Discord API hard constraint)."
+  - "Maximum 10 embeds per webhook POST (Discord API hard constraint)."
+  - "Minimum 2000ms delay between consecutive individual webhook dispatches."
+  - "Accepted risk (owner, 2026-09-24): /gvgcooldown does not enforce Discord's 6000-character total per message. That limit needs roughly 200+ simultaneous cooldowns, and the game has far fewer attackable guilds."
+
+dependencies:
+  - domain: "auth-session"
+    relationship: "Slash commands invoke getBuffs and API calls through session layer."
+    criticality: CRITICAL
+  - domain: "data-storage"
+    relationship: "Slash commands query GvG cooldowns and buff definitions from storage."
+    criticality: HIGH
+
+git:
+  last_implementation_branch: ""
+  last_pr_url: ""
+  last_pr_merged: ""
+  last_version_tag: ""
+
+tasks:
+  - id: DISC-TASK-001
+    description: |
+      Fix TypeError in discord_modules/buffs.js line 204.
+      activeBuffsList receives { buffsList, parsedAt } from getBuffs(), but line 204 iterates
+      it directly (for (const buff of activeBuffsList)). Update to access .buffsList property.
+    affects: "discord_modules/buffs.js"
+    depends_on: []
+    source: "threat_model"
+    status: DONE
+
+  - id: DISC-TASK-002
+    description: |
+      Fix TypeError in discord_modules/inventory.js line 84.
+      buffs receives { buffsList, parsedAt } from getBuffs(), but line 86 calls buffs.map().
+      Update to extract .buffsList before mapping.
+    affects: "discord_modules/inventory.js"
+    depends_on: []
+    source: "threat_model"
+    status: DONE
+
+  - id: DISC-TASK-003
+    description: |
+      Port 25-field embed chunking and defensive null/expires validation from
+      backup/discord_modules/gvg.js into root discord_modules/gvg.js to prevent Discord 400 Bad Request.
+    affects: "discord_modules/gvg.js"
+    depends_on: []
+    source: "AC-DISC-004"
+    status: DONE
+
+  - id: DISC-TASK-004
+    description: |
+      Restore 'epics' buff keyword resolution in discord_modules/buffs.js present in production backup
+      (EPICS_IDS = [88,89,7,5,2,74,0,37,171,77,9,82,44,28,159,102,169,124]).
+    affects: "discord_modules/buffs.js"
+    depends_on: []
+    source: "AC-DISC-003"
+    status: DONE
+
+  - id: DISC-TASK-005
+    description: |
+      Create automated unit tests for slash command handlers, message batching queue,
+      and webhook rate limiting.
+    affects: "tests/discord-integration/commands.test.mjs, tests/discord-integration/gvg.test.mjs, tests/discord-integration/delivery.test.mjs"
+    depends_on: ["DISC-TASK-001", "DISC-TASK-002", "DISC-TASK-003", "DISC-TASK-004"]
+    source: "acceptance_criteria"
+    status: DONE
+
+  - id: DISC-TASK-006
+    description: |
+      Add fixture-only tests for discordBot.mjs slash command registration and routing (AC-DISC-001):
+      /buff, /bebuff, /checkbuffs, /gvgcooldown are registered through the Discord REST API (mocked),
+      interactions route to their handlers, and missing Discord credentials skip bot startup without
+      stopping the scraper engine. Not covered by DISC-TASK-005.
+    affects: "tests/discord-integration/bot.test.mjs"
+    depends_on: ["DISC-TASK-005"]
+    source: "AC-DISC-001"
+    status: DONE
