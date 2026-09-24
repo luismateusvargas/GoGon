@@ -1,11 +1,13 @@
 // tests/discord-integration/gvg.test.mjs - DISC-TASK-003 / AC-DISC-004, REC-TASK-004
 // /gvgcooldown against a throwaway SQLite file seeded with fixture cooldowns. No Discord access.
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 
 const db = await import('../../_gg_data/handler/gg_database.js');
 const { handleGvgCooldownInteraction } = await import('../../discord_modules/gvg.js');
+
+after(() => db.closeDatabase());
 
 const HOUR = 3_600_000;
 const active = n => Object.fromEntries(Array.from({ length: n }, (_, i) =>

@@ -1,7 +1,7 @@
 // tests/game-monitors/state-persistence.test.mjs - MON-TASK-002 / AC-MON-003, AC-MON-005
 // Network helpers in utils.js are mocked with fixtures; a throwaway SQLite file holds state.
 // Requires --experimental-test-module-mocks (set in the npm test script).
-import { test, mock, beforeEach } from 'node:test';
+import { test, mock, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.GG_BOT_ID_CHARACTER = '123';
@@ -32,6 +32,8 @@ const db = await import('../../_gg_data/handler/gg_database.js');
 const { COOLDOWNS } = await import('../../app_modules/constants.js');
 const { checkGuildConflicts } = await import('../../app_modules/GuildConflicts.js');
 const { checkAndSwapGear } = await import('../../app_modules/QoL.js');
+
+after(() => db.closeDatabase());
 
 const conflict = (over = {}) => ({
     id: 77, guild: { name: 'Rivals' }, members: [{ name: 'A' }], max_members: 5,

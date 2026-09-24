@@ -2,7 +2,7 @@
 // Incoming attacks are the enemy guild hitting us. utils.js network helpers are mocked with
 // fixtures, the clock is mocked, and a throwaway SQLite file holds state.
 // Requires --experimental-test-module-mocks (set in the npm test script).
-import { test, mock, beforeEach } from 'node:test';
+import { test, mock, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 
@@ -20,6 +20,8 @@ mock.module(new URL('../../utils.js', import.meta.url).href, {
 const db = await import('../../_gg_data/handler/gg_database.js');
 const { CONFLICT_PING } = await import('../../app_modules/constants.js');
 const { checkGuildConflicts, evaluateIncomingPing } = await import('../../app_modules/GuildConflicts.js');
+
+after(() => db.closeDatabase());
 
 const MIN = 60_000;
 const T0 = Date.UTC(2026, 8, 24, 12, 0, 0);

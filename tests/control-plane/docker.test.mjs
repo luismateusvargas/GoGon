@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const read = f => fs.readFileSync(new URL(`../../${f}`, import.meta.url), 'utf8');
+const read = f => fs.readFileSync(new URL(`../../${f}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const strip = s => s.replace(/#.*$/gm, '');
 
 test('AC-CTRL-005: the image is pinned Node 22, installs from the lockfile, and runs as non-root', () => {

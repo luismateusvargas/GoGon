@@ -63,7 +63,7 @@ test('CTRL-TASK-001: registry aliases agree with ENV_ALIASES precedence (GG_ > S
 });
 
 test('CTRL-TASK-001: .env.example lists every registry key, is current, and holds placeholders only', () => {
-    const example = fs.readFileSync(path.join(ROOT, '.env.example'), 'utf8');
+    const example = fs.readFileSync(path.join(ROOT, '.env.example'), 'utf8').replace(/\r\n/g, '\n');
     assert.equal(example, renderEnvExample(), 'regenerate with node scripts/control-plane/write-env-example.mjs');
     for (const d of CONFIG_DEFINITIONS) assert.match(example, new RegExp(`^#? ?${d.key}=`, 'm'), d.key);
     assert.doesNotMatch(example, /discord(app)?\.com\/api\/webhooks\/\d/);

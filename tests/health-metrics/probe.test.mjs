@@ -8,6 +8,7 @@ import http from 'node:http';
 let tasks = [{ name: 'A', isActive: true }, { name: 'B', isActive: false }];
 mock.module(new URL('../../engine.js', import.meta.url).href, { namedExports: { getTasksStatus: () => tasks } });
 const { createProbeHandler, healthReport, startHealthCheckServer, stopHealthCheckServer } = await import('../../healthCheck.mjs');
+const db = await import('../../_gg_data/handler/gg_database.js');
 
 async function serve(handler) {
     const server = http.createServer(handler);
@@ -98,4 +99,7 @@ test('AC-HLTH-005 error case: an occupied port is logged and does not throw', as
     await new Promise(r => blocker.close(r));
 });
 
-after(() => stopHealthCheckServer());
+after(async () => {
+    await stopHealthCheckServer();
+    await db.closeDatabase();
+});

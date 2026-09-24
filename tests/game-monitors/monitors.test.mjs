@@ -1,7 +1,7 @@
 // tests/game-monitors/monitors.test.mjs - MON-TASK-004 / AC-MON-001, AC-MON-002, AC-MON-004, AC-MON-006
 // utils.js network helpers are mocked with fixtures; a throwaway SQLite file holds state.
 // Requires --experimental-test-module-mocks (set in the npm test script).
-import { test, mock, beforeEach } from 'node:test';
+import { test, mock, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 
@@ -34,6 +34,8 @@ const { checkBounties, UNKNOWN } = await import('../../app_modules/BountyBoard.j
 const { checkSuperElites } = await import('../../app_modules/SuperElite.js');
 const { autoJoinAllGroups } = await import('../../app_modules/QoL.js');
 const { apiEndpoints } = await import('../../game_modules/API.js');
+
+after(() => db.closeDatabase());
 
 function quiet(t) {
     const lines = [];
