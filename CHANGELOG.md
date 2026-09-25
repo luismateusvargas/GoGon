@@ -1015,9 +1015,13 @@ SELECT * FROM kv WHERE key = 'processed_bounty_ids';
 
 ## [Unreleased]
 
-> **SemVer:** the changes below are **MAJOR** at the next release. The unauthenticated `/tasks`, `/cache`,
+## v2.0.0 (September 25, 2026) 🐳 **MYSQL, PRIVATE CONTROL PLANE & DOCKER**
+
+> **SemVer:** this is a **MAJOR** release. The unauthenticated `/tasks`, `/cache`,
 > `/config`, and `/metrics` endpoints were removed from the health port (health-metrics-v1 → 2.0.0).
 > GoGon now needs MySQL and `GG_MYSQL_PASSWORD` (data-storage-v1 → 2.0.0).
+> Under Docker Compose, single-quote any `.env` value that contains `$` (for example `GG_ADMIN_PASSWORD_HASH`),
+> or Compose replaces each `$name` segment with a blank string.
 
 ### Fixed: Live-Code Test Gate and MySQL Contract Reconciliation
 - **DATA-TASK-010:** removed the obsolete SQLite import test and the unused `better-sqlite3` dependency. Legacy SQLite data is intentionally disposable; MySQL starts empty and `populate_db.mjs` restores master data.
@@ -1501,9 +1505,9 @@ Tasks DATA-TASK-001, AUTH-TASK-001, ENG-TASK-001, MON-TASK-001, MON-TASK-002, MO
 22. ✅ **DONE** - Add DB population script (`npm run db:populate`)
 23. ✅ **DONE** - Fix Discord batching 6000-char limit bug
 
-### Next Priority (v2.0.0):
-24. ⏳ Create admin dashboard (web UI) phase 1
-25. ⏳ User authentication system
+### ✅ Completed (v2.0.0):
+24. ✅ **DONE** - Create admin dashboard (web UI) phase 1 (private control plane)
+25. ✅ **DONE** - User authentication system (control-plane admin login)
 
 ---
 
