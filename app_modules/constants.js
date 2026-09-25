@@ -126,7 +126,7 @@ export const EMOJIS = {
     INFO: 'ℹ️',
     
     // Game elements
-    CHEST: '🗺️',
+    CHEST: ':chest:',
     CALENDAR: '📅',
     RUNNER: '🏃',
     GIFT: '🎁',
@@ -196,7 +196,7 @@ export const TIME_FORMATS = {
  */
 export const CONFLICT_PING = {
     // Fallback only: the mention is the GG_CONFLICT_PING_MENTION registry setting (CTRL-TASK-008)
-    DEFAULT_MENTION: '@everyone',
+    DEFAULT_MENTION: GG_CONFLICT_PING_MENTION,
     QUIET_WINDOW_MS: 15 * 60 * 1000,    // No second ping within 15 minutes of the last one
     // Enemy attacks come at most every 2 minutes and the monitor polls every minute, so
     // no new incoming attack for over 3 minutes means the enemy guild has stopped
