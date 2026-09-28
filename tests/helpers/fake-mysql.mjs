@@ -5,6 +5,10 @@
 // translation does not cover throws, naming the statement, instead of passing silently.
 // tests/helpers/test-database.mjs installs it for every test process; CI also runs the data-layer
 // tests against a real MySQL (GG_TEST_MYSQL_URL) so the fake cannot drift unnoticed.
+// Foreign keys declared in CREATE TABLE are enforced (node:sqlite enables them). SQLite cannot add a
+// foreign key to an existing table, so ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY only records
+// the constraint name where information_schema.TABLE_CONSTRAINTS lookups find it; retrofitted keys
+// are enforced on the real-MySQL CI run only (CAT-TASK-002).
 import { DatabaseSync } from 'node:sqlite';
 
 /** Shared state, like one MySQL server per test process: databases survive pool.end(). */
@@ -25,9 +29,17 @@ export function resetFakeMysql() {
 }
 
 function database(name) {
-    if (!databases.has(name)) databases.set(name, new DatabaseSync(':memory:'));
+    if (!databases.has(name)) {
+        const db = new DatabaseSync(':memory:');
+        db.exec(`CREATE TABLE ${FAKE_CONSTRAINTS} (CONSTRAINT_SCHEMA TEXT NOT NULL DEFAULT 'fake', TABLE_NAME TEXT NOT NULL,
+            CONSTRAINT_NAME TEXT NOT NULL, CONSTRAINT_TYPE TEXT NOT NULL DEFAULT 'FOREIGN KEY', PRIMARY KEY (TABLE_NAME, CONSTRAINT_NAME))`);
+        databases.set(name, db);
+    }
     return databases.get(name);
 }
+
+// Stand-in for information_schema.TABLE_CONSTRAINTS (retrofitted foreign keys only).
+const FAKE_CONSTRAINTS = '__fake_table_constraints';
 
 class FakeMysqlError extends Error {
     constructor(message, code, errno) {
@@ -46,13 +58,26 @@ const untranslatable = (sql, what) =>
  */
 export function translate(sql) {
     let s = sql.trim().replace(/;\s*$/, '');
-    if (/\bON\s+DUPLICATE\s+KEY\b/i.test(s)) throw untranslatable(sql, 'ON DUPLICATE KEY UPDATE (use REPLACE INTO)');
+    // INSERT ... AS new ON DUPLICATE KEY UPDATE c = new.c  ->  SQLite upsert on any unique key.
+    if (/\bON\s+DUPLICATE\s+KEY\b/i.test(s)) {
+        const upsert = s.match(/^(INSERT\s+INTO\s[\s\S]*?\bVALUES\s[\s\S]*?)\s+AS\s+new\s+ON\s+DUPLICATE\s+KEY\s+UPDATE\s+([\s\S]+)$/i);
+        if (!upsert) throw untranslatable(sql, 'ON DUPLICATE KEY UPDATE without the "AS new" row alias');
+        s = `${upsert[1]} ON CONFLICT DO UPDATE SET ${upsert[2].replace(/\bnew\./g, 'excluded.')}`;
+    }
     if (/;\s*\S/.test(s.replace(/'(?:[^'\\]|\\.)*'|`[^`]*`|"(?:[^"\\]|\\.)*"/g, ''))) {
         throw new FakeMysqlError('fake-mysql: multiple statements in one query are disabled (as in the pool).', 'ER_PARSE_ERROR', 1064);
     }
 
     // Databases are created on first use by createPool({ database }); nothing to run.
     if (/^(CREATE|DROP)\s+DATABASE\b/i.test(s)) return [];
+
+    const fk = s.match(/^ALTER\s+TABLE\s+`?(\w+)`?\s+ADD\s+CONSTRAINT\s+`?(\w+)`?\s+FOREIGN\s+KEY\b/i);
+    if (fk) return [`INSERT INTO ${FAKE_CONSTRAINTS} (TABLE_NAME, CONSTRAINT_NAME) VALUES ('${fk[1]}', '${fk[2]}')`];
+    if (/\binformation_schema\.TABLE_CONSTRAINTS\b/i.test(s)) {
+        s = s.replace(/\binformation_schema\.TABLE_CONSTRAINTS\b/gi, FAKE_CONSTRAINTS).replace(/\bDATABASE\(\)/gi, "'fake'");
+    } else if (/\binformation_schema\b/i.test(s)) {
+        throw untranslatable(sql, 'information_schema (only TABLE_CONSTRAINTS is emulated)');
+    }
 
     const extra = [];
     if (/^CREATE\s+TABLE/i.test(s)) {
@@ -83,6 +108,7 @@ function mapError(error, sql) {
     const m = error.message ?? '';
     const as = (code, errno) => Object.assign(new FakeMysqlError(`${m} [${sql.replace(/\s+/g, ' ').slice(0, 120)}]`, code, errno), { cause: error });
     if (/UNIQUE constraint failed/.test(m)) return as('ER_DUP_ENTRY', 1062);
+    if (/FOREIGN KEY constraint failed/.test(m)) return as('ER_NO_REFERENCED_ROW_2', 1452);
     if (/CHECK constraint failed/.test(m)) return as('ER_CHECK_CONSTRAINT_VIOLATED', 3819);
     if (/NOT NULL constraint failed/.test(m)) return as('ER_BAD_NULL_ERROR', 1048);
     if (/no such table/.test(m)) return as('ER_NO_SUCH_TABLE', 1146);

@@ -9,15 +9,16 @@
     "reviewer": "Claude Code (pending owner confirmation)"
   },
   "summary": {
-    "paths": 66,
-    "identical": 1,
+    "paths": 72,
+    "identical": 0,
     "byDisposition": {
       "import-data": 1,
       "port": 7,
-      "retain-root": 55,
-      "retire-legacy": 3
+      "retain-root": 60,
+      "retire-legacy": 3,
+      "unreviewed": 1
     },
-    "failures": 0
+    "failures": 3
   },
   "entries": [
     {
@@ -91,6 +92,19 @@
       "rationale": "Root-only LRU cache layer under _gg_data/ (required by REC-TASK-001)."
     },
     {
+      "path": "_gg_data/handler/catalogStore.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "bccf33f6e0fb20da1897a81c9bcc8cc0a683527d501fec1db56d61ae35d9b0a7",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas."
+    },
+    {
       "path": "_gg_data/handler/controlStore.js",
       "status": "root-only",
       "backupHash": null,
@@ -107,23 +121,27 @@
       "path": "_gg_data/handler/gg_database.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "ec1559bf6059b63eca942c03c9d2b7b62c2ceab6aa93e908ab4ec4ece34b82ec",
+      "rootHash": "bc08a7d55d66d16a545784bb32579afd50f8a9e624d2928071249f7e1054023b",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
-      "owners": [],
-      "rationale": "Root-only database handler under _gg_data/ (required by REC-TASK-001). Re-reviewed 2026-09-24: DATA-TASK-001 added setObject/deleteContent; MON-TASK-002 added the legacy-tolerant getObject reader. Nothing removed. Re-reviewed 2026-09-24 after DATA-TASK-003: backupDatabase awaits db.backup() (AC-DATA-006); setContent warns on corrupt/non-list state (AC-DATA-002); getConnection() export for the control-plane store. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Rewritten over the mysql2 client (initDatabase/closeDatabase, lazy once-per-process migrations); backupDatabase removed (AC-DATA-006 retired)."
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only database handler under _gg_data/ (required by REC-TASK-001). Re-reviewed 2026-09-24: DATA-TASK-001 added setObject/deleteContent; MON-TASK-002 added the legacy-tolerant getObject reader. Nothing removed. Re-reviewed 2026-09-24 after DATA-TASK-003: backupDatabase awaits db.backup() (AC-DATA-006); setContent warns on corrupt/non-list state (AC-DATA-002); getConnection() export for the control-plane store. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Rewritten over the mysql2 client (initDatabase/closeDatabase, lazy once-per-process migrations); backupDatabase removed (AC-DATA-006 retired). Re-reviewed 2026-09-28 after catalog-sync 1.1.0 / data-storage 2.1.0 (CAT-TASK-002): bulkUpdateDatabase upserts with INSERT ... AS new ON DUPLICATE KEY UPDATE instead of REPLACE INTO, so a rewritten parent row never cascades its foreign-key relations away; columns absent from the data keep their values."
     },
     {
       "path": "_gg_data/handler/migrationRunner.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "61ebc570530b023206b5f1ac0e63aca39a348708c30bac074a633c11ef13d929",
+      "rootHash": "dda021a3b0e691383fa7760ac786cbd71f80d919b0287efb9fa33e8091bbd544",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
-      "owners": [],
-      "rationale": "Root-only migration runner under _gg_data/ (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Async, statement by statement (MySQL DDL commits implicitly); failed files are not recorded."
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only migration runner under _gg_data/ (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Async, statement by statement (MySQL DDL commits implicitly); failed files are not recorded. Re-reviewed 2026-09-28 after catalog-sync 1.1.0 / data-storage 2.1.0 (CAT-TASK-002): also applies .mjs migrations exporting up(client), for steps plain SQL cannot make idempotent (guarded foreign-key retrofits, backfills)."
     },
     {
       "path": "_gg_data/handler/mysqlClient.js",
@@ -135,6 +153,19 @@
       "secretBearing": false,
       "owners": [],
       "rationale": "Root-only MySQL pool wrapper (DATA-TASK-004 / AC-DATA-007): registry settings, bounded pool, no multi-statement queries, password never in errors."
+    },
+    {
+      "path": "_gg_data/handler/servingRelations.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "a8a8571d7ad4d74d3253213c6f86a82b6e29981a6acbd02247ca90063275eb26",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Derives quests, realm_creatures, and creature_drops from the legacy JSON columns; unresolved references are skipped. Shared by populate_db.mjs and migration 004."
     },
     {
       "path": "_gg_data/migrations/001_initial_schema.sql",
@@ -159,6 +190,32 @@
         "control-plane-v1:CTRL-TASK-002"
       ],
       "rationale": "Root-only, added 2026-09-24. Control-plane tables. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. MySQL dialect; ISO timestamps written by the app; single active profile enforced in setActiveProfile."
+    },
+    {
+      "path": "_gg_data/migrations/003_catalog_sync.sql",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "0e6cfcea58cb1162ce801e6498278d9c593d483fa961002bd88dca46c9b24490",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Idempotent MySQL migration: normalized serving relations with foreign keys and the catalog provenance tables."
+    },
+    {
+      "path": "_gg_data/migrations/004_serving_relations.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "2c692bb179fffc8b7f7858d21e4798d8705b1bb5dd4c7ac338d056600ed0706b",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Guarded foreign-key retrofit on realms.master_realm_id and relics.realm_id (dangling rows fixed first) and relation backfill from legacy JSON; safe to re-run."
     },
     {
       "path": "_sws_data/database/sws_data.db",
@@ -266,9 +323,9 @@
       "path": "app_modules/GuildMessages.js",
       "status": "differing",
       "backupHash": "eca80baac0d55e6e9fe50020808363c65d7d95c6dd6e4479690e26d1bf7d4613",
-      "rootHash": "a33ec9db1e9e196fb85339f0b463fc1b4d2f15256560899531c7b143225a70e6",
+      "rootHash": "3f2aa48e12032370d858ba96d91afa61362110d3cc241d1f477648bb81804fa8",
       "disposition": "retain-root",
-      "reviewState": "reviewed",
+      "reviewState": "stale",
       "secretBearing": false,
       "owners": [],
       "rationale": "Backup-only lines are the same loader with console logging; root adds structured logging. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited."
@@ -361,12 +418,12 @@
       "path": "app_modules/constants.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "445dd15d4c4efa6cbe86e9fb0fba9a92941b19e5c4a3e1fcc4271f3b7ac68e13",
+      "rootHash": "fbeff43a4378e150b026e3e920caaa76291f7e8f24294a407ff50666cae34fcf",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only shared constants (required by REC-TASK-001). Re-reviewed 2026-09-24: added ENV_ALIASES (AUTH-TASK-001/REC-TASK-002); COOLDOWNS.GVG comment corrected to the owner-locked 10 days. Re-reviewed 2026-09-24: added CONFLICT_PING (default mention, 15-minute quiet window, 3-minute stop gap) for MON-TASK-005. Re-reviewed 2026-09-24 after CTRL-TASK-001: ENV_ALIASES gains GG_BOT_CHARACTER/GG_BOT_ID_CHARACTER; CONFLICT_PING.DEFAULT_MENTION is now only a fallback."
+      "rationale": "Root-only shared constants (required by REC-TASK-001). Re-reviewed 2026-09-24: added ENV_ALIASES (AUTH-TASK-001/REC-TASK-002); COOLDOWNS.GVG comment corrected to the owner-locked 10 days. Re-reviewed 2026-09-24: added CONFLICT_PING (default mention, 15-minute quiet window, 3-minute stop gap) for MON-TASK-005. Re-reviewed 2026-09-24 after CTRL-TASK-001: ENV_ALIASES gains GG_BOT_CHARACTER/GG_BOT_ID_CHARACTER; CONFLICT_PING.DEFAULT_MENTION is now only a fallback. Re-reviewed 2026-09-28: 84e0ced changed EMOJIS.CHEST to :chest: and set CONFLICT_PING.DEFAULT_MENTION to an undefined identifier (ReferenceError on import); the fallback is the literal @everyone again, matching the GG_CONFLICT_PING_MENTION registry default."
     },
     {
       "path": "app_modules/core.js",
@@ -422,9 +479,9 @@
       "path": "configValidator.mjs",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "7ff801a32fba470cfa9a14f13f0e963ce6322a8b21dba4d55c70f5bb1c98b7c0",
+      "rootHash": "a6f20be7786fa3baf749ea89ca59dcd23f9dd30caf445a2afa53e70c2125939b",
       "disposition": "retain-root",
-      "reviewState": "reviewed",
+      "reviewState": "stale",
       "secretBearing": false,
       "owners": [],
       "rationale": "Root-only configuration validation (required by REC-TASK-001). Re-reviewed 2026-09-24 (AUTH-TASK-001): fallback lookup follows ENV_ALIASES, same GG_ > SWS_ > FS_ order as session.mjs. Re-reviewed 2026-09-24: GG_DEBUG is read through the runtime registry."
@@ -651,6 +708,19 @@
       ]
     },
     {
+      "path": "docs/catalog-sync-control-plane-plan.md",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "ebbd0614dd78756a7c0916afb96302521fa121ccefc67a422ce17c829f7b6d80",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-25 with catalog-sync-v1 and updated 2026-09-28 (DEC-CAT-008..011). Delivery plan; the spec remains the contract."
+    },
+    {
       "path": "docs/deployment.md",
       "status": "root-only",
       "backupHash": null,
@@ -690,6 +760,17 @@
       "rationale": "Root is a superset (arena subcmd, extra endpoints). Re-reviewed 2026-09-24 (MON-TASK-003): currency.type/items.displayImage template literals and the fetchWorldMap stray bracket fixed in root."
     },
     {
+      "path": "game_modules/buffParser.js",
+      "status": "differing",
+      "backupHash": "324a7c11b38b85099e6f11765162bf7321993875894095b4a7f504a48a52a7ce",
+      "rootHash": "56f49301e0cc9169cf70067c081ec5dd2c60cebaea74da0fbe808560a4abfa87",
+      "disposition": null,
+      "reviewState": "unreviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": null
+    },
+    {
       "path": "healthCheck.mjs",
       "status": "root-only",
       "backupHash": null,
@@ -715,23 +796,23 @@
       "path": "package-lock.json",
       "status": "differing",
       "backupHash": "b79a71c10a441951c4e4cd6b1f1c5e193b0156fd4c76baf82aa0ad20cc2888a7",
-      "rootHash": "2709404f21712d10bc9b49b134bd8e28a350406c37ce519d296dc688ef64ba91",
+      "rootHash": "f4abde9005964e918856bf8b6d9a9c4b2f657b8a63cec17e21ef1cea119b01fb",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "The lockfile follows root package.json; backup lockfile is older. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Lockfile for mysql2; retired better-sqlite3 packages were removed."
+      "rationale": "The lockfile follows root package.json; backup lockfile is older. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Lockfile for mysql2; retired better-sqlite3 packages were removed. Re-reviewed 2026-09-25: root package version bumped 1.9.0 -> 2.0.0 to match package.json; no dependency change."
     },
     {
       "path": "package.json",
       "status": "differing",
       "backupHash": "136c33a22f0b5d228b1557dac44bb0d92d5b6413229cc607a008316478c43e22",
-      "rootHash": "39fc779376292751ab0a5231d54465277182e364587f6a9f1113720b5c969dd6",
+      "rootHash": "f00d969fc7e4d594c18fe6254a2bb2784da315e04ebbf2a7ebc89c2832f70fed",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Backup has the older name, version, and dependency ranges; root adds scripts and newer ranges. Re-reviewed 2026-09-24 (REC-TASK-002): test script enables --experimental-test-module-mocks for fixture tests. Re-reviewed 2026-09-24 after REC-TASK-006: npm test preloads tests/helpers/no-network.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. mysql2 added; test preload adds tests/helpers/test-database.mjs. Re-reviewed 2026-09-24: npm test excludes local-only reconciliation tests; test:reconciliation retains that local workflow; better-sqlite3 removed."
+      "rationale": "Backup has the older name, version, and dependency ranges; root adds scripts and newer ranges. Re-reviewed 2026-09-24 (REC-TASK-002): test script enables --experimental-test-module-mocks for fixture tests. Re-reviewed 2026-09-24 after REC-TASK-006: npm test preloads tests/helpers/no-network.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. mysql2 added; test preload adds tests/helpers/test-database.mjs. Re-reviewed 2026-09-24: npm test excludes local-only reconciliation tests; test:reconciliation retains that local workflow; better-sqlite3 removed. Re-reviewed 2026-09-25: version bumped 1.9.0 -> 2.0.0 for the MAJOR release (data-storage and health-metrics 2.0.0); no other change."
     },
     {
       "path": "runSWS.bat",
@@ -828,12 +909,14 @@
       "path": "scripts/populate_db.mjs",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "4d853075167a3ed80c1e6128e2989e897586508d8ace389d7b70a09b69942901",
+      "rootHash": "13df87138e24b63adbdb014edb4aea5a21a1d1e0a81da2d52efd2795b4cde004",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
-      "owners": [],
-      "rationale": "Root-only database population script (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Replaces only the master-data tables in one MySQL transaction; state and control-plane tables are kept."
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only database population script (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Replaces only the master-data tables in one MySQL transaction; state and control-plane tables are kept. Re-reviewed 2026-09-28 after catalog-sync 1.1.0 / data-storage 2.1.0 (CAT-TASK-002): refuses to run while catalog projections exist unless --discard-catalog-projections (then marks catalog runs discarded); deletes children before parents and upserts parents first for the new foreign keys; nulls unknown master realms; derives quests/realm_creatures/creature_drops; main() exported with a fetch seam and runs only when invoked directly."
     },
     {
       "path": "session.mjs",
@@ -903,10 +986,5 @@
       ]
     }
   ],
-  "identical": [
-    {
-      "path": "game_modules/buffParser.js",
-      "hash": "324a7c11b38b85099e6f11765162bf7321993875894095b4a7f504a48a52a7ce"
-    }
-  ]
+  "identical": []
 }

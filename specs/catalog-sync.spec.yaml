@@ -1,0 +1,521 @@
+# =============================================================================
+# SDD DOMAIN SPEC: Fallen Sword Catalog Synchronization & Administration
+# =============================================================================
+spec:
+  id: "catalog-sync-v1"
+  status: locked
+  version: "1.1.0"
+  created: "2026-09-25"
+  updated: "2026-09-28"
+
+  version_policy:
+    sync_group: "business-domain"
+    depends_on: ["data-model", "api-surface", "security"]
+
+  changelog:
+    - version: "1.1.0"
+      date: "2026-09-28"
+      changes:
+        - "Owner decisions 2026-09-28 (DEC-CAT-008..011): first-touch baseline snapshots; populate_db.mjs refuses to replace catalog projections without --discard-catalog-projections; normalized serving relations (quests, realm_creatures, creature_drops) with foreign keys, plus foreign keys retrofitted onto realms.master_realm_id and relics.realm_id; provenance and projection commit in separate transactions."
+        - "Data model: observations are content-addressed per source/entity/hash and linked to runs through CatalogRunObservation (an observation can belong to many runs, so rollback is per run). CatalogEntity records the current projection. Run mode baseline_snapshot and status discarded added. Plans record the catalog revision, the confirmation phrase, and exact per-table row deltas measured by a rolled-back rehearsal."
+        - "CAT-TASK-002 DONE. CAT-TASK-001 now also covers the item-detail read that item_frontier needs. [AC-CAT-005, AC-CAT-006, AC-CAT-009, AC-CAT-010]"
+    - version: "1.0.0"
+      date: "2026-09-25"
+      changes:
+        - "Initial locked contract for passive Fallen Sword catalog collection, provenance, resumable synchronization, and the authenticated Catalog control-plane tab. [AC-CAT-001..AC-CAT-010] [CAT-TASK-001..CAT-TASK-008]"
+
+domain:
+  name: "Fallen Sword Catalog Synchronization & Administration"
+  description: |
+    Extends GoGon's existing authenticated Fallen Sword HTTP session with a low-rate, resumable
+    catalog collector for items, creatures, realms, master realms, relics, and quests. It records
+    source provenance and observations before updating the existing serving tables used by Discord.
+    The existing owner-authenticated, loopback-only control plane exposes a Catalog tab for browse,
+    synchronization, seed promotion, run history, and guarded deletion or rollback. This domain
+    never controls gameplay: it observes ordinary game responses and uses approved read endpoints.
+
+entities:
+  - name: CatalogSyncRun
+    description: "One immutable attempt to seed, observe, refresh, promote, or revert catalog data."
+    fields:
+      - name: id
+        type: uuid
+        constraints: [required, unique, indexed, immutable]
+        description: "Server-generated run identifier."
+        example: "b4be47d3-a6ad-4cc3-a007-7e7f81fbb455"
+      - name: mode
+        type: string
+        constraints: [required]
+        description: "Approved operation: observe_realm, item_frontier, seed, promote, or revert; baseline_snapshot is written only by the store when it first touches an existing serving row."
+        example: "observe_realm"
+      - name: status
+        type: string
+        constraints: [required, indexed]
+        description: "queued, running, paused, succeeded, failed, cancelled, reverted, or discarded (its projections were replaced by an explicit legacy reload)."
+        example: "succeeded"
+      - name: started_at
+        type: datetime
+        constraints: []
+        description: "UTC ISO-8601 start time."
+        example: "2026-09-25T12:00:00.000Z"
+      - name: summary
+        type: json
+        constraints: []
+        description: "Non-sensitive entity counts, cursor, and redacted error summary."
+        example: '{"creatures":12,"realms":1,"requests":13}'
+    relationships:
+      - to: CatalogRunObservation
+        type: has_many
+        foreign_key: run_id
+        description: "Every observation a run saw, including one that an earlier run already stored."
+
+  - name: CatalogJob
+    description: "Durable work cursor for an enabled CatalogSync task."
+    fields:
+      - name: id
+        type: uuid
+        constraints: [required, unique, indexed]
+        description: "Server-generated job identifier."
+        example: "8c4be54a-6c35-4a11-875c-b1ad6e816f4e"
+      - name: kind
+        type: string
+        constraints: [required]
+        description: "observe_realm or item_frontier; no game-action job kind is allowed."
+        example: "item_frontier"
+      - name: cursor
+        type: json
+        constraints: [required]
+        description: "Validated restart point, such as the next item ID."
+        example: '{"nextItemId":17049}'
+      - name: state
+        type: string
+        constraints: [required, indexed]
+        description: "queued, running, paused, completed, failed, or cancelled."
+        example: "paused"
+      - name: request_budget
+        type: integer
+        constraints: [required]
+        description: "Maximum approved requests for this job execution."
+        example: 50
+
+  - name: CatalogObservation
+    description: "Immutable, content-addressed source-derived record (unique per source, entity, and payload hash) retained for provenance and rollback. Which runs saw it is recorded by CatalogRunObservation."
+    fields:
+      - name: id
+        type: uuid
+        constraints: [required, unique, indexed, immutable]
+        description: "Server-generated observation identifier."
+        example: "c66354c8-bf6b-4802-a728-c392fed615b1"
+      - name: entity_key
+        type: string
+        constraints: [required, indexed]
+        description: "Game ID for ID-keyed kinds, realm_id:name for relics and quests, type:id:id for relations."
+        example: "17048"
+      - name: entity_kind
+        type: string
+        constraints: [required, indexed]
+        description: "item, creature, realm, master_realm, relic, quest, or relation."
+        example: "creature"
+      - name: external_id
+        type: string
+        constraints: [indexed]
+        description: "Stable game identifier when the source supplies one."
+        example: "17048"
+      - name: source
+        type: string
+        constraints: [required]
+        description: "game_session, guide_baseline, or manual_import."
+        example: "game_session"
+      - name: payload_hash
+        type: string
+        constraints: [required, indexed]
+        description: "SHA-256 of canonical normalized payload."
+        example: "4c1d..."
+      - name: payload
+        type: json
+        constraints: [required]
+        description: "Validated game-domain data only; never cookies, credentials, raw account pages, or arbitrary HTML."
+        example: '{"id":123,"name":"Example Creature","level":6275}'
+      - name: observed_at
+        type: datetime
+        constraints: [required, indexed]
+        description: "UTC ISO-8601 observation time."
+        example: "2026-09-25T12:00:00.000Z"
+
+  - name: CatalogRunObservation
+    description: "Links a run to each observation it saw; seq orders rollback replay."
+    fields:
+      - name: seq
+        type: integer
+        constraints: [required, unique, indexed]
+        description: "Monotonic insertion order."
+        example: 42
+      - name: run_id
+        type: uuid
+        constraints: [required, indexed]
+        description: "Foreign key to CatalogSyncRun (RESTRICT)."
+        example: "b4be47d3-a6ad-4cc3-a007-7e7f81fbb455"
+      - name: observation_id
+        type: uuid
+        constraints: [required, indexed]
+        description: "Foreign key to CatalogObservation (RESTRICT)."
+        example: "c66354c8-bf6b-4802-a728-c392fed615b1"
+      - name: observed_at
+        type: datetime
+        constraints: [required, indexed]
+        description: "UTC ISO-8601 time this run observed it."
+        example: "2026-09-25T12:00:00.000Z"
+
+  - name: CatalogEntity
+    description: "The catalog's current projection of one serving entity. Its presence means the serving row is under catalog provenance."
+    fields:
+      - name: entity_kind
+        type: string
+        constraints: [required]
+        description: "Primary key part."
+        example: "creature"
+      - name: entity_key
+        type: string
+        constraints: [required]
+        description: "Primary key part."
+        example: "17048"
+      - name: observation_id
+        type: uuid
+        constraints: [required]
+        description: "The latest observation applied to the serving row."
+        example: "c66354c8-bf6b-4802-a728-c392fed615b1"
+      - name: first_seen_at
+        type: datetime
+        constraints: [required]
+        description: "First observation (or baseline snapshot) time."
+        example: "2026-09-25T12:00:00.000Z"
+      - name: last_seen_at
+        type: datetime
+        constraints: [required, indexed]
+        description: "Latest observation time (freshness)."
+        example: "2026-09-28T12:00:00.000Z"
+
+  - name: CatalogDeletionPlan
+    description: "Short-lived, immutable preview for a remote destructive catalog action."
+    fields:
+      - name: id
+        type: uuid
+        constraints: [required, unique, indexed, immutable]
+        description: "Server-generated deletion-plan identifier."
+        example: "0584c82e-ef0f-4dd8-b29c-1dd370e2c576"
+      - name: target_run_id
+        type: uuid
+        constraints: [required, indexed]
+        description: "Catalog run proposed for reversible rollback or deletion."
+        example: "b4be47d3-a6ad-4cc3-a007-7e7f81fbb455"
+      - name: expected_counts
+        type: json
+        constraints: [required]
+        description: "Affected observations, entities, restores, removals, relations, cascaded catalog entities, and exact per-table serving row deltas."
+        example: '{"observations":12,"entities":4,"restore":1,"remove":3,"relations":2,"cascade":0,"rows":{"creatures":-1}}'
+      - name: expires_at
+        type: datetime
+        constraints: [required]
+        description: "Short expiry that prevents executing a stale preview."
+        example: "2026-09-25T12:10:00.000Z"
+      - name: revision
+        type: integer
+        constraints: [required]
+        description: "Catalog revision the preview was built at; any projection, rollback, or legacy reload makes it stale."
+        example: 7
+      - name: confirmation
+        type: string
+        constraints: [required]
+        description: "Server-calculated phrase the owner must repeat exactly."
+        example: "ROLLBACK b4be47d3 4"
+      - name: used_at
+        type: datetime
+        constraints: []
+        description: "Set once executed; a used plan cannot run again."
+        example: "2026-09-25T12:03:00.000Z"
+
+acceptance_criteria:
+  - id: AC-CAT-001
+    description: "Collector reuses the active GoGon session without exposing credentials."
+    given: "GoGon has authenticated through session.mjs and the account switcher is idle"
+    when: "CatalogSync starts an approved read operation"
+    then: "It uses the existing authenticated fetch path and cookie jar, does not create another login or export cookies, and stores only validated game-domain fields"
+    error_cases:
+      - given: "The session is unavailable, expired, or an account switch is in progress"
+        when: "CatalogSync attempts a request"
+        then: "It pauses or fails closed without advancing the cursor, logging only a redacted reason"
+
+  - id: AC-CAT-002
+    description: "CatalogSync is passive and bounded."
+    given: "A queued observe_realm or item_frontier job with a configured request budget"
+    when: "The task executes"
+    then: "It performs at most one in-flight request and never calls attack, movement, travel, equip, use-item, form-post, or account-management game endpoints"
+    error_cases:
+      - given: "A requested operation is not in the server-side operation allowlist"
+        when: "The dashboard requests it"
+        then: "The API rejects it with 400, creates no job, and records a denied audit event"
+
+  - id: AC-CAT-003
+    description: "Current-realm observation captures creatures without combat."
+    given: "An authenticated game-session response containing a realm and creature actions"
+    when: "CatalogSync observes that realm"
+    then: "It records the realm, each newly seen creature, and creature-to-realm association; for a creature detail request it records only the returned game-domain fields and creates no combat action"
+    error_cases:
+      - given: "A detail response is malformed, an HTML login page, Cloudflare mitigation, or an unrecognized schema"
+        when: "CatalogSync parses it"
+        then: "It records a redacted failed run, preserves the cursor, and writes no partial serving-table update"
+
+  - id: AC-CAT-004
+    description: "Item frontier scan is resumable and never treats gaps as proof of absence."
+    given: "A validated item frontier cursor and an item-ID request budget"
+    when: "CatalogSync scans item details"
+    then: "It checkpoints only after each validated response, records positive and classified negative outcomes separately, and preserves an overlap window on the next run"
+    error_cases:
+      - given: "Rate limiting, timeout, session failure, or a response classification other than known-not-found"
+        when: "The scan reaches that ID"
+        then: "It backs off, leaves the unresolved ID eligible for retry, and does not advance highest_confirmed_item_id past it"
+
+  - id: AC-CAT-005
+    description: "Provenance precedes serving-table projection."
+    given: "A valid observation that differs from the current canonical entity"
+    when: "The catalog service accepts it"
+    then: "It persists the run and observation with source, hash, and timestamp before applying a deterministic incremental projection to existing item, creature, realm, master_realm, relic, or quest data"
+    error_cases:
+      - given: "A projection write fails"
+        when: "The catalog transaction executes"
+        then: "No partially projected entity or relation is visible; the observation/run reports failure and remains diagnosable"
+
+  - id: AC-CAT-006
+    description: "Existing full-replace seed script is never an automatic live refresh."
+    given: "The current scripts/populate_db.mjs behavior that clears master tables before loading its external snapshot"
+    when: "A Catalog seed or update is requested"
+    then: "The catalog service uses a staged import and incremental promotion path, never invokes the destructive full-replace script automatically"
+    error_cases:
+      - given: "A seed payload fails schema validation, has an unapproved source key, or exceeds its size limit"
+        when: "The seed is submitted"
+        then: "The API rejects it before any catalog or serving-table write"
+
+  - id: AC-CAT-007
+    description: "Catalog browse API is owner-authenticated, paginated, and safe to render."
+    given: "An authenticated control-plane session"
+    when: "The owner requests a catalog list, entity detail, run history, or freshness summary"
+    then: "The API applies strict allowlisted filters and bounded pagination, returns only catalog fields, and the UI renders all returned text as textContent rather than HTML"
+    error_cases:
+      - given: "An unauthenticated, cross-origin, malformed, or out-of-range request"
+        when: "It targets a Catalog endpoint"
+        then: "It receives the existing authenticated control-plane denial with no data disclosure or stack trace"
+
+  - id: AC-CAT-008
+    description: "Remote synchronization is an audited job command, not an unbounded request."
+    given: "An authenticated owner with a valid CSRF token and same-origin request"
+    when: "The owner creates, pauses, resumes, or cancels an allowed Catalog job"
+    then: "The server validates its small allowlisted payload, persists the state transition, emits dashboard state through existing SSE, and records an audit event with no secrets or raw game URLs"
+    error_cases:
+      - given: "A second conflicting run or job mutation targets the same cursor while one is active"
+        when: "The owner submits it"
+        then: "The server returns 409 and preserves the current job state"
+
+  - id: AC-CAT-009
+    description: "Seed and deletion actions require deterministic preview and explicit confirmation."
+    given: "An authenticated owner requests a seed promotion, run rollback, or deletion"
+    when: "The server builds the action plan"
+    then: "It returns an immutable plan ID, exact affected counts, a short expiry, and no state change"
+    error_cases:
+      - given: "A plan is expired, already used, does not match the current catalog revision, or its required confirmation phrase/count differs"
+        when: "The owner executes it"
+        then: "The server rejects the action, preserves data, and audits the denial"
+
+  - id: AC-CAT-010
+    description: "Run rollback is recoverable and does not orphan a catalog entity."
+    given: "A valid confirmed deletion plan for a completed catalog run"
+    when: "The owner executes rollback"
+    then: "The service restores each affected entity and relation to its most recent remaining provenance record, marks the run reverted, invalidates relevant caches, and records before/after counts"
+    error_cases:
+      - given: "An entity has no earlier source record"
+        when: "Rollback is computed"
+        then: "The preview identifies it as a removal candidate; execution removes it only as part of the confirmed transaction and never leaves dangling relations"
+
+security:
+  constitutions:
+    - SEC-OWASP-A01-2025
+    - SEC-OWASP-A02-2025
+    - SEC-OWASP-A05-2025
+    - SEC-OWASP-A06-2025
+    - SEC-OWASP-A07-2025
+    - SEC-OWASP-A08-2025
+    - SEC-OWASP-A10-2025
+
+  project_specific:
+    - rule: "Catalog code must reuse session.mjs authenticated fetch capability without exposing, serializing, returning, logging, or copying cookies, credentials, CSRF values, raw account pages, or debug snapshots."
+      severity: CRITICAL
+      cwe: 200
+      scope: "catalog/**, session.mjs, control-plane/**"
+    - rule: "The collector operation and remote action types are code-owned allowlists. Dashboard input may select only an allowlisted operation, entity kind, approved source key, bounded page, bounded ID range, and bounded request budget; it may never supply a game URL, SQL, file path, shell command, or arbitrary selector."
+      severity: CRITICAL
+      cwe: 20
+      scope: "catalog/**, control-plane/server.mjs"
+    - rule: "Every Catalog state-changing endpoint requires the existing authenticated session, CSRF token, same-origin check, schema validation, audit event, and server-side ownership check. Destructive execution additionally requires an unexpired one-use plan and exact server-calculated confirmation."
+      severity: CRITICAL
+      cwe: 352
+      scope: "control-plane/server.mjs, catalog/**"
+    - rule: "Catalog payloads are canonical JSON with strict per-entity schemas and byte limits. Scraped text is never assigned to innerHTML, never treated as executable instructions, and never used to construct SQL identifiers."
+      severity: HIGH
+      cwe: 79
+      scope: "catalog/**, control-plane/public/app.js"
+    - rule: "The dashboard stays host-loopback-only under Compose and MySQL remains internal without a published port. Remote use is through an owner SSH tunnel, never an internet-facing database panel."
+      severity: HIGH
+      cwe: 668
+      scope: "compose.yaml, docs/deployment.md"
+
+  threat_model:
+    - threat: "A game response, guide page, or Cloudflare page contains hostile or malformed content."
+      impact: "Stored XSS, parser compromise, cursor corruption, or unintended work."
+      mitigation: "Treat every response as untrusted; recognize allowed content shapes, normalize permitted fields, cap bytes, render text with textContent, and fail closed on unrecognized responses."
+      verification: "Fixture tests for login HTML, Cloudflare mitigation, malformed JSON, and hostile entity names/descriptions."
+    - threat: "A dashboard user turns catalog administration into SSRF, SQL injection, or arbitrary game automation."
+      impact: "Network access beyond scope, database loss, or account-impacting actions."
+      mitigation: "Code-owned operation/source allowlists, parameterized SQL, no raw URL/SQL endpoints, one serial worker, and passive endpoint assertions."
+      verification: "Route tests reject URLs, unknown fields, invalid IDs, raw SQL-like input, and forbidden game action names."
+    - threat: "A stale or mistaken remote delete irreversibly removes catalog data."
+      impact: "Lost discovered content and broken Discord lookups."
+      mitigation: "Plan-preview-confirm execution, short expiry, one use, revision check, transactional rollback, provenance retention, cache invalidation, and audit trail."
+      verification: "Tests for expired/stale/reused plans, failure rollback, relationship cleanup, and restoration of prior observation."
+    - threat: "The catalog scanner consumes too much account/session capacity or bypasses a bot challenge."
+      impact: "Account restriction, degraded notifications, or policy violation."
+      mitigation: "Disabled-by-default task, one in-flight request, request budgets, backoff, pause on mitigation, no CAPTCHA/Cloudflare automation, and existing account-switch pause behavior."
+      verification: "Scheduler and collector tests prove concurrency one, bounded request count, abort behavior, and no request after mitigation."
+
+constraints:
+  - "CatalogSync is disabled by default and must be enabled deliberately through the authenticated control plane."
+  - "No Catalog job may call game attack, move, travel, equip, use-item, join-group, post-form, or account-management endpoints."
+  - "At most one Catalog game request is in flight process-wide; the default budget is at most 50 requests per job execution and the minimum delay is 3 seconds between game requests until an owner-approved game-policy/rate-limit decision supersedes it."
+  - "A failed, throttled, mitigated, malformed, or unauthenticated response cannot advance a job cursor or highest-confirmed ID."
+  - "Every observation is canonicalized and hash-deduplicated per source/entity before projection; the first_seen, last_seen, source, run ID, and observed timestamp remain queryable."
+  - "Guide-derived data is a dated baseline, not current truth. Game-session observations outrank guide baseline only for fields they actually provide; unknown relationships and set bonuses remain explicitly unknown."
+  - "Existing Discord lookup tables remain available throughout rollout. Catalog refreshes use incremental transactionally consistent projection; scripts/populate_db.mjs is manual-only until explicitly retired or redesigned, and refuses to run while catalog projections exist unless given --discard-catalog-projections (DEC-CAT-009)."
+  - "The first time a projection touches an existing serving row with no catalog provenance, that row is stored as a guide_baseline observation in a baseline_snapshot run, so rollback restores it (DEC-CAT-008)."
+  - "Serving relations are normalized with foreign keys (DEC-CAT-010): quests (realm_id, name unique), realm_creatures, creature_drops, realms.master_realm_id (SET NULL), relics.realm_id (CASCADE). Serving writers upsert with INSERT ... ON DUPLICATE KEY UPDATE and never REPLACE INTO, which would cascade deletions. A relic's identity is (realm_id, name). realms.creatures remains the JSON view Discord reads and is kept in step with realm_creatures."
+  - "Provenance (run, observations, links) commits in one transaction and projection in a second; a failed projection leaves the run failed with only a redacted error code (DEC-CAT-011)."
+  - "The dashboard does not support raw SQL, raw database table browsing, arbitrary outbound fetches, or arbitrary file imports."
+  - "Seed promotion, rollback, and deletion use a server-generated, one-use plan valid for no more than 10 minutes; only server-calculated affected counts may be confirmed."
+  - "All timestamps are UTC ISO-8601 strings. Catalog errors, run summaries, and audit records must be credential-free and URL-redacted."
+
+dependencies:
+  - domain: "auth-session"
+    relationship: "Catalog uses the existing authenticated fetch path and must fail closed with session/account transitions."
+    criticality: CRITICAL
+  - domain: "task-engine"
+    relationship: "CatalogSync is a serialized, abortable, pause-aware engine task."
+    criticality: CRITICAL
+  - domain: "data-storage"
+    relationship: "Catalog migrations, transactional provenance, projection, and cache invalidation use the MySQL data layer."
+    criticality: CRITICAL
+  - domain: "control-plane"
+    relationship: "Catalog browse and administration extend the existing authenticated same-origin API, SSE state stream, audit store, and loopback deployment."
+    criticality: CRITICAL
+  - domain: "game-monitors"
+    relationship: "Serving projections preserve the item, creature, and realm lookup contracts used by Discord notifications."
+    criticality: HIGH
+
+git:
+  last_implementation_branch: ""
+  last_pr_url: ""
+  last_pr_merged: ""
+  last_version_tag: ""
+
+tasks:
+  - id: CAT-TASK-001
+    description: |
+      Validate and freeze the live read-response contracts before production collection. Capture one
+      owner-authorized current-realm response and one creature detail response using the existing
+      session, compare them with the FSH-derived request shape, record permitted fields and response
+      classifications, and obtain the owner's written rate/policy decision. Do not automate Cloudflare
+      or CAPTCHA handling. This task blocks live collection but not fixtures or schema work.
+      Also capture one item-detail response: item_frontier has no validated read contract yet, and
+      game_modules/API.js has no creature- or item-detail read endpoint (added 1.1.0).
+    affects: "catalog/contracts/, tests/catalog-sync/fixtures/, game_modules/API.js, docs/catalog-sync-control-plane-plan.md"
+    depends_on: []
+    source: "AC-CAT-001, AC-CAT-002, AC-CAT-003, AC-CAT-004"
+    status: TODO
+
+  - id: CAT-TASK-002
+    description: |
+      Add an idempotent MySQL migration and catalog repository for sync runs, jobs, observations,
+      source/projection metadata, relations, and deletion plans. Use parameterized queries, bounded
+      JSON validation, transactions, source precedence, and cache invalidation. Do not change the
+      legacy full-replace seed behavior in this task.
+    affects: "_gg_data/migrations/003_catalog_sync.sql, _gg_data/migrations/004_serving_relations.mjs, _gg_data/handler/catalogStore.js, _gg_data/handler/servingRelations.js, _gg_data/handler/migrationRunner.js, _gg_data/handler/gg_database.js, scripts/populate_db.mjs, tests/helpers/fake-mysql.mjs, tests/data-storage/catalog-store.test.mjs"
+    depends_on: []
+    source: "AC-CAT-005, AC-CAT-006, AC-CAT-009, AC-CAT-010"
+    status: DONE
+    progress: "2026-09-28: migrations 003/004, catalogStore (recordRun/projectRun/ingest, planRollback/executePlan, jobs), servingRelations, FK-safe upserts in bulkUpdateDatabase and populate_db, populate_db guard (brought forward from CAT-TASK-007 by DEC-CAT-009). 17 tests on the MySQL fake; retrofitted-key enforcement is covered by one real-MySQL-only test, still to run in CI."
+
+  - id: CAT-TASK-003
+    description: |
+      Implement catalog response normalizers and a passive collector service. Define code-owned
+      request builders for the validated realm and creature detail reads, strict response
+      classifications, canonical JSON hashing, a serial rate-limited queue, AbortSignal support,
+      backoff, cursor checkpointing, and redacted errors. No game-mutating request builder may be
+      imported by this subsystem.
+    affects: "catalog/collector.js, catalog/normalizers.js, catalog/requestPolicy.js, game_modules/API.js, tests/catalog-sync/collector.test.mjs"
+    depends_on: ["CAT-TASK-001", "CAT-TASK-002"]
+    source: "AC-CAT-001, AC-CAT-002, AC-CAT-003, AC-CAT-004, AC-CAT-005"
+    status: TODO
+
+  - id: CAT-TASK-004
+    description: |
+      Register CatalogSync in engine.js as disabled by default, with its own persisted preference,
+      serial execution, account-switch pause/resume behavior, task status, and no overlap with a
+      foreground synchronization command. Add runtime configuration only for bounded safe settings
+      such as enabled state and interval; request URLs, operation kinds, and source allowlists stay
+      code-owned.
+    affects: "engine.js, config/registry.mjs, config/runtime.mjs, app.mjs, tests/task-engine/catalog-sync.test.mjs"
+    depends_on: ["CAT-TASK-003"]
+    source: "AC-CAT-001, AC-CAT-002, AC-CAT-008"
+    status: TODO
+
+  - id: CAT-TASK-005
+    description: |
+      Extend control-plane/server.mjs with owner-authenticated Catalog read endpoints and validated
+      state-changing job/plan endpoints. Reuse the current session, CSRF, same-origin, rate-limit,
+      error, audit, and SSE mechanisms. Implement bounded pagination, strict filter allowlists,
+      job conflicts, and plan-preview-confirm execution; never add raw SQL, raw URL, or arbitrary
+      source upload endpoints.
+    affects: "control-plane/server.mjs, control-plane/index.mjs, _gg_data/handler/controlStore.js, tests/control-plane/catalog-api.test.mjs"
+    depends_on: ["CAT-TASK-002", "CAT-TASK-004"]
+    source: "AC-CAT-007, AC-CAT-008, AC-CAT-009, AC-CAT-010"
+    status: TODO
+
+  - id: CAT-TASK-006
+    description: |
+      Add the Catalog tab and Browse, Sync, Seed, History/Delete subviews to the existing static
+      dashboard. Render remote text only through DOM text nodes, show provenance/freshness and
+      request budgets, and require a server-issued plan plus exact confirmation for promotion,
+      rollback, or deletion. Do not create a separate public web server or database console.
+    affects: "control-plane/public/index.html, control-plane/public/app.js, control-plane/public/styles.css, tests/control-plane/catalog-ui.test.mjs"
+    depends_on: ["CAT-TASK-005"]
+    source: "AC-CAT-007, AC-CAT-008, AC-CAT-009"
+    status: TODO
+
+  - id: CAT-TASK-007
+    description: |
+      Implement staged baseline seeding. Replace automatic full-table replacement for Catalog use
+      with an approved-source-key or validated owner-import staging run, schema validation, diff
+      preview, and transactional promotion. Preserve the manual legacy script until the owner
+      separately approves its retirement.
+    affects: "catalog/seedService.js, catalog/sourceRegistry.js, control-plane/server.mjs, scripts/populate_db.mjs, tests/catalog-sync/seed.test.mjs"
+    depends_on: ["CAT-TASK-002", "CAT-TASK-005"]
+    source: "AC-CAT-005, AC-CAT-006, AC-CAT-009"
+    status: TODO
+
+  - id: CAT-TASK-008
+    description: |
+      Run the full acceptance and deployment gate: fixture and repository tests, real-MySQL CI,
+      Docker/loopback verification, authenticated browser acceptance through an SSH tunnel, and
+      one controlled live passive realm observation after CAT-TASK-001 approval. Verify no game
+      action request occurred, no cookie or credential reached the UI/logs/database, and rollback
+      restores the prior projection.
+    affects: "tests/catalog-sync/, tests/control-plane/, .github/workflows/ci.yml, docs/deployment.md, CHANGELOG.md"
+    depends_on: ["CAT-TASK-006", "CAT-TASK-007"]
+    source: "AC-CAT-001..AC-CAT-010"
+    status: TODO

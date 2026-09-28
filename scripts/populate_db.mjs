@@ -1,11 +1,20 @@
 // scripts/populate_db.mjs
 // GoGon - Database Population Script (MySQL since data-storage 2.0.0 / DATA-TASK-010)
 // Fetches game data from JSON sources and replaces the master-data tables (master_realms, realms,
-// relics, creatures, items) in one MySQL transaction. Key-value state and control-plane tables are
-// never touched. MySQL starts empty, so run this once after the first `docker compose up`:
+// relics, creatures, items) and the relations derived from them (quests, realm_creatures,
+// creature_drops) in one MySQL transaction. Key-value state and control-plane tables are never
+// touched. MySQL starts empty, so run this once after the first `docker compose up`:
 //   docker compose run --rm gogon node scripts/populate_db.mjs
+// Manual only (catalog-sync DEC-CAT-005). Once the catalog has projected data, the script refuses to
+// run unless --discard-catalog-projections is given; that flag keeps the catalog's provenance but
+// marks its runs discarded, so they can no longer be rolled back (CAT-TASK-002).
 
+import { pathToFileURL } from 'node:url';
 import { getConnection, closeDatabase, clearDatabaseCaches } from '../_gg_data/handler/gg_database.js';
+import { createCatalogStore } from '../_gg_data/handler/catalogStore.js';
+import { deriveRelations, namesFrom, writeRelations } from '../_gg_data/handler/servingRelations.js';
+
+export const DISCARD_FLAG = '--discard-catalog-projections';
 
 // Data Sources (GitHub RAW URLs)
 const URLS = {
@@ -32,43 +41,42 @@ const safeStringify = (obj) => {
     return JSON.stringify(obj);
 };
 
-/** Inserts rows (arrays in column order) in chunks; table and column names are fixed in this file. */
+/**
+ * Inserts rows (arrays in column order) in chunks; a repeated key in the source keeps the last row.
+ * An upsert, not REPLACE INTO, so no row is deleted through a foreign key. Table and column names
+ * are fixed in this file.
+ */
 async function insertRows(tx, table, columns, rows) {
     const placeholder = `(${columns.map(() => '?').join(', ')})`;
+    const updates = columns.filter(c => c !== 'id').map(c => `${c} = new.${c}`).join(', ');
     for (let start = 0; start < rows.length; start += CHUNK_ROWS) {
         const chunk = rows.slice(start, start + CHUNK_ROWS);
-        await tx.query(`REPLACE INTO ${table} (${columns.join(', ')}) VALUES ${chunk.map(() => placeholder).join(', ')}`, chunk.flat());
+        await tx.query(`INSERT INTO ${table} (${columns.join(', ')}) VALUES ${chunk.map(() => placeholder).join(', ')} AS new ON DUPLICATE KEY UPDATE ${updates}`, chunk.flat());
     }
     return rows.length;
 }
 
-/** Relic names from a realm's relics field (array of names/objects, or an object map). */
-function relicNames(relics) {
-    const names = [];
-    if (Array.isArray(relics)) {
-        for (const relic of relics) {
-            const relicName = typeof relic === 'string' ? relic : relic?.name;
-            if (relicName) names.push(relicName);
-        }
-    } else if (typeof relics === 'object' && relics !== null) {
-        for (const [key, value] of Object.entries(relics)) {
-            if (typeof value === 'string') names.push(value);
-            else if (value && value.name) names.push(value.name);
-            else if (isNaN(Number(key))) names.push(key); // If key is a name
-        }
-    }
-    return names;
-}
-
-async function main() {
+/**
+ * @param {object} [opts]
+ * @param {string[]} [opts.argv] - command-line arguments
+ * @param {(url: string) => Promise<any>} [opts.fetchJson] - test seam
+ */
+export async function main({ argv = process.argv.slice(2), fetchJson: fetchSource = fetchJson } = {}) {
     console.log('[DB_INIT] Starting database population...');
+
+    // 0. Refuse to overwrite catalog projections unless explicitly told to (before any fetch or write)
+    const db = await getConnection();
+    const catalog = createCatalogStore(db);
+    if (await catalog.hasCatalogProjections() && !argv.includes(DISCARD_FLAG)) {
+        throw new Error(`The catalog has projected data into these tables. Re-run with ${DISCARD_FLAG} to replace it (catalog runs become discarded and cannot be rolled back).`);
+    }
 
     // 1. Fetch Data
     const [masterRealms, realms, creatures, items] = await Promise.all([
-        fetchJson(URLS.masterRealms),
-        fetchJson(URLS.realms),
-        fetchJson(URLS.creatures),
-        fetchJson(URLS.items)
+        fetchSource(URLS.masterRealms),
+        fetchSource(URLS.realms),
+        fetchSource(URLS.creatures),
+        fetchSource(URLS.items)
     ]);
 
     // 2. Map to rows
@@ -79,20 +87,22 @@ async function main() {
         if (id && name) masterRows.push([id, name]);
     }
 
+    const masterIds = new Set(masterRows.map(([id]) => Number(id)));
     const realmRows = [];
     const relicRows = [];
     for (const r of realms) {
         const id = r.id || r.realm_id || r.realmId;
         const name = r.name || r.realm_name;
         const minLevel = r.min_level || r.min_level_id || r.level || r.minLevel || 0;
-        const masterId = r.master_realm_id || r.realm_group_id || r.parent_id || null;
+        const rawMasterId = r.master_realm_id || r.realm_group_id || r.parent_id || null;
+        const masterId = masterIds.has(Number(rawMasterId)) ? rawMasterId : null; // foreign key: unknown -> NULL
         if (!id || !name) continue;
         realmRows.push([
             id, name, minLevel, masterId,
             safeStringify(r.creatures), safeStringify(r.relics), safeStringify(r.quests), safeStringify(r.shops),
             safeStringify(r.connections || r.stairways), safeStringify(r.map_objects || r.mapObjects),
         ]);
-        for (const relicName of relicNames(r.relics)) relicRows.push([relicName, id]);
+        for (const relicName of namesFrom(r.relics)) relicRows.push([relicName, id]);
     }
 
     const creatureRows = [];
@@ -129,24 +139,39 @@ async function main() {
         ]);
     }
 
-    // 3. Replace the master-data tables atomically
-    const db = await getConnection();
+    const loadedRealmIds = new Set(realmRows.map(([id]) => Number(id)));
+    const relations = deriveRelations({
+        realms: realms.map(r => ({ id: r.id || r.realm_id || r.realmId, creatures: r.creatures, quests: r.quests }))
+            .filter(r => loadedRealmIds.has(Number(r.id))),
+        creatures: creatureRows.map(([id, , , , , , droppedItems]) => ({ id, droppedItems })),
+        creatureIds: new Set(creatureRows.map(([id]) => Number(id))),
+        itemIds: new Set(itemRows.map(([id]) => Number(id))),
+    });
+
+    // 3. Replace the master-data tables atomically (children first: foreign keys)
     const counts = await db.transaction(async tx => {
-        for (const table of ['relics', 'realms', 'master_realms', 'creatures', 'items']) await tx.query(`DELETE FROM ${table}`);
-        return {
+        const { discardedRuns } = await catalog.discardProjections(tx);
+        if (discardedRuns) console.warn(`[DB_INIT] ${discardedRuns} catalog run(s) marked discarded.`);
+        for (const table of ['creature_drops', 'realm_creatures', 'quests', 'relics', 'realms', 'master_realms', 'creatures', 'items']) await tx.query(`DELETE FROM ${table}`);
+        const base = {
             masterRealms: await insertRows(tx, 'master_realms', ['id', 'name'], masterRows),
             realms: await insertRows(tx, 'realms', ['id', 'name', 'min_level', 'master_realm_id', 'creatures', 'relics', 'quests', 'shops', 'connections', 'map_objects'], realmRows),
             relics: await insertRows(tx, 'relics', ['name', 'realm_id'], relicRows),
             creatures: await insertRows(tx, 'creatures', ['id', 'name', 'imageUrl', 'description', 'stats', 'enhancements', 'droppedItems'], creatureRows),
             items: await insertRows(tx, 'items', ['id', 'name', 'rarity', 'imageUrl', 'stats', 'enhancements', 'droppedBy', 'setBonuses', 'setId', 'setName'], itemRows),
         };
+        return { ...base, ...(await writeRelations(tx, relations)) };
     });
     clearDatabaseCaches();
     console.log(`[DB_INIT] Inserted ${counts.masterRealms} master realms, ${counts.realms} realms, ${counts.relics} relics, ${counts.creatures} creatures, ${counts.items} items.`);
+    console.log(`[DB_INIT] Relations: ${counts.realmCreatures} realm-creature, ${counts.creatureDrops} creature-drop, ${counts.quests} quests; ${relations.skipped} unresolved reference(s) left unknown.`);
     console.log('[DB_INIT] Database population complete!');
+    return counts;
 }
 
-main().catch(err => {
-    console.error('[DB_INIT] Fatal error:', err?.message || err);
-    process.exitCode = 1;
-}).finally(() => closeDatabase());
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+    main().catch(err => {
+        console.error('[DB_INIT] Fatal error:', err?.message || err);
+        process.exitCode = 1;
+    }).finally(() => closeDatabase());
+}

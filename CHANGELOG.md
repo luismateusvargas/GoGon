@@ -1,5 +1,11 @@
 # Gon Project - Changelog
 
+## Unreleased
+
+- Catalog store (CAT-TASK-002, `catalog-sync-v1` 1.1.0, `data-storage-v1` 2.1.0): migrations 003/004 add the catalog provenance tables (runs, jobs, content-addressed observations, run links, projected entities, one-use rollback plans) and normalized serving relations with foreign keys (`quests`, `realm_creatures`, `creature_drops`, plus keys retrofitted onto `realms.master_realm_id` and `relics.realm_id`, after clearing dangling rows). `_gg_data/handler/catalogStore.js` stores provenance before projecting, keeps a first-touch baseline of legacy rows, and rolls a run back by replaying the remaining provenance behind a 10-minute, one-use, exactly-confirmed plan. `bulkUpdateDatabase` and `scripts/populate_db.mjs` upsert instead of `REPLACE INTO`; `populate_db.mjs` refuses to replace catalog projections without `--discard-catalog-projections`. [AC-CAT-005] [AC-CAT-006] [AC-CAT-009] [AC-CAT-010]
+- Fix: `CONFLICT_PING.DEFAULT_MENTION` referenced an undefined identifier (84e0ced), so importing `app_modules/constants.js` threw a ReferenceError at boot. It is `'@everyone'` again, matching the registry default.
+- Planning: added the locked `catalog-sync-v1` specification and the dependency-ordered Catalog Sync control-plane delivery plan. No catalog collector, database schema, dashboard endpoint, or deployment behavior has been implemented yet. [AC-CAT-001..AC-CAT-010] [CAT-TASK-001..CAT-TASK-008]
+
 ## Project Overview
 **"GoGon" (GG)** - An automated monitoring and notification system for the Fallensword MMORPG. The bot scrapes game data, tracks events, and sends real-time Discord notifications using a sophisticated task scheduler and database-backed state management.
 

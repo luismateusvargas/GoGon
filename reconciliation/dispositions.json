@@ -28,17 +28,21 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "ec1559bf6059b63eca942c03c9d2b7b62c2ceab6aa93e908ab4ec4ece34b82ec",
-      "owners": [],
-      "rationale": "Root-only database handler under _gg_data/ (required by REC-TASK-001). Re-reviewed 2026-09-24: DATA-TASK-001 added setObject/deleteContent; MON-TASK-002 added the legacy-tolerant getObject reader. Nothing removed. Re-reviewed 2026-09-24 after DATA-TASK-003: backupDatabase awaits db.backup() (AC-DATA-006); setContent warns on corrupt/non-list state (AC-DATA-002); getConnection() export for the control-plane store. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Rewritten over the mysql2 client (initDatabase/closeDatabase, lazy once-per-process migrations); backupDatabase removed (AC-DATA-006 retired)."
+      "reviewedRootHash": "bc08a7d55d66d16a545784bb32579afd50f8a9e624d2928071249f7e1054023b",
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only database handler under _gg_data/ (required by REC-TASK-001). Re-reviewed 2026-09-24: DATA-TASK-001 added setObject/deleteContent; MON-TASK-002 added the legacy-tolerant getObject reader. Nothing removed. Re-reviewed 2026-09-24 after DATA-TASK-003: backupDatabase awaits db.backup() (AC-DATA-006); setContent warns on corrupt/non-list state (AC-DATA-002); getConnection() export for the control-plane store. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Rewritten over the mysql2 client (initDatabase/closeDatabase, lazy once-per-process migrations); backupDatabase removed (AC-DATA-006 retired). Re-reviewed 2026-09-28 after catalog-sync 1.1.0 / data-storage 2.1.0 (CAT-TASK-002): bulkUpdateDatabase upserts with INSERT ... AS new ON DUPLICATE KEY UPDATE instead of REPLACE INTO, so a rewritten parent row never cascades its foreign-key relations away; columns absent from the data keep their values."
     },
     "_gg_data/handler/migrationRunner.js": {
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "61ebc570530b023206b5f1ac0e63aca39a348708c30bac074a633c11ef13d929",
-      "owners": [],
-      "rationale": "Root-only migration runner under _gg_data/ (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Async, statement by statement (MySQL DDL commits implicitly); failed files are not recorded."
+      "reviewedRootHash": "dda021a3b0e691383fa7760ac786cbd71f80d919b0287efb9fa33e8091bbd544",
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only migration runner under _gg_data/ (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Async, statement by statement (MySQL DDL commits implicitly); failed files are not recorded. Re-reviewed 2026-09-28 after catalog-sync 1.1.0 / data-storage 2.1.0 (CAT-TASK-002): also applies .mjs migrations exporting up(client), for steps plain SQL cannot make idempotent (guarded foreign-key retrofits, backfills)."
     },
     "_gg_data/migrations/001_initial_schema.sql": {
       "disposition": "retain-root",
@@ -110,9 +114,9 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "445dd15d4c4efa6cbe86e9fb0fba9a92941b19e5c4a3e1fcc4271f3b7ac68e13",
+      "reviewedRootHash": "fbeff43a4378e150b026e3e920caaa76291f7e8f24294a407ff50666cae34fcf",
       "owners": [],
-      "rationale": "Root-only shared constants (required by REC-TASK-001). Re-reviewed 2026-09-24: added ENV_ALIASES (AUTH-TASK-001/REC-TASK-002); COOLDOWNS.GVG comment corrected to the owner-locked 10 days. Re-reviewed 2026-09-24: added CONFLICT_PING (default mention, 15-minute quiet window, 3-minute stop gap) for MON-TASK-005. Re-reviewed 2026-09-24 after CTRL-TASK-001: ENV_ALIASES gains GG_BOT_CHARACTER/GG_BOT_ID_CHARACTER; CONFLICT_PING.DEFAULT_MENTION is now only a fallback."
+      "rationale": "Root-only shared constants (required by REC-TASK-001). Re-reviewed 2026-09-24: added ENV_ALIASES (AUTH-TASK-001/REC-TASK-002); COOLDOWNS.GVG comment corrected to the owner-locked 10 days. Re-reviewed 2026-09-24: added CONFLICT_PING (default mention, 15-minute quiet window, 3-minute stop gap) for MON-TASK-005. Re-reviewed 2026-09-24 after CTRL-TASK-001: ENV_ALIASES gains GG_BOT_CHARACTER/GG_BOT_ID_CHARACTER; CONFLICT_PING.DEFAULT_MENTION is now only a fallback. Re-reviewed 2026-09-28: 84e0ced changed EMOJIS.CHEST to :chest: and set CONFLICT_PING.DEFAULT_MENTION to an undefined identifier (ReferenceError on import); the fallback is the literal @everyone again, matching the GG_CONFLICT_PING_MENTION registry default."
     },
     "app_modules/core.js": {
       "disposition": "retain-root",
@@ -615,9 +619,11 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "4d853075167a3ed80c1e6128e2989e897586508d8ace389d7b70a09b69942901",
-      "owners": [],
-      "rationale": "Root-only database population script (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Replaces only the master-data tables in one MySQL transaction; state and control-plane tables are kept."
+      "reviewedRootHash": "13df87138e24b63adbdb014edb4aea5a21a1d1e0a81da2d52efd2795b4cde004",
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only database population script (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Replaces only the master-data tables in one MySQL transaction; state and control-plane tables are kept. Re-reviewed 2026-09-28 after catalog-sync 1.1.0 / data-storage 2.1.0 (CAT-TASK-002): refuses to run while catalog projections exist unless --discard-catalog-projections (then marks catalog runs discarded); deletes children before parents and upserts parents first for the new foreign keys; nulls unknown master realms; derives quests/realm_creatures/creature_drops; main() exported with a fetch seam and runs only when invoked directly."
     },
     "session.mjs": {
       "disposition": "retain-root",
@@ -689,6 +695,56 @@
       "reviewedRootHash": "0ec798507ce6f925eec60f71aca71f7dde5148daa9a8aa6fbd10b31987367522",
       "owners": [],
       "rationale": "Root-only MySQL pool wrapper (DATA-TASK-004 / AC-DATA-007): registry settings, bounded pool, no multi-statement queries, password never in errors."
+    },
+    "_gg_data/handler/catalogStore.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "bccf33f6e0fb20da1897a81c9bcc8cc0a683527d501fec1db56d61ae35d9b0a7",
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas."
+    },
+    "_gg_data/handler/servingRelations.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "a8a8571d7ad4d74d3253213c6f86a82b6e29981a6acbd02247ca90063275eb26",
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Derives quests, realm_creatures, and creature_drops from the legacy JSON columns; unresolved references are skipped. Shared by populate_db.mjs and migration 004."
+    },
+    "_gg_data/migrations/003_catalog_sync.sql": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "0e6cfcea58cb1162ce801e6498278d9c593d483fa961002bd88dca46c9b24490",
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Idempotent MySQL migration: normalized serving relations with foreign keys and the catalog provenance tables."
+    },
+    "_gg_data/migrations/004_serving_relations.mjs": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "2c692bb179fffc8b7f7858d21e4798d8705b1bb5dd4c7ac338d056600ed0706b",
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Guarded foreign-key retrofit on realms.master_realm_id and relics.realm_id (dangling rows fixed first) and relation backfill from legacy JSON; safe to re-run."
+    },
+    "docs/catalog-sync-control-plane-plan.md": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "ebbd0614dd78756a7c0916afb96302521fa121ccefc67a422ce17c829f7b6d80",
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-25 with catalog-sync-v1 and updated 2026-09-28 (DEC-CAT-008..011). Delivery plan; the spec remains the contract."
     }
   }
 }

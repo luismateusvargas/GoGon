@@ -1,11 +1,13 @@
 // migrationRunner.js - Database Migration System for GoGon
-// Applies _gg_data/migrations/*.sql in file-name order, one statement at a time (the pool never
-// allows multi-statement queries). MySQL commits DDL implicitly, so a migration is not atomic:
+// Applies _gg_data/migrations/*.sql and *.mjs in file-name order. SQL files run one statement at a
+// time (the pool never allows multi-statement queries); an .mjs file exports `up(client)`, for steps
+// plain SQL cannot make idempotent (CAT-TASK-002: guarded foreign-key retrofits and backfills). MySQL commits DDL implicitly, so a migration is not atomic:
 // every statement must be idempotent, and a failed file is not recorded so it re-runs once fixed.
 // Project: GoGon (GG) - data-storage-v1 2.0.0 / DATA-TASK-004 / AC-DATA-001
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /**
  * Splits a SQL script into statements on top-level semicolons, dropping `--` and `/* *\/` comments.
@@ -66,7 +68,7 @@ export async function runMigrations(client, migrationsDir) {
     const applied = new Set((await client.query('SELECT version FROM schema_migrations')).map(row => row.version));
 
     const files = fs.readdirSync(migrationsDir)
-        .filter(file => file.endsWith('.sql'))
+        .filter(file => file.endsWith('.sql') || file.endsWith('.mjs'))
         .sort(); // 001, 002, ...
 
     const done = [];
@@ -74,8 +76,15 @@ export async function runMigrations(client, migrationsDir) {
         if (applied.has(file)) continue;
         console.log(`[GG_DB] Applying migration: ${file}...`);
         try {
-            for (const statement of splitStatements(fs.readFileSync(path.join(migrationsDir, file), 'utf8'))) {
-                await client.query(statement);
+            const full = path.join(migrationsDir, file);
+            if (file.endsWith('.mjs')) {
+                const { up } = await import(pathToFileURL(full).href);
+                if (typeof up !== 'function') throw new Error(`${file} does not export up(client).`);
+                await up(client);
+            } else {
+                for (const statement of splitStatements(fs.readFileSync(full, 'utf8'))) {
+                    await client.query(statement);
+                }
             }
             await client.query('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)', [file, new Date().toISOString()]);
         } catch (error) {
