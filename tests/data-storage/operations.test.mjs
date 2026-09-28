@@ -100,7 +100,7 @@ test('AC-DATA-001: the project migrations create the expected tables, once per p
         'quests', 'realm_creatures', 'creature_drops', 'catalog_runs', 'catalog_observations', 'catalog_entities']) {
         assert.ok(await tableExists(client, t), `missing table ${t}`);
     }
-    assert.deepEqual(await versions(client), ['001_initial_schema.sql', '002_control_plane.sql', '003_catalog_sync.sql', '004_serving_relations.mjs']);
+    assert.deepEqual(await versions(client), ['001_initial_schema.sql', '002_control_plane.sql', '003_catalog_sync.sql', '004_serving_relations.mjs', '005_catalog_key_width.sql']);
 });
 
 // --- AC-DATA-002: FIFO lists -----------------------------------------------------------------------

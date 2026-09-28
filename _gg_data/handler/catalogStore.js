@@ -536,8 +536,9 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             const at = iso();
             const normalized = observations.map((o, i) => {
                 try {
+                    if (!o || typeof o !== 'object' || Array.isArray(o)) throw invalid('Each observation must be an object.', 'observations');
                     if (o.observedAt !== undefined && !(typeof o.observedAt === 'string' && ISO.test(o.observedAt))) throw invalid('observedAt must be a UTC ISO-8601 timestamp.', 'observedAt');
-                    return { ...normalizeObservation(o?.kind, o?.payload), observedAt: o.observedAt ?? at };
+                    return { ...normalizeObservation(o.kind, o.payload), observedAt: o.observedAt ?? at };
                 } catch (e) {
                     if (e instanceof CatalogError) e.index = i;
                     throw e;
@@ -699,8 +700,14 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         },
 
         /** True once any serving row is under catalog provenance (scripts/populate_db.mjs guard). */
-        async hasCatalogProjections() {
-            return (await db.query('SELECT 1 AS present FROM catalog_entities LIMIT 1')).length > 0;
+        /**
+         * True when a legacy reload would discard catalog work: projected serving rows, or a recorded
+         * run that has not projected yet. scripts/populate_db.mjs then requires the discard flag.
+         * @param {{ query: Function }} [q] - a transaction, to check under its revision lock
+         */
+        async hasDiscardableWork(q = db) {
+            if ((await q.query('SELECT 1 AS present FROM catalog_entities LIMIT 1')).length) return true;
+            return (await q.query("SELECT 1 AS present FROM catalog_runs WHERE status = 'running' LIMIT 1")).length > 0;
         },
 
         /**
@@ -714,9 +721,8 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
          */
         async discardProjections(tx, { allowDiscard }) {
             await lockRevision(tx);
-            const [present] = await tx.query('SELECT 1 AS present FROM catalog_entities LIMIT 1');
-            if (present && !allowDiscard) {
-                throw new CatalogError('conflict', 'The catalog has projected data into these tables. Re-run with --discard-catalog-projections to replace it (catalog runs become discarded and cannot be rolled back).');
+            if (!allowDiscard && await this.hasDiscardableWork(tx)) {
+                throw new CatalogError('conflict', 'The catalog has projected data or a recorded run waiting to project. Re-run with --discard-catalog-projections to replace it (those runs become discarded and cannot be projected or rolled back).');
             }
             await tx.query('DELETE FROM catalog_entities');
             // Baseline snapshots describe the rows being replaced, and a recorded but unprojected run

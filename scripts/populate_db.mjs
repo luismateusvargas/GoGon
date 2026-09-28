@@ -68,8 +68,8 @@ export async function main({ argv = process.argv.slice(2), fetchJson: fetchSourc
     //    avoids a pointless download; discardProjections() repeats it under the revision lock.
     const db = await getConnection();
     const catalog = createCatalogStore(db);
-    if (await catalog.hasCatalogProjections() && !argv.includes(DISCARD_FLAG)) {
-        throw new Error(`The catalog has projected data into these tables. Re-run with ${DISCARD_FLAG} to replace it (catalog runs become discarded and cannot be rolled back).`);
+    if (await catalog.hasDiscardableWork() && !argv.includes(DISCARD_FLAG)) {
+        throw new Error(`The catalog has projected data or a recorded run waiting to project. Re-run with ${DISCARD_FLAG} to replace it (those runs become discarded and cannot be projected or rolled back).`);
     }
 
     // 1. Fetch Data

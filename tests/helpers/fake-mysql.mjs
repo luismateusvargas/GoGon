@@ -9,6 +9,8 @@
 // foreign key to an existing table, so ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY only records
 // the constraint name where information_schema.TABLE_CONSTRAINTS lookups find it; retrofitted keys
 // are enforced on the real-MySQL CI run only (CAT-TASK-002).
+// ALTER TABLE ... MODIFY col VARCHAR(n) is a no-op here (SQLite ignores VARCHAR widths); column
+// widths are checked on the real-MySQL run.
 import { DatabaseSync } from 'node:sqlite';
 
 /** Shared state, like one MySQL server per test process: databases survive pool.end(). */
@@ -71,6 +73,8 @@ export function translate(sql) {
     // Databases are created on first use by createPool({ database }); nothing to run.
     if (/^(CREATE|DROP)\s+DATABASE\b/i.test(s)) return [];
 
+    // SQLite does not enforce VARCHAR widths, so widening a VARCHAR column is exactly a no-op.
+    if (/^ALTER\s+TABLE\s+`?\w+`?\s+MODIFY\s+(?:COLUMN\s+)?`?\w+`?\s+VARCHAR\(\d+\)(?:\s+NOT\s+NULL)?$/i.test(s)) return [];
     const fk = s.match(/^ALTER\s+TABLE\s+`?(\w+)`?\s+ADD\s+CONSTRAINT\s+`?(\w+)`?\s+FOREIGN\s+KEY\b/i);
     if (fk) return [`INSERT INTO ${FAKE_CONSTRAINTS} (TABLE_NAME, CONSTRAINT_NAME) VALUES ('${fk[1]}', '${fk[2]}')`];
     if (/\binformation_schema\.TABLE_CONSTRAINTS\b/i.test(s)) {

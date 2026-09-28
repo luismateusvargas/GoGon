@@ -135,6 +135,11 @@ test('AC-CAT-006: an invalid observation batch is rejected before any catalog or
         [{ mode: 'seed', source: 'guide_baseline', observations: [obs('relation', { type: 'realm_creature', realm_id: 1 })] }, 'incomplete relation'],
         [{ mode: 'seed', source: 'guide_baseline', observations: [obs('creature', { id: 6, description: 'bell\u0007' })] }, 'control character'],
         [{ mode: 'seed', source: 'guide_baseline', observations: [] }, 'empty batch'],
+        [{ mode: 'seed', source: 'guide_baseline', observations: [null] }, 'null observation'],
+        [{ mode: 'seed', source: 'guide_baseline', observations: [valid, 'item'] }, 'string observation'],
+        [{ mode: 'seed', source: 'guide_baseline', observations: [[valid]] }, 'array observation'],
+        [{ mode: 'seed', source: 'guide_baseline', observations: [obs('item', null)] }, 'null payload'],
+        [{ mode: 'seed', source: 'guide_baseline', observations: 'item' }, 'observations not a list'],
     ];
     for (const [input, label] of cases) await rejectsWith(store.recordRun(input), 'invalid').catch(e => { throw new Error(`${label}: ${e.message}`); });
     assert.equal(await count(db, 'catalog_runs'), 0);
@@ -377,7 +382,7 @@ test('AC-CAT-006: populate_db refuses to replace catalog projections unless expl
     assert.deepEqual({ realmCreatures: counts.realmCreatures, creatureDrops: counts.creatureDrops, quests: counts.quests, relics: counts.relics }, { realmCreatures: 2, creatureDrops: 1, quests: 1, relics: 1 });
     assert.equal((await db.query('SELECT master_realm_id FROM realms WHERE id = 11'))[0].master_realm_id, null, 'unknown master realm -> NULL');
     assert.equal((await db.query('SELECT name FROM creatures WHERE id = 80'))[0].name, 'Guide beast');
-    assert.equal(await store.hasCatalogProjections(), false);
+    assert.equal(await store.hasDiscardableWork(), false);
     assert.equal((await store.getRun(run.runId)).status, 'discarded');
     await rejectsWith(store.planRollback(run.runId), 'conflict');
 });
@@ -411,7 +416,7 @@ test('AC-CAT-006: the legacy reload rechecks for projections under the revision 
     await assert.rejects(quietly(() => main({ argv: [], fetchJson })), /--discard-catalog-projections/);
     assert.equal((await db.query('SELECT name FROM creatures WHERE id = 95'))[0].name, 'Seen during fetch');
     assert.equal((await store.getRun(run.runId)).status, 'succeeded');
-    assert.equal(await store.hasCatalogProjections(), true);
+    assert.equal(await store.hasDiscardableWork(), true);
 });
 
 test('AC-CAT-010: a later rollback never restores a reference to a master realm that is gone', async () => {
@@ -493,4 +498,34 @@ test('CAT-TASK-002: a maximum-length relic or quest name fits the entity-key col
     assert.ok(keys[0].length <= MAX_ENTITY_KEY);
     const ddl = (await import('node:fs')).readFileSync('_gg_data/migrations/003_catalog_sync.sql', 'utf8');
     assert.equal([...ddl.matchAll(/entity_key VARCHAR\((\d+)\)/g)].map(m => Number(m[1])).filter(n => n !== MAX_ENTITY_KEY).length, 0);
+});
+
+test('AC-CAT-006: a reload without the discard flag refuses to cancel a recorded run', async () => {
+    const { db, store } = await setup();
+    const recorded = await store.recordRun({ mode: 'observe_realm', source: 'game_session', observations: [obs('creature', { id: 6, name: 'Pending' })] });
+    assert.equal(await count(db, 'catalog_entities'), 0, 'nothing is projected yet');
+    await rejectsWith(db.transaction(tx => store.discardProjections(tx, { allowDiscard: false })), 'conflict');
+    assert.equal((await store.getRun(recorded.runId)).status, 'running');
+    await store.projectRun(recorded.runId);
+    assert.equal((await db.query('SELECT name FROM creatures WHERE id = 6'))[0].name, 'Pending');
+});
+
+test('CAT-TASK-002: a database that applied the narrow 003 gets 255-character entity keys from 005', async () => {
+    const fsm = await import('node:fs');
+    const dir = path.join(tmp, 'narrow003');
+    fsm.mkdirSync(dir, { recursive: true });
+    for (const f of ['001_initial_schema.sql', '002_control_plane.sql']) copyFileSync(path.resolve('_gg_data/migrations', f), path.join(dir, f));
+    const current = fsm.readFileSync(path.resolve('_gg_data/migrations/003_catalog_sync.sql'), 'utf8');
+    const narrow = current.replace(/entity_key VARCHAR\(255\)/g, 'entity_key VARCHAR(191)');
+    assert.notEqual(narrow, current);
+    fsm.writeFileSync(path.join(dir, '003_catalog_sync.sql'), narrow);   // the first, released-to-branch version
+    const db = await quietly(() => freshClient({ migrate: false }));
+    await quietly(() => runMigrations(db, dir));
+    const applied = await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations')));
+    assert.deepEqual(applied, ['004_serving_relations.mjs', '005_catalog_key_width.sql'], '003 is skipped by name; 005 widens it');
+    if (REAL_MYSQL) {
+        const widths = await db.query("SELECT TABLE_NAME AS t, CHARACTER_MAXIMUM_LENGTH AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'entity_key' ORDER BY TABLE_NAME");
+        assert.deepEqual(widths.map(w => [w.t, Number(w.n)]), [['catalog_entities', 255], ['catalog_observations', 255]]);
+    }
+    assert.deepEqual(await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations'))), [], 'idempotent');
 });
