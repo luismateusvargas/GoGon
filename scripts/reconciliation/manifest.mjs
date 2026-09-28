@@ -3,8 +3,7 @@
 // against the reviewed dispositions. backup/ is read-only evidence: this module only
 // reads files and never copies, merges, or prints file contents.
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { lstat, readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export const DISPOSITIONS = Object.freeze(['port', 'retain-root', 'import-data', 'retire-legacy']);
@@ -74,14 +73,20 @@ export async function listFiles(treeRoot, side) {
     return out.sort();
 }
 
-export function sha256File(file) {
-    return new Promise((resolve, reject) => {
-        const hash = createHash('sha256');
-        createReadStream(file)
-            .on('error', reject)
-            .on('data', chunk => hash.update(chunk))
-            .on('end', () => resolve(hash.digest('hex')));
-    });
+/**
+ * The bytes a content hash covers. A text file (no NUL byte) has every CRLF replaced by LF, so the
+ * same content hashes the same in a CRLF checkout (Windows, core.autocrlf) and an LF one; a binary
+ * file is hashed as-is. REC-TASK-007
+ * @param {Buffer} bytes
+ */
+export function canonicalContent(bytes) {
+    if (bytes.includes(0)) return bytes;
+    return Buffer.from(bytes.toString('latin1').replace(/\r\n/g, '\n'), 'latin1');
+}
+
+/** SHA-256 of a file's canonical content (see canonicalContent). */
+export async function sha256File(file) {
+    return createHash('sha256').update(canonicalContent(await readFile(file))).digest('hex');
 }
 
 // Hardcoded credentials that must never be ported. Only a boolean is recorded.
@@ -100,10 +105,10 @@ export async function isSecretBearing(file) {
 
 async function describeSide(treeRoot, rel) {
     const file = path.join(treeRoot, rel);
-    const stat = await lstat(file);
+    const content = canonicalContent(await readFile(file));
     return {
-        hash: await sha256File(file),
-        size: stat.size,
+        hash: createHash('sha256').update(content).digest('hex'),
+        size: content.length,   // canonical size, so it matches across checkouts too
         secretBearing: await isSecretBearing(file),
     };
 }

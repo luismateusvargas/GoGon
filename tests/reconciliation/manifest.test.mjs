@@ -9,7 +9,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-    REQUIRED_RETAIN_ROOT, evaluate, exclusionReason, listFiles, scanTrees, serializeManifest,
+    REQUIRED_RETAIN_ROOT, canonicalContent, evaluate, exclusionReason, listFiles, scanTrees, serializeManifest,
 } from '../../scripts/reconciliation/manifest.mjs';
 
 const WORKSPACE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -200,10 +200,29 @@ test('AC-REC-001 workspace: reviewed dispositions cover the real trees and the m
     const { manifest, failures } = evaluate(scan, review);
     assert.deepEqual(failures, [], 'run `npm run reconcile:preflight` for details, then re-review changed paths');
 
-    const committed = await readFile(path.join(WORKSPACE, 'reconciliation', 'manifest.json'), 'utf8');
+    const committed = canonicalContent(await readFile(path.join(WORKSPACE, 'reconciliation', 'manifest.json'))).toString('utf8');
     assert.equal(committed, serializeManifest(manifest), 'regenerate with `npm run reconcile:manifest`');
     assert.ok(manifest.entries.every(e => !/(^|\/)\.env/.test(e.path) && !e.path.includes('node_modules/')));
 
     const after = await Promise.all(backupFiles.map(async f => sha(await readFile(path.join(backupDir, f)))));
     assert.deepEqual(after, before, 'backup/ must remain read-only evidence');
+});
+
+test('REC-TASK-007: hashes do not depend on the checkout line endings; binary files stay byte-exact', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gg-rec-eol-'));
+    try {
+        await mkdir(path.join(dir, 'backup'), { recursive: true });
+        await writeFile(path.join(dir, 'app.js'), 'const a = 1;\r\nexport default a;\r\n');          // CRLF checkout
+        await writeFile(path.join(dir, 'backup', 'app.js'), 'const a = 1;\nexport default a;\n');  // LF evidence
+        await writeFile(path.join(dir, 'image.bin'), Buffer.from([0, 13, 10, 1]));
+        const scan = await scanTrees({ rootDir: dir });
+        assert.deepEqual(scan.identical.map(i => i.path), ['app.js'], 'line endings alone are not a difference');
+        assert.equal(scan.identical[0].hash, sha('const a = 1;\nexport default a;\n'));
+        const bin = scan.entries.find(e => e.path === 'image.bin');
+        assert.equal(bin.rootHash, sha(Buffer.from([0, 13, 10, 1])));
+        assert.equal(bin.rootSize, 4);
+        assert.deepEqual(canonicalContent(Buffer.from('a\r\nb\rc\n')), Buffer.from('a\nb\rc\n'), 'only CRLF pairs change');
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
 });

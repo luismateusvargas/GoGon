@@ -105,7 +105,7 @@ export async function clearTable(tableName) {
 
 /**
  * A generic function to bulk-insert/update data into a table from a scraper.
- * Rows are replaced in chunks inside one transaction.
+ * Rows are upserted in chunks inside one transaction.
  * @param {string} tableName - The name of the table ('items', 'creatures', ...).
  * @param {Array<object>} data - The array of objects from the scraper.
  */
@@ -122,6 +122,9 @@ export async function bulkUpdateDatabase(tableName, data) {
     if (bad !== undefined) throw new Error(`[GG_DB] Invalid column name for ${tableName}: "${String(bad).slice(0, 64)}"`);
     const columnList = columns.map(col => `\`${col}\``).join(', ');
     const rowPlaceholder = `(${columns.map(() => '?').join(', ')})`;
+    // An upsert, not REPLACE INTO: REPLACE deletes the old row first, which would CASCADE through the
+    // relation tables' foreign keys (CAT-TASK-002). Columns absent from `data` keep their values.
+    const updates = (columns.length > 1 ? columns.filter(col => col !== 'id') : columns).map(col => `\`${col}\` = new.\`${col}\``).join(', ');
 
     console.log(`[GG_DB] Starting bulk update for ${tableName}...`);
     await (await db()).transaction(async tx => {
@@ -135,7 +138,7 @@ export async function bulkUpdateDatabase(tableName, data) {
                     values.push(value === undefined ? null : (typeof value === 'object' && value !== null) ? JSON.stringify(value) : value);
                 }
             }
-            await tx.query(`REPLACE INTO ${tableName} (${columnList}) VALUES ${chunk.map(() => rowPlaceholder).join(', ')}`, values);
+            await tx.query(`INSERT INTO ${tableName} (${columnList}) VALUES ${chunk.map(() => rowPlaceholder).join(', ')} AS new ON DUPLICATE KEY UPDATE ${updates}`, values);
         }
     });
     console.log(`[GG_DB] Successfully updated ${data.length} records in ${tableName}.`);

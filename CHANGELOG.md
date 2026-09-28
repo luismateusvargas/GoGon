@@ -1,5 +1,15 @@
 # Gon Project - Changelog
 
+## Unreleased
+
+- Catalog store (CAT-TASK-002, `catalog-sync-v1` 1.1.0, `data-storage-v1` 2.1.0): migrations 003/004 add the catalog provenance tables (runs, jobs, content-addressed observations, run links, projected entities, one-use rollback plans) and normalized serving relations with foreign keys (`quests`, `realm_creatures`, `creature_drops`, plus keys retrofitted onto `realms.master_realm_id` and `relics.realm_id`, after clearing dangling rows). `_gg_data/handler/catalogStore.js` stores provenance before projecting, keeps a first-touch baseline of legacy rows, and rolls a run back by replaying the remaining provenance behind a 10-minute, one-use, exactly-confirmed plan. `bulkUpdateDatabase` and `scripts/populate_db.mjs` upsert instead of `REPLACE INTO`; `populate_db.mjs` refuses to replace catalog projections without `--discard-catalog-projections`. [AC-CAT-005] [AC-CAT-006] [AC-CAT-009] [AC-CAT-010]
+- Catalog store review fixes (`catalog-sync-v1` 1.1.3): migration 005 widens catalog entity keys on databases that applied the first migration 003; a reload without `--discard-catalog-projections` is also refused while a recorded run waits to project; malformed observations are rejected as invalid input. [AC-CAT-006]
+- Reconciliation (`backup-reconciliation-v1` 1.6.0, REC-TASK-007): manifest hashes ignore checkout line endings (text CRLF -> LF, binary raw), ending 52 false stale reviews on Windows checkouts; unchanged reviews re-pinned, `GuildMessages.js`, `configValidator.mjs`, and `.gitignore` reviewed again.
+- Catalog store review fixes (`catalog-sync-v1` 1.1.2): an explicit `--discard-catalog-projections` reload retires baseline snapshots and recorded-but-unprojected runs too, and projection rechecks the run under the revision lock, so pre-reload data cannot return; catalog entity keys widen to 255 characters so a 191-character relic or quest name fits. [AC-CAT-006] [AC-CAT-010]
+- Catalog store review fixes (`catalog-sync-v1` 1.1.1): field-level source precedence (game_session > manual_import > guide_baseline) in projection and rollback; the `populate_db.mjs` projection guard is rechecked under the catalog revision lock; rollback and projection never write a reference to a missing master realm, and orphaned relics, quests, and relations are removed rather than restored. [AC-CAT-005] [AC-CAT-006] [AC-CAT-010]
+- Fix: `CONFLICT_PING.DEFAULT_MENTION` referenced an undefined identifier (84e0ced), so importing `app_modules/constants.js` threw a ReferenceError at boot. It is `'@everyone'` again, matching the registry default.
+- Planning: added the locked `catalog-sync-v1` specification and the dependency-ordered Catalog Sync control-plane delivery plan. No catalog collector, database schema, dashboard endpoint, or deployment behavior has been implemented yet. [AC-CAT-001..AC-CAT-010] [CAT-TASK-001..CAT-TASK-008]
+
 ## Project Overview
 **"GoGon" (GG)** - An automated monitoring and notification system for the Fallensword MMORPG. The bot scrapes game data, tracks events, and sends real-time Discord notifications using a sophisticated task scheduler and database-backed state management.
 
@@ -1015,9 +1025,13 @@ SELECT * FROM kv WHERE key = 'processed_bounty_ids';
 
 ## [Unreleased]
 
-> **SemVer:** the changes below are **MAJOR** at the next release. The unauthenticated `/tasks`, `/cache`,
+## v2.0.0 (September 25, 2026) 🐳 **MYSQL, PRIVATE CONTROL PLANE & DOCKER**
+
+> **SemVer:** this is a **MAJOR** release. The unauthenticated `/tasks`, `/cache`,
 > `/config`, and `/metrics` endpoints were removed from the health port (health-metrics-v1 → 2.0.0).
 > GoGon now needs MySQL and `GG_MYSQL_PASSWORD` (data-storage-v1 → 2.0.0).
+> Under Docker Compose, single-quote any `.env` value that contains `$` (for example `GG_ADMIN_PASSWORD_HASH`),
+> or Compose replaces each `$name` segment with a blank string.
 
 ### Fixed: Live-Code Test Gate and MySQL Contract Reconciliation
 - **DATA-TASK-010:** removed the obsolete SQLite import test and the unused `better-sqlite3` dependency. Legacy SQLite data is intentionally disposable; MySQL starts empty and `populate_db.mjs` restores master data.
@@ -1501,9 +1515,9 @@ Tasks DATA-TASK-001, AUTH-TASK-001, ENG-TASK-001, MON-TASK-001, MON-TASK-002, MO
 22. ✅ **DONE** - Add DB population script (`npm run db:populate`)
 23. ✅ **DONE** - Fix Discord batching 6000-char limit bug
 
-### Next Priority (v2.0.0):
-24. ⏳ Create admin dashboard (web UI) phase 1
-25. ⏳ User authentication system
+### ✅ Completed (v2.0.0):
+24. ✅ **DONE** - Create admin dashboard (web UI) phase 1 (private control plane)
+25. ✅ **DONE** - User authentication system (control-plane admin login)
 
 ---
 

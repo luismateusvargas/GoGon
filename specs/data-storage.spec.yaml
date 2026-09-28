@@ -4,15 +4,20 @@
 spec:
   id: "data-storage-v1"
   status: locked
-  version: "2.0.1"
+  version: "2.1.0"
   created: "2026-09-22"
-  updated: "2026-09-24"
+  updated: "2026-09-28"
 
   version_policy:
     sync_group: "data-model"
     depends_on: []
 
   changelog:
+    - version: "2.1.0"
+      date: "2026-09-28"
+      changes:
+        - "Owner decision 2026-09-28 (catalog-sync DEC-CAT-010): master data gets foreign keys. Migration 003 adds quests, realm_creatures, creature_drops; migration 004 retrofits realms.master_realm_id -> master_realms (SET NULL) and relics.realm_id -> realms (CASCADE), clearing dangling rows first, and backfills relations from the legacy JSON columns. Replaces the 'no foreign keys' constraint."
+        - "The migration runner also applies .mjs migrations that export up(client), for steps plain SQL cannot make idempotent. bulkUpdateDatabase upserts (INSERT ... AS new ON DUPLICATE KEY UPDATE) instead of REPLACE INTO; columns missing from the data now keep their values. The test fake translates that upsert and emulates retrofitted-key metadata (enforced on real MySQL only). [CAT-TASK-002]"
     - version: "2.0.1"
       date: "2026-09-24"
       changes:
@@ -264,7 +269,7 @@ constraints:
   - "Default max items stored per FIFO key is 100, except relics (500) and superelites (200)."
   - "Entity cache size limit: 500 items, 500 creatures, 200 realms."
   - "The live database is MySQL 8.4 (compose service mysql). Tables use InnoDB and utf8mb4_bin, so key comparison stays exact and case-sensitive as it was in SQLite."
-  - "No foreign keys between master-data tables: scrapers bulk-replace tables in any order."
+  - "Master data has foreign keys (2.1.0): writers upsert and never REPLACE INTO a parent row; bulk reloads delete children before parents and insert parents first (scripts/populate_db.mjs)."
   - "MySQL starts empty; master data is repopulated by scrapers and scripts/populate_db.mjs, never seeded from SQLite."
   - "Timestamps are ISO-8601 UTC strings written by the application, so the same SQL runs on MySQL and on the test fake."
 
