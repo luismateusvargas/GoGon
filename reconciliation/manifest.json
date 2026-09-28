@@ -10,15 +10,14 @@
   },
   "summary": {
     "paths": 72,
-    "identical": 0,
+    "identical": 1,
     "byDisposition": {
       "import-data": 1,
       "port": 7,
-      "retain-root": 60,
-      "retire-legacy": 3,
-      "unreviewed": 1
+      "retain-root": 61,
+      "retire-legacy": 3
     },
-    "failures": 3
+    "failures": 0
   },
   "entries": [
     {
@@ -49,12 +48,12 @@
       "path": ".gitignore",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "00a4f0b2e20f0988d0fac8453036437198b7e5f11a3ddb2b69c2fe5e0780037a",
+      "rootHash": "3bd433e4399e9eb6cbf053fced515f1912362ddb3c4ffddda00bc4f74072ae4f",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only ignore rules, including .env and database files. Re-reviewed 2026-09-24 after a backup/ rule (added outside this session, benign) and the _gg_data/database/snapshots/ rule (REC-TASK-005). Re-reviewed 2026-09-24 before the first commit: the webhooks.js ignore rule was removed because webhooks.js now holds only registry-backed code (no webhook URLs); .env and database files stay ignored."
+      "rationale": "Root-only ignore rules, including .env and database files. Re-reviewed 2026-09-24 after a backup/ rule (added outside this session, benign) and the _gg_data/database/snapshots/ rule (REC-TASK-005). Re-reviewed 2026-09-24 before the first commit: the webhooks.js ignore rule was removed because webhooks.js now holds only registry-backed code (no webhook URLs); .env and database files stay ignored. Re-reviewed 2026-09-28 (REC-TASK-007): owner change 2026-09-28 ignores out/ (generated code graph, removed from tracking) and ends with a newline. Pinned to the owner working-tree edit, which must be committed together with the out/ removal."
     },
     {
       "path": "Dockerfile",
@@ -73,7 +72,7 @@
       "path": "Gon.esproj",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "f10abe618dd8da2a3e8cae0cde04b0d0ed1f6bf1df9a6652e31e45247ab91df0",
+      "rootHash": "da318b19e27ee579a40ac642023c2fd6115da1da67102da87d910f53848f147c",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
@@ -84,7 +83,7 @@
       "path": "_gg_data/handler/cacheLayer.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "5bf0e5d119f50931c29f71755975c6bdc7e307c26f24cc925f07399cbae23b03",
+      "rootHash": "008e45bc4afa1c95fb96a58788c6951cdfc1dbd9802d4e81f33c6d1c387b6197",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
@@ -95,14 +94,14 @@
       "path": "_gg_data/handler/catalogStore.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "45e7c261105a0f4c8223038b0e0bccfc8d0fa2174ffbd12e9d04f3062a7b2106",
+      "rootHash": "99e3cab5a5f47559414031bda87dbb0c79a4261466687daa55f52a009a302eb0",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "catalog-sync-v1:CAT-TASK-002"
       ],
-      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas. Re-reviewed 2026-09-28 (catalog-sync 1.1.1 review fixes): projection and rollback rebuild state from provenance under field-level source precedence; restores resolve parents (unknown master realm -> NULL, orphaned relic/quest/relation removed); discardProjections rechecks for projections under the revision lock. Re-reviewed 2026-09-28 (catalog-sync 1.1.2): discard retires every succeeded/running run including baselines; recordRun takes and projectRun rechecks under the revision lock; entity keys capped at MAX_ENTITY_KEY (255)."
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas. Re-reviewed 2026-09-28 (catalog-sync 1.1.1 review fixes): projection and rollback rebuild state from provenance under field-level source precedence; restores resolve parents (unknown master realm -> NULL, orphaned relic/quest/relation removed); discardProjections rechecks for projections under the revision lock. Re-reviewed 2026-09-28 (catalog-sync 1.1.2): discard retires every succeeded/running run including baselines; recordRun takes and projectRun rechecks under the revision lock; entity keys capped at MAX_ENTITY_KEY (255). Re-reviewed 2026-09-28 (catalog-sync 1.1.3): hasDiscardableWork (projected entities or a running run) gates discardProjections without the flag; recordRun rejects non-object observations as invalid."
     },
     {
       "path": "_gg_data/handler/controlStore.js",
@@ -218,6 +217,19 @@
       "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Guarded foreign-key retrofit on realms.master_realm_id and relics.realm_id (dangling rows fixed first) and relation backfill from legacy JSON; safe to re-run."
     },
     {
+      "path": "_gg_data/migrations/005_catalog_key_width.sql",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "8076bf44149bc338cb190d06747db56df29c8eda05f132acc75ebad4900f8905",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [
+        "catalog-sync-v1:CAT-TASK-002"
+      ],
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002, catalog-sync 1.1.3). Idempotent ALTER ... MODIFY widening catalog entity_key to VARCHAR(255) on databases that applied the first 003."
+    },
+    {
       "path": "_sws_data/database/sws_data.db",
       "status": "backup-only",
       "backupHash": "af800c5f4981735a6b3e8e1c0dafacc7cfcfe3a4a3b6d5d53fbbc4cf2dc322e6",
@@ -234,7 +246,7 @@
     {
       "path": "_sws_data/handler/sws_database.js",
       "status": "backup-only",
-      "backupHash": "6827f3d467cc9c6a10a9039a8fb9120b724909e411d37497426f28c421acd6ed",
+      "backupHash": "f9d5050640367a87a188d79edfec35de45ad4fed5ba8c04e8dab072be9a7e562",
       "rootHash": null,
       "disposition": "retire-legacy",
       "reviewState": "reviewed",
@@ -322,13 +334,13 @@
     {
       "path": "app_modules/GuildMessages.js",
       "status": "differing",
-      "backupHash": "eca80baac0d55e6e9fe50020808363c65d7d95c6dd6e4479690e26d1bf7d4613",
+      "backupHash": "5b1ba0c9e0e67a85123e625ea25591d2d1a13368fa83f2b354899bff348b20fa",
       "rootHash": "3f2aa48e12032370d858ba96d91afa61362110d3cc241d1f477648bb81804fa8",
       "disposition": "retain-root",
-      "reviewState": "stale",
+      "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Backup-only lines are the same loader with console logging; root adds structured logging. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited."
+      "rationale": "Backup-only lines are the same loader with console logging; root adds structured logging. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-28 (REC-TASK-007): the pinned hash matched no committed version, so the committed file was reviewed in full against backup: only the async gg_database calls (awaited getContent/setContent) and LOG/WARN/ERR logging (imported from core.js) differ; syntax checked."
     },
     {
       "path": "app_modules/Ladder.js",
@@ -481,10 +493,10 @@
       "backupHash": null,
       "rootHash": "a6f20be7786fa3baf749ea89ca59dcd23f9dd30caf445a2afa53e70c2125939b",
       "disposition": "retain-root",
-      "reviewState": "stale",
+      "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only configuration validation (required by REC-TASK-001). Re-reviewed 2026-09-24 (AUTH-TASK-001): fallback lookup follows ENV_ALIASES, same GG_ > SWS_ > FS_ order as session.mjs. Re-reviewed 2026-09-24: GG_DEBUG is read through the runtime registry."
+      "rationale": "Root-only configuration validation (required by REC-TASK-001). Re-reviewed 2026-09-24 (AUTH-TASK-001): fallback lookup follows ENV_ALIASES, same GG_ > SWS_ > FS_ order as session.mjs. Re-reviewed 2026-09-24: GG_DEBUG is read through the runtime registry. Re-reviewed 2026-09-28 (REC-TASK-007): the pinned hash matched no committed version, so the committed file was reviewed in full: ENV_ALIASES lookup order and GG_DEBUG via the runtime registry as recorded; invalid-value messages print only non-secret values (numeric character ID, port)."
     },
     {
       "path": "control-plane/accountSwitch.mjs",
@@ -619,8 +631,8 @@
     {
       "path": "discord_modules/buff_data.json",
       "status": "differing",
-      "backupHash": "43c6e3a22d4b0bb80f0f0f2baa6333776ee8df532340644f2338ffde66973b2d",
-      "rootHash": "2ba002395a38a78ecedf7c47cea2531e4fc4c029f96b7f783d9f99a65c1e2d00",
+      "backupHash": "f678facb58baab71969c35df35fe31ae78f17072a6ca4bf4ca498636276d820a",
+      "rootHash": "9a63736fa4d0be7d190cf7a15377318ee48558dc4228eadec06a02d5e0054dcc",
       "disposition": "port",
       "reviewState": "reviewed",
       "secretBearing": false,
@@ -636,8 +648,8 @@
     {
       "path": "discord_modules/buffs.js",
       "status": "differing",
-      "backupHash": "dcfe4455bf786d4c1c3a6111373b1737d0c232d400c286894a453a7c949273ab",
-      "rootHash": "8c0c0e00a421df78d375834ec911ca39c84c11368a046a89addf1a21eb174db5",
+      "backupHash": "e771d59f7040e9ce0302e70e6d436e27286fb82c7340bb32317784a130e166b4",
+      "rootHash": "ce7842504dc7baab21aac3f8debb9dc66b2d565423bb67fd67f0d7b910838c3c",
       "disposition": "port",
       "reviewState": "reviewed",
       "secretBearing": false,
@@ -669,8 +681,8 @@
     {
       "path": "discord_modules/gvg.js",
       "status": "differing",
-      "backupHash": "2fd671876d116975b18e3d7578ad3d5ac9fcc4a74a9f79a991377e8c8c0d77b8",
-      "rootHash": "6b17e7511156ef6937b66cb5e8dfa1c885135da40b998d7507bb989897daa6e4",
+      "backupHash": "dd3238b3cbbf285cd57629e5560fd0ef9041a1281d7224c860ece39e9e5c651a",
+      "rootHash": "cc544aa83edc3e780f49429ee611d82fa7516d8448950f9abe230d0b09992d78",
       "disposition": "port",
       "reviewState": "reviewed",
       "secretBearing": false,
@@ -693,8 +705,8 @@
     {
       "path": "discord_modules/inventory.js",
       "status": "differing",
-      "backupHash": "3c6cd0efbf17abb7a7809dc2c7ba1f6155200f9e741a9875ea68f6439c7654b6",
-      "rootHash": "e5dafe403d6a35b819707307708698f04a8b8bd0ce4ce2823ebe0306b7b7b3fd",
+      "backupHash": "74378ca3d07e8d0c5de098b4aa6e7da4a9f441ee0f604cf5ce6b4f6197176d62",
+      "rootHash": "ba1850bb2e33099c8970adfe13eaf4233e348d864cebf346c7bea585c59e1b0e",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
@@ -749,7 +761,7 @@
     {
       "path": "game_modules/API.js",
       "status": "differing",
-      "backupHash": "8915d9dbde2d17a7eee0b6c41473c3c53ed6815495178b87bfe30c46940f4684",
+      "backupHash": "f8a2dbd232120fde9ec2b3f158cec5457e1c9a757c7b75ce74f66067b4cfc2cc",
       "rootHash": "08e4987925521efdacf733e06a0070c9c608f4e96d2f7f239be9b78d6a78828b",
       "disposition": "retain-root",
       "reviewState": "reviewed",
@@ -758,17 +770,6 @@
         "game-monitors-v1:MON-TASK-003"
       ],
       "rationale": "Root is a superset (arena subcmd, extra endpoints). Re-reviewed 2026-09-24 (MON-TASK-003): currency.type/items.displayImage template literals and the fetchWorldMap stray bracket fixed in root."
-    },
-    {
-      "path": "game_modules/buffParser.js",
-      "status": "differing",
-      "backupHash": "324a7c11b38b85099e6f11765162bf7321993875894095b4a7f504a48a52a7ce",
-      "rootHash": "56f49301e0cc9169cf70067c081ec5dd2c60cebaea74da0fbe808560a4abfa87",
-      "disposition": null,
-      "reviewState": "unreviewed",
-      "secretBearing": false,
-      "owners": [],
-      "rationale": null
     },
     {
       "path": "healthCheck.mjs",
@@ -785,7 +786,7 @@
       "path": "metrics.mjs",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "7be3f959375a59b0e20828e13539088052730a5d6676d92811a28b1a7cf5d8a2",
+      "rootHash": "6f0d848d483d655292258226215f3e94dbb40b2fe9af2c70b9af3196f3078ee1",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
@@ -795,7 +796,7 @@
     {
       "path": "package-lock.json",
       "status": "differing",
-      "backupHash": "b79a71c10a441951c4e4cd6b1f1c5e193b0156fd4c76baf82aa0ad20cc2888a7",
+      "backupHash": "0edefd79f1931593428b34a4301a8533d87f403779720b60cd9229fc9a5dbc4b",
       "rootHash": "f4abde9005964e918856bf8b6d9a9c4b2f657b8a63cec17e21ef1cea119b01fb",
       "disposition": "retain-root",
       "reviewState": "reviewed",
@@ -806,7 +807,7 @@
     {
       "path": "package.json",
       "status": "differing",
-      "backupHash": "136c33a22f0b5d228b1557dac44bb0d92d5b6413229cc607a008316478c43e22",
+      "backupHash": "925c7eea648a595619a0452ce90363ebb5120334fc12161610931c740760c210",
       "rootHash": "f00d969fc7e4d594c18fe6254a2bb2784da315e04ebbf2a7ebc89c2832f70fed",
       "disposition": "retain-root",
       "reviewState": "reviewed",
@@ -817,7 +818,7 @@
     {
       "path": "runSWS.bat",
       "status": "backup-only",
-      "backupHash": "2306d17063658581b5884129e44e4bd40f3dba3e607f963b2dfc2b9ca5f8f78a",
+      "backupHash": "8ae3701be06510935a94cb30a1ed74bfcff3e8421983e94cb4ae5fef964c8f03",
       "rootHash": null,
       "disposition": "retire-legacy",
       "reviewState": "reviewed",
@@ -909,14 +910,14 @@
       "path": "scripts/populate_db.mjs",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "113e9cf130229c09127059685cafa334911cb56674ee271fa75fef143f1a760f",
+      "rootHash": "e3d5de180c165f1e61dfb32243fb41386f12cf7090e7c4c09ba1cf0dc25f175d",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "catalog-sync-v1:CAT-TASK-002"
       ],
-      "rationale": "Root-only database population script (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Replaces only the master-data tables in one MySQL transaction; state and control-plane tables are kept. Re-reviewed 2026-09-28 after catalog-sync 1.1.0 / data-storage 2.1.0 (CAT-TASK-002): refuses to run while catalog projections exist unless --discard-catalog-projections (then marks catalog runs discarded); deletes children before parents and upserts parents first for the new foreign keys; nulls unknown master realms; derives quests/realm_creatures/creature_drops; main() exported with a fetch seam and runs only when invoked directly. Re-reviewed 2026-09-28 (catalog-sync 1.1.1): the projection guard is repeated under the catalog revision lock inside the reload transaction (discardProjections allowDiscard)."
+      "rationale": "Root-only database population script (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Replaces only the master-data tables in one MySQL transaction; state and control-plane tables are kept. Re-reviewed 2026-09-28 after catalog-sync 1.1.0 / data-storage 2.1.0 (CAT-TASK-002): refuses to run while catalog projections exist unless --discard-catalog-projections (then marks catalog runs discarded); deletes children before parents and upserts parents first for the new foreign keys; nulls unknown master realms; derives quests/realm_creatures/creature_drops; main() exported with a fetch seam and runs only when invoked directly. Re-reviewed 2026-09-28 (catalog-sync 1.1.1): the projection guard is repeated under the catalog revision lock inside the reload transaction (discardProjections allowDiscard). Re-reviewed 2026-09-28 (catalog-sync 1.1.3): the early guard uses hasDiscardableWork, so a pending recorded run also requires --discard-catalog-projections."
     },
     {
       "path": "session.mjs",
@@ -958,7 +959,7 @@
     {
       "path": "utils/db_cleanup.js",
       "status": "backup-only",
-      "backupHash": "607484b3a8dae470d0d34f477debbe9f8577caa8b37c740e7c19e7169dabc972",
+      "backupHash": "71ff6559b16efd789615cc7da53a9a85c81af33dbe2820fd3f83b2a59f0d1240",
       "rootHash": null,
       "disposition": "retire-legacy",
       "reviewState": "reviewed",
@@ -986,5 +987,10 @@
       ]
     }
   ],
-  "identical": []
+  "identical": [
+    {
+      "path": "game_modules/buffParser.js",
+      "hash": "56f49301e0cc9169cf70067c081ec5dd2c60cebaea74da0fbe808560a4abfa87"
+    }
+  ]
 }

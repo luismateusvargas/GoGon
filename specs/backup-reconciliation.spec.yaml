@@ -4,13 +4,17 @@
 spec:
   id: "backup-reconciliation-v1"
   status: draft
-  version: "1.5.0"
+  version: "1.6.0"
   created: "2026-09-23"
-  updated: "2026-09-24"
+  updated: "2026-09-28"
   version_policy:
     sync_group: "reconciliation"
     depends_on: ["auth-session-v1", "data-storage-v1", "discord-integration-v1", "game-monitors-v1", "task-engine-v1"]
   changelog:
+    - version: "1.6.0"
+      date: "2026-09-28"
+      changes:
+        - "REC-TASK-007 DONE: content hashes no longer depend on checkout line endings. A text file (no NUL byte) is hashed with CRLF replaced by LF; binary files are hashed as-is; recorded sizes are canonical too. A Windows checkout with core.autocrlf had reported 52 false stale reviews. Reviews whose file was byte-for-byte what was reviewed (raw or LF) were re-pinned mechanically; files whose content differed were reviewed again (app_modules/GuildMessages.js, configValidator.mjs, .gitignore). Paths that differed from backup/ only in line endings are now identical."
     - version: "1.5.0"
       date: "2026-09-24"
       changes:
@@ -57,8 +61,8 @@ entities:
     fields:
       - { name: path, type: string, constraints: [required, unique] }
       - { name: status, type: string, constraints: [required], description: "differing, root-only, or backup-only" }
-      - { name: backupHash, type: string, constraints: [optional], description: "SHA-256; null only for root-only paths" }
-      - { name: rootHash, type: string, constraints: [optional], description: "SHA-256; null only for backup-only paths" }
+      - { name: backupHash, type: string, constraints: [optional], description: "SHA-256 of the canonical content (text: CRLF -> LF; binary: raw bytes); null only for root-only paths" }
+      - { name: rootHash, type: string, constraints: [optional], description: "SHA-256 of the canonical content (text: CRLF -> LF; binary: raw bytes); null only for backup-only paths" }
       - { name: reviewState, type: string, constraints: [required], description: "reviewed, stale, or unreviewed; only reviewed paths may be merged" }
       - { name: disposition, type: string, constraints: [required], description: "port, retain-root, import-data, or retire-legacy" }
   - name: DatabaseImportReport
@@ -200,4 +204,14 @@ tasks:
     affects: "tests/, package.json"
     depends_on: ["REC-TASK-002", "REC-TASK-003", "REC-TASK-004", "REC-TASK-005", "auth-session-v1:AUTH-TASK-002", "data-storage-v1:DATA-TASK-003", "discord-integration-v1:DISC-TASK-005", "game-monitors-v1:MON-TASK-004", "task-engine-v1:ENG-TASK-002"]
     source: "AC-REC-004"
+    status: DONE
+  - id: REC-TASK-007
+    description: |
+      Make the manifest independent of checkout line endings: hash (and size) the canonical content
+      of each file, CRLF -> LF for text files (no NUL byte) and raw bytes for binary files, and
+      compare the committed manifest the same way. Re-pin only reviews whose file is unchanged
+      since review; review changed files again.
+    affects: "scripts/reconciliation/manifest.mjs, tests/reconciliation/manifest.test.mjs, reconciliation/dispositions.json, reconciliation/manifest.json"
+    depends_on: ["REC-TASK-001"]
+    source: "AC-REC-001"
     status: DONE
