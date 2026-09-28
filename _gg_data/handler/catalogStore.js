@@ -23,6 +23,9 @@ export const MAX_OBSERVATIONS_PER_RUN = 20_000;
 export const MAX_REQUEST_BUDGET = 50;
 export const MAX_CURSOR_BYTES = 1024;
 export const PLAN_TTL_MS = 10 * 60_000;
+// Width of the entity_key columns (migration 003). The longest key is a relic/quest
+// "realm_id:name": 19 digits + ':' + 191 characters = 211.
+export const MAX_ENTITY_KEY = 255;
 const MAX_DEPTH = 8;
 const BASELINE_MODE = 'baseline_snapshot';
 // Field-level precedence (catalog-sync constraint): a field set by a higher-ranked source is never
@@ -136,9 +139,11 @@ export function normalizeObservation(kind, payload) {
     const json = canonicalJson(payload);
     if (Buffer.byteLength(json, 'utf8') > MAX_PAYLOAD_BYTES) throw invalid(`Payload exceeds ${MAX_PAYLOAD_BYTES} bytes.`, 'payload');
     const canonical = JSON.parse(json);
+    const key = entityKey(kind, canonical);
+    if (key.length > MAX_ENTITY_KEY) throw invalid('Entity key is too long.', 'payload');
     return {
         kind,
-        key: entityKey(kind, canonical),
+        key,
         externalId: kind === 'relation' || SCHEMAS[kind].natural ? null : String(canonical.id),
         payload: canonical,
         json,
@@ -541,6 +546,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             const runId = uuid();
             let created = 0;
             await db.transaction(async tx => {
+                await lockRevision(tx);   // ordered against discardProjections(): a run is recorded before or after a reload
                 await tx.query('INSERT INTO catalog_runs (id, mode, source, status, started_at) VALUES (?, ?, ?, ?, ?)', [runId, mode, source, 'running', at]);
                 for (const o of normalized) {
                     const obs = await upsertObservation(tx, source, o, o.observedAt);
@@ -562,6 +568,9 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             try {
                 const summary = await db.transaction(async tx => {
                     await lockRevision(tx);
+                    // Recheck under the lock: a reload may have discarded the run since the check above.
+                    const [current] = await tx.query('SELECT status FROM catalog_runs WHERE id = ? FOR UPDATE', [runId]);
+                    if (current.status !== 'running') throw new CatalogError('conflict', `A ${current.status} run cannot be projected.`);
                     const rows = await tx.query(
                         `SELECT o.id, o.entity_kind, o.entity_key, o.payload, ro.observed_at FROM catalog_run_observations ro
                          JOIN catalog_observations o ON o.id = ro.observation_id WHERE ro.run_id = ? ORDER BY ro.seq`, [runId]);
@@ -610,8 +619,9 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
                 invalidateCaches();
                 return summary;
             } catch (error) {
+                if (error instanceof CatalogError && error.code === 'conflict') throw error;
                 const summary = { error: redactedError(error, 'projection') };
-                await db.query('UPDATE catalog_runs SET status = ?, finished_at = ?, summary = ? WHERE id = ?', ['failed', iso(), JSON.stringify(summary), runId]);
+                await db.query("UPDATE catalog_runs SET status = ?, finished_at = ?, summary = ? WHERE id = ? AND status = 'running'", ['failed', iso(), JSON.stringify(summary), runId]);
                 throw new CatalogError('projection_failed', 'Catalog projection failed; nothing was applied.', { cause: error, summary });
             }
         },
@@ -694,9 +704,9 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         },
 
         /**
-         * For an explicit legacy full reload: serving rows stop being under catalog provenance. Runs
-         * keep their observations but become 'discarded' and can no longer be rolled back; open plans
-         * go stale. Call inside the reload transaction, before it writes anything: the check for
+         * For an explicit legacy full reload: serving rows stop being under catalog provenance. Every
+         * succeeded or still-running run (baseline snapshots included) keeps its observations but
+         * becomes 'discarded': it is never replayed, projected, or rolled back again; open plans go stale. Call inside the reload transaction, before it writes anything: the check for
          * projections happens here, under the revision lock that every projection also takes, so a
          * projection committed after an earlier (unlocked) check is never discarded by surprise.
          * @param {{ query: Function }} tx
@@ -709,7 +719,9 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
                 throw new CatalogError('conflict', 'The catalog has projected data into these tables. Re-run with --discard-catalog-projections to replace it (catalog runs become discarded and cannot be rolled back).');
             }
             await tx.query('DELETE FROM catalog_entities');
-            const { affectedRows } = await tx.query("UPDATE catalog_runs SET status = 'discarded' WHERE status = 'succeeded' AND mode <> ?", [BASELINE_MODE]);
+            // Baseline snapshots describe the rows being replaced, and a recorded but unprojected run
+            // would repopulate them, so both are retired too. Only runs recorded later can project.
+            const { affectedRows } = await tx.query("UPDATE catalog_runs SET status = 'discarded' WHERE status IN ('succeeded', 'running')");
             await bumpRevision(tx);
             return { discardedRuns: affectedRows };
         },

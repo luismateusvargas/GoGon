@@ -4,7 +4,7 @@
 spec:
   id: "catalog-sync-v1"
   status: locked
-  version: "1.1.1"
+  version: "1.1.2"
   created: "2026-09-25"
   updated: "2026-09-28"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: ["data-model", "api-surface", "security"]
 
   changelog:
+    - version: "1.1.2"
+      date: "2026-09-28"
+      changes:
+        - "Review fixes to CAT-TASK-002: an explicit discard retires every succeeded or running run, baseline snapshots included, so neither pre-reload values nor an unprojected pre-reload run can return. Recording and projection take the revision lock, and projection rechecks the run status under it. entity_key widens to VARCHAR(255) (longest key 211), and the store rejects longer keys. [AC-CAT-006, AC-CAT-010]"
     - version: "1.1.1"
       date: "2026-09-28"
       changes:
@@ -55,7 +59,7 @@ entities:
       - name: status
         type: string
         constraints: [required, indexed]
-        description: "queued, running, paused, succeeded, failed, cancelled, reverted, or discarded (its projections were replaced by an explicit legacy reload)."
+        description: "queued, running, paused, succeeded, failed, cancelled, reverted, or discarded (retired by an explicit legacy reload: never replayed, projected, or rolled back again)."
         example: "succeeded"
       - name: started_at
         type: datetime
@@ -113,7 +117,7 @@ entities:
       - name: entity_key
         type: string
         constraints: [required, indexed]
-        description: "Game ID for ID-keyed kinds, realm_id:name for relics and quests, type:id:id for relations."
+        description: "Game ID for ID-keyed kinds, realm_id:name for relics and quests, type:id:id for relations; at most 255 characters (the longest, realm_id:name, is 211)."
         example: "17048"
       - name: entity_kind
         type: string

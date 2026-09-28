@@ -447,3 +447,50 @@ test('AC-CAT-010: a relation whose parent is gone is not restored and stops bein
     assert.equal(await count(db, 'realm_creatures'), 0);
     assert.equal(await count(db, "catalog_entities WHERE entity_kind = 'relation'"), 0);
 });
+
+// --- review fixes, round 2 (2026-09-28) ---------------------------------------------------------
+
+/** What populate_db does around a reload: discard under the lock, then replace the serving rows. */
+async function reload(db, store, fn) {
+    await db.transaction(async tx => {
+        await store.discardProjections(tx, { allowDiscard: true });
+        await fn(tx);
+    });
+}
+
+test('AC-CAT-010: a discard retires baseline snapshots too, so pre-reload values never come back', async () => {
+    const { db, store } = await setup();
+    await db.query("INSERT INTO items (id, name, rarity) VALUES (1, 'Legacy', 'Epic')");
+    await store.ingest({ mode: 'item_frontier', source: 'game_session', observations: [obs('item', { id: 1, name: 'Live' })] });
+    await reload(db, store, tx => tx.query('DELETE FROM items'));   // the reloaded snapshot no longer has item 1
+    assert.equal(await count(db, "catalog_runs WHERE status = 'succeeded'"), 0, 'baseline runs are discarded with the rest');
+
+    await store.ingest({ mode: 'item_frontier', source: 'game_session', observations: [obs('item', { id: 1, setId: 4 })] });
+    const [row] = await db.query('SELECT name, rarity, setId FROM items WHERE id = 1');
+    assert.deepEqual({ ...row, setId: Number(row.setId) }, { name: null, rarity: null, setId: 4 });
+});
+
+test('AC-CAT-006: a run recorded before a discard can no longer project after it', async () => {
+    const { db, store } = await setup();
+    const recorded = await store.recordRun({ mode: 'observe_realm', source: 'game_session', observations: [obs('creature', { id: 5, name: 'Pre-reload' })] });
+    await reload(db, store, async () => {});
+    assert.equal((await store.getRun(recorded.runId)).status, 'discarded');
+    await rejectsWith(store.projectRun(recorded.runId), 'conflict');
+    assert.equal(await count(db, 'creatures'), 0);
+    assert.equal(await count(db, 'catalog_entities'), 0);
+    assert.equal((await store.getRun(recorded.runId)).status, 'discarded', 'the refusal does not relabel it failed');
+});
+
+test('CAT-TASK-002: a maximum-length relic or quest name fits the entity-key columns', async () => {
+    const { db, store } = await setup();
+    await db.query("INSERT INTO realms (id, name) VALUES (9007199254740991, 'Far')");
+    const name = 'N'.repeat(191);
+    await store.ingest({ mode: 'observe_realm', source: 'game_session', observations: [obs('relic', { realm_id: 9007199254740991, name }), obs('quest', { realm_id: 9007199254740991, name })] });
+    const keys = (await db.query('SELECT entity_key FROM catalog_entities')).map(r => r.entity_key);
+    assert.deepEqual(keys, [`9007199254740991:${name}`, `9007199254740991:${name}`]);
+    // SQLite ignores VARCHAR lengths, so pin the declared width against the longest possible key.
+    const { MAX_ENTITY_KEY } = await import('../../_gg_data/handler/catalogStore.js');
+    assert.ok(keys[0].length <= MAX_ENTITY_KEY);
+    const ddl = (await import('node:fs')).readFileSync('_gg_data/migrations/003_catalog_sync.sql', 'utf8');
+    assert.equal([...ddl.matchAll(/entity_key VARCHAR\((\d+)\)/g)].map(m => Number(m[1])).filter(n => n !== MAX_ENTITY_KEY).length, 0);
+});

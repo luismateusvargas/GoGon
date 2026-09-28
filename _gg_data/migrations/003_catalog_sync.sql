@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS catalog_jobs (
 CREATE TABLE IF NOT EXISTS catalog_observations (
     id CHAR(36) NOT NULL PRIMARY KEY,
     entity_kind VARCHAR(16) NOT NULL CHECK (entity_kind IN ('item', 'creature', 'realm', 'master_realm', 'relic', 'quest', 'relation')),
-    entity_key VARCHAR(191) NOT NULL,     -- game ID, or realm_id:name, or relation type:ids
+    entity_key VARCHAR(255) NOT NULL,     -- game ID, realm_id:name (<= 211), or relation type:ids
     external_id VARCHAR(64),
     source VARCHAR(32) NOT NULL CHECK (source IN ('game_session', 'guide_baseline', 'manual_import')),
     payload_hash CHAR(64) NOT NULL,
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS catalog_run_observations (
 -- catalog provenance (and scripts/populate_db.mjs refuses to replace it without an explicit flag).
 CREATE TABLE IF NOT EXISTS catalog_entities (
     entity_kind VARCHAR(16) NOT NULL,
-    entity_key VARCHAR(191) NOT NULL,
+    entity_key VARCHAR(255) NOT NULL,
     observation_id CHAR(36) NOT NULL,     -- the latest observation applied to the serving row
     last_run_id CHAR(36) NOT NULL,
     first_seen_at VARCHAR(30) NOT NULL,

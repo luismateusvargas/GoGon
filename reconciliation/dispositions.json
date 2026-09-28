@@ -700,11 +700,11 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "1d3940d03f1dc71a91c983e0a80d4205cac0878b66f17397ae3f4a002a17732f",
+      "reviewedRootHash": "45e7c261105a0f4c8223038b0e0bccfc8d0fa2174ffbd12e9d04f3062a7b2106",
       "owners": [
         "catalog-sync-v1:CAT-TASK-002"
       ],
-      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas. Re-reviewed 2026-09-28 (catalog-sync 1.1.1 review fixes): projection and rollback rebuild state from provenance under field-level source precedence; restores resolve parents (unknown master realm -> NULL, orphaned relic/quest/relation removed); discardProjections rechecks for projections under the revision lock."
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas. Re-reviewed 2026-09-28 (catalog-sync 1.1.1 review fixes): projection and rollback rebuild state from provenance under field-level source precedence; restores resolve parents (unknown master realm -> NULL, orphaned relic/quest/relation removed); discardProjections rechecks for projections under the revision lock. Re-reviewed 2026-09-28 (catalog-sync 1.1.2): discard retires every succeeded/running run including baselines; recordRun takes and projectRun rechecks under the revision lock; entity keys capped at MAX_ENTITY_KEY (255)."
     },
     "_gg_data/handler/servingRelations.js": {
       "disposition": "retain-root",
@@ -720,11 +720,11 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "0e6cfcea58cb1162ce801e6498278d9c593d483fa961002bd88dca46c9b24490",
+      "reviewedRootHash": "3ab3ec25e7716c1e34ad763250966b2935f32863684e83d2385db279ea9fa72e",
       "owners": [
         "catalog-sync-v1:CAT-TASK-002"
       ],
-      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Idempotent MySQL migration: normalized serving relations with foreign keys and the catalog provenance tables."
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Idempotent MySQL migration: normalized serving relations with foreign keys and the catalog provenance tables. Re-reviewed 2026-09-28 (catalog-sync 1.1.2, unreleased so edited in place): entity_key columns widened to VARCHAR(255)."
     },
     "_gg_data/migrations/004_serving_relations.mjs": {
       "disposition": "retain-root",
