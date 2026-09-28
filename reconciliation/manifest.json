@@ -723,14 +723,17 @@
       "path": "docs/catalog-sync-control-plane-plan.md",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "ebbd0614dd78756a7c0916afb96302521fa121ccefc67a422ce17c829f7b6d80",
+      "rootHash": "d8d52aafd4ed3e0943f8f7c725f123c28ecf4cf6b48bd139752d6c7fb1685613",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
-        "catalog-sync-v1:CAT-TASK-002"
+        "catalog-sync-v1:CAT-TASK-002",
+        "catalog-sync-v1:CAT-TASK-001",
+        "catalog-sync-v1:CAT-TASK-009",
+        "catalog-sync-v1:CAT-TASK-010"
       ],
-      "rationale": "Root-only, added 2026-09-25 with catalog-sync-v1 and updated 2026-09-28 (DEC-CAT-008..011). Delivery plan; the spec remains the contract."
+      "rationale": "Root-only, added 2026-09-25 with catalog-sync-v1 and updated 2026-09-28 (DEC-CAT-008..011). Re-reviewed 2026-09-28 against catalog-sync 1.2.1, the supplied guide scripts, API.js, and the control-plane security boundary: DEC-CAT-012..016 require full guide index coverage until ID order is verified, a separate guide budget, and a scoped staging-only relay token through loopback. The plan records future work; no collector or endpoint is implemented. Retain the root plan; no backup counterpart exists. The spec remains the contract."
     },
     {
       "path": "docs/deployment.md",
