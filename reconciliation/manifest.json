@@ -95,14 +95,14 @@
       "path": "_gg_data/handler/catalogStore.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "bccf33f6e0fb20da1897a81c9bcc8cc0a683527d501fec1db56d61ae35d9b0a7",
+      "rootHash": "1d3940d03f1dc71a91c983e0a80d4205cac0878b66f17397ae3f4a002a17732f",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "catalog-sync-v1:CAT-TASK-002"
       ],
-      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas."
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas. Re-reviewed 2026-09-28 (catalog-sync 1.1.1 review fixes): projection and rollback rebuild state from provenance under field-level source precedence; restores resolve parents (unknown master realm -> NULL, orphaned relic/quest/relation removed); discardProjections rechecks for projections under the revision lock."
     },
     {
       "path": "_gg_data/handler/controlStore.js",
@@ -909,14 +909,14 @@
       "path": "scripts/populate_db.mjs",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "13df87138e24b63adbdb014edb4aea5a21a1d1e0a81da2d52efd2795b4cde004",
+      "rootHash": "113e9cf130229c09127059685cafa334911cb56674ee271fa75fef143f1a760f",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "catalog-sync-v1:CAT-TASK-002"
       ],
-      "rationale": "Root-only database population script (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Replaces only the master-data tables in one MySQL transaction; state and control-plane tables are kept. Re-reviewed 2026-09-28 after catalog-sync 1.1.0 / data-storage 2.1.0 (CAT-TASK-002): refuses to run while catalog projections exist unless --discard-catalog-projections (then marks catalog runs discarded); deletes children before parents and upserts parents first for the new foreign keys; nulls unknown master realms; derives quests/realm_creatures/creature_drops; main() exported with a fetch seam and runs only when invoked directly."
+      "rationale": "Root-only database population script (required by REC-TASK-001). Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Replaces only the master-data tables in one MySQL transaction; state and control-plane tables are kept. Re-reviewed 2026-09-28 after catalog-sync 1.1.0 / data-storage 2.1.0 (CAT-TASK-002): refuses to run while catalog projections exist unless --discard-catalog-projections (then marks catalog runs discarded); deletes children before parents and upserts parents first for the new foreign keys; nulls unknown master realms; derives quests/realm_creatures/creature_drops; main() exported with a fetch seam and runs only when invoked directly. Re-reviewed 2026-09-28 (catalog-sync 1.1.1): the projection guard is repeated under the catalog revision lock inside the reload transaction (discardProjections allowDiscard)."
     },
     {
       "path": "session.mjs",

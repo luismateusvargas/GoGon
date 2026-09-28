@@ -217,7 +217,7 @@ test('AC-CAT-010: rollback restores a legacy row exactly from its first-touch ba
     assert.equal((await db.query('SELECT name FROM items WHERE id = 582558641'))[0].name, 'Cuirass (renamed)');
 
     const plan = await store.planRollback(run.runId);
-    assert.deepEqual(plan.expectedCounts, { observations: 1, entities: 1, restore: 1, remove: 0, relations: 0, cascade: 0, rows: {} });
+    assert.deepEqual(plan.expectedCounts, { observations: 1, entities: 1, restore: 1, remove: 0, relations: 0, cascade: 0, orphaned: 0, rows: {} });
     const result = await store.executePlan(plan.id, { confirmation: plan.confirmation });
     assert.equal(result.status, 'reverted');
     const [row] = await db.query('SELECT name, rarity, stats, setId, imageUrl FROM items WHERE id = 582558641');
@@ -253,7 +253,7 @@ test('AC-CAT-010 error case: entities with no earlier provenance are removed wit
     assert.deepEqual(JSON.parse((await db.query('SELECT creatures FROM realms WHERE id = 40'))[0].creatures), [7, 8]);
 
     const plan = await store.planRollback(a.runId);
-    assert.deepEqual(plan.expectedCounts, { observations: 4, entities: 4, restore: 0, remove: 4, relations: 2, cascade: 0, rows: { creatures: -1, items: -1, realm_creatures: -1, creature_drops: -1 } });
+    assert.deepEqual(plan.expectedCounts, { observations: 4, entities: 4, restore: 0, remove: 4, relations: 2, cascade: 0, orphaned: 0, rows: { creatures: -1, items: -1, realm_creatures: -1, creature_drops: -1 } });
     await store.executePlan(plan.id, { confirmation: plan.confirmation });
     assert.equal(await count(db, 'creatures WHERE id = 8'), 0);
     assert.equal(await count(db, 'items WHERE id = 900'), 0);
@@ -269,7 +269,7 @@ test('AC-CAT-010: removing a realm cascades relics another run projected into it
     const a = await store.ingest({ mode: 'observe_realm', source: 'game_session', observations: [obs('realm', { id: 50, name: 'New realm' })] });
     await store.ingest({ mode: 'observe_realm', source: 'game_session', observations: [obs('relic', { realm_id: 50, name: 'Idol' }), obs('quest', { realm_id: 50, name: 'Quest', min_level: 3 })] });
     const plan = await store.planRollback(a.runId);
-    assert.deepEqual(plan.expectedCounts, { observations: 1, entities: 1, restore: 0, remove: 1, relations: 0, cascade: 2, rows: { realms: -1, relics: -1, quests: -1 } });
+    assert.deepEqual(plan.expectedCounts, { observations: 1, entities: 1, restore: 0, remove: 1, relations: 0, cascade: 2, orphaned: 0, rows: { realms: -1, relics: -1, quests: -1 } });
     await store.executePlan(plan.id, { confirmation: plan.confirmation });
     assert.equal(await count(db, 'realms'), 0);
     assert.equal(await count(db, 'relics'), 0);
@@ -380,4 +380,70 @@ test('AC-CAT-006: populate_db refuses to replace catalog projections unless expl
     assert.equal(await store.hasCatalogProjections(), false);
     assert.equal((await store.getRun(run.runId)).status, 'discarded');
     await rejectsWith(store.planRollback(run.runId), 'conflict');
+});
+
+// --- review fixes (2026-09-28) ------------------------------------------------------------------
+
+test('catalog-sync constraint: guide data never overwrites a field a game observation supplied', async () => {
+    const { db, store } = await setup();
+    const game = await store.ingest({ mode: 'item_frontier', source: 'game_session', observations: [obs('item', { id: 90, name: 'Live name' })] });
+    await store.ingest({ mode: 'seed', source: 'guide_baseline', observations: [obs('item', { id: 90, name: 'Guide name', rarity: 'Rare' })] });
+    assert.deepEqual({ ...(await db.query('SELECT name, rarity FROM items WHERE id = 90'))[0] }, { name: 'Live name', rarity: 'Rare' }, 'guide fills only the fields the game did not supply');
+
+    await store.ingest({ mode: 'seed', source: 'manual_import', observations: [obs('item', { id: 90, name: 'Owner name' })] });
+    assert.equal((await db.query('SELECT name FROM items WHERE id = 90'))[0].name, 'Live name', 'a manual import does not outrank the game either');
+
+    const plan = await store.planRollback(game.runId);
+    await store.executePlan(plan.id, { confirmation: plan.confirmation });
+    assert.deepEqual({ ...(await db.query('SELECT name, rarity FROM items WHERE id = 90'))[0] }, { name: 'Owner name', rarity: 'Rare' }, 'without the game run, the next-ranked source applies');
+});
+
+test('AC-CAT-006: the legacy reload rechecks for projections under the revision lock', async () => {
+    const db = await ggdb.getConnection();
+    const { main } = await import('../../scripts/populate_db.mjs');
+    const store = createCatalogStore(db, { invalidateCaches: () => {} });
+    await db.query('DELETE FROM catalog_entities'); // start from no projections, so the pre-fetch check passes
+    let run;
+    const fetchJson = async url => {
+        if (!run) run = await store.ingest({ mode: 'observe_realm', source: 'game_session', observations: [obs('creature', { id: 95, name: 'Seen during fetch' })] });
+        return url.includes('master_realms') ? [{ id: 1, name: 'M' }] : [];
+    };
+    await assert.rejects(quietly(() => main({ argv: [], fetchJson })), /--discard-catalog-projections/);
+    assert.equal((await db.query('SELECT name FROM creatures WHERE id = 95'))[0].name, 'Seen during fetch');
+    assert.equal((await store.getRun(run.runId)).status, 'succeeded');
+    assert.equal(await store.hasCatalogProjections(), true);
+});
+
+test('AC-CAT-010: a later rollback never restores a reference to a master realm that is gone', async () => {
+    const { db, store } = await setup();
+    const a = await store.ingest({ mode: 'seed', source: 'manual_import', observations: [obs('master_realm', { id: 7, name: 'Isles' })] });
+    await store.ingest({ mode: 'observe_realm', source: 'game_session', observations: [obs('realm', { id: 70, name: 'Shore', master_realm_id: 7 })] });
+    const c = await store.ingest({ mode: 'observe_realm', source: 'game_session', observations: [obs('realm', { id: 70, name: 'Shore (renamed)' })] });
+
+    let plan = await store.planRollback(a.runId);
+    await store.executePlan(plan.id, { confirmation: plan.confirmation });
+    assert.equal((await db.query('SELECT master_realm_id FROM realms WHERE id = 70'))[0].master_realm_id, null);
+
+    plan = await store.planRollback(c.runId);
+    await store.executePlan(plan.id, { confirmation: plan.confirmation });
+    assert.deepEqual({ ...(await db.query('SELECT name, master_realm_id FROM realms WHERE id = 70'))[0] }, { name: 'Shore', master_realm_id: null });
+    assert.equal(await count(db, 'realms WHERE master_realm_id IS NOT NULL AND master_realm_id NOT IN (SELECT id FROM master_realms)'), 0);
+
+    // A new observation of the realm replays the old master ID too; it must not come back either.
+    await store.ingest({ mode: 'observe_realm', source: 'game_session', observations: [obs('realm', { id: 70, min_level: 9 })] });
+    assert.equal((await db.query('SELECT master_realm_id FROM realms WHERE id = 70'))[0].master_realm_id, null);
+});
+
+test('AC-CAT-010: a relation whose parent is gone is not restored and stops being projected', async () => {
+    const { db, store } = await setup();
+    await db.query("INSERT INTO realms (id, name) VALUES (75, 'Keep')");
+    const a = await store.ingest({ mode: 'observe_realm', source: 'game_session', observations: [obs('creature', { id: 76, name: 'Beast' })] });
+    await store.ingest({ mode: 'observe_realm', source: 'game_session', observations: [obs('relation', { type: 'realm_creature', realm_id: 75, creature_id: 76 })] });
+    const c = await store.ingest({ mode: 'observe_realm', source: 'manual_import', observations: [obs('relation', { type: 'realm_creature', realm_id: 75, creature_id: 76 })] });
+    let plan = await store.planRollback(a.runId);                // removes the creature and cascades the relation
+    await store.executePlan(plan.id, { confirmation: plan.confirmation });
+    plan = await store.planRollback(c.runId);                    // the relation's other provenance points at a missing creature
+    await store.executePlan(plan.id, { confirmation: plan.confirmation });
+    assert.equal(await count(db, 'realm_creatures'), 0);
+    assert.equal(await count(db, "catalog_entities WHERE entity_kind = 'relation'"), 0);
 });

@@ -25,6 +25,9 @@ export const MAX_CURSOR_BYTES = 1024;
 export const PLAN_TTL_MS = 10 * 60_000;
 const MAX_DEPTH = 8;
 const BASELINE_MODE = 'baseline_snapshot';
+// Field-level precedence (catalog-sync constraint): a field set by a higher-ranked source is never
+// overwritten by a lower-ranked one; within a rank, the later observation wins.
+export const SOURCE_RANK = Object.freeze({ guide_baseline: 0, manual_import: 1, game_session: 2 });
 
 /** Errors callers may map to HTTP: invalid 400, not_found 404, conflict/plan_* 409, projection_failed 500. */
 export class CatalogError extends Error {
@@ -336,14 +339,22 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         return { stateKeys };
     }
 
-    /** Merges payloads in replay order; baseline payloads carry stored JSON text for JSON columns. */
-    function replay(kind, payloads) {
+    /**
+     * Merges observations in replay order under source precedence. Baseline payloads carry stored
+     * JSON text for JSON columns.
+     * @param {Array<{ payload: object, source: string }>} entries
+     */
+    function replay(kind, entries) {
         const merged = {};
+        const rank = {};
         const raw = new Set();
-        for (const p of payloads) {
-            const { $baseline, ...fields } = p;
+        for (const { payload, source } of entries) {
+            const { $baseline, ...fields } = payload;
+            const r = SOURCE_RANK[source];
             for (const [c, v] of Object.entries(fields)) {
+                if (rank[c] !== undefined && r < rank[c]) continue;
                 merged[c] = v;
+                rank[c] = r;
                 if ($baseline && kind !== 'relation' && SCHEMAS[kind].json.includes(c)) raw.add(c);
                 else raw.delete(c);
             }
@@ -352,6 +363,38 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
     }
 
     const parse = text => JSON.parse(text);
+
+    /**
+     * The provenance an entity's state is rebuilt from: observations of succeeded runs (plus
+     * includeRun, the run being projected), without excludeRun (the run being rolled back).
+     * Order: baseline snapshots first, then observation order.
+     */
+    const provenanceOf = (q, kind, key, { includeRun = '', excludeRun = '' }) => q.query(
+        `SELECT o.id, o.payload, o.source, ro.run_id, ro.observed_at FROM catalog_run_observations ro
+         JOIN catalog_observations o ON o.id = ro.observation_id
+         JOIN catalog_runs r ON r.id = ro.run_id
+         WHERE o.entity_kind = ? AND o.entity_key = ? AND (r.status = 'succeeded' OR r.id = ?) AND ro.run_id <> ?
+         ORDER BY CASE WHEN r.mode = '${BASELINE_MODE}' THEN 0 ELSE 1 END, ro.seq`, [kind, key, includeRun, excludeRun]);
+    const replayRows = (kind, rows) => replay(kind, rows.map(r => ({ payload: parse(r.payload), source: r.source })));
+
+    /**
+     * Checks a state against the parents that exist now. An unknown master realm becomes NULL (as in
+     * populate_db and migration 004); a relic, quest, or relation whose parent is gone cannot exist.
+     * @returns {Promise<object|null>} the writable payload, or null when it must not be written
+     */
+    async function resolveParents(q, kind, payload) {
+        const exists = async (table, id) => (await q.query(`SELECT 1 AS present FROM ${table} WHERE id = ?`, [id])).length > 0;
+        if (kind === 'realm' && payload.master_realm_id != null && !(await exists('master_realms', payload.master_realm_id))) {
+            return { ...payload, master_realm_id: null };
+        }
+        if (kind === 'relic' || kind === 'quest') return (await exists('realms', payload.realm_id)) ? payload : null;
+        if (kind === 'relation') {
+            const [a, b] = RELATION_FIELDS[payload.type];
+            const tableOf = { realm_id: 'realms', creature_id: 'creatures', item_id: 'items' };
+            return (await exists(tableOf[a], payload[a])) && (await exists(tableOf[b], payload[b])) ? payload : null;
+        }
+        return payload;
+    }
 
     /**
      * What rolling back runId would do. Replay order: baseline snapshots first, then observation order.
@@ -370,15 +413,10 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         const restore = [];
         const remove = [];
         for (const t of touched) {
-            const remaining = await q.query(
-                `SELECT o.id, o.payload, ro.run_id, ro.observed_at, r.mode FROM catalog_run_observations ro
-                 JOIN catalog_observations o ON o.id = ro.observation_id
-                 JOIN catalog_runs r ON r.id = ro.run_id
-                 WHERE o.entity_kind = ? AND o.entity_key = ? AND r.status = 'succeeded' AND ro.run_id <> ?
-                 ORDER BY CASE WHEN r.mode = '${BASELINE_MODE}' THEN 0 ELSE 1 END, ro.seq`, [t.entity_kind, t.entity_key, runId]);
+            const remaining = await provenanceOf(q, t.entity_kind, t.entity_key, { excludeRun: runId });
             if (remaining.length) {
                 const last = remaining[remaining.length - 1];
-                restore.push({ kind: t.entity_kind, key: t.entity_key, payload: replay(t.entity_kind, remaining.map(r => parse(r.payload))), observationId: last.id, runId: last.run_id, observedAt: last.observed_at });
+                restore.push({ kind: t.entity_kind, key: t.entity_key, payload: replayRows(t.entity_kind, remaining), observationId: last.id, runId: last.run_id, observedAt: last.observed_at });
             } else {
                 const [latest] = await q.query(
                     `SELECT o.payload FROM catalog_run_observations ro JOIN catalog_observations o ON o.id = ro.observation_id
@@ -422,19 +460,25 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             await removeEntity(tx, r.kind, r.payload, { dryRun: false });
             await tx.query('DELETE FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [r.kind, r.key]);
         }
-        const removedMasters = new Set(computed.remove.filter(r => r.kind === 'master_realm').map(r => r.payload.id));
+        let orphaned = 0;
         for (const r of computed.restore) {
-            const payload = r.kind === 'realm' && removedMasters.has(r.payload.master_realm_id) ? { ...r.payload, master_realm_id: null } : r.payload;
-            await applyEntity(tx, r.kind, payload, { merge: false });
+            // Removals ran first, so parent checks see the post-rollback tables.
+            const payload = await resolveParents(tx, r.kind, r.payload);
             const [state] = await tx.query('SELECT first_seen_at FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [r.kind, r.key]);
             await tx.query('DELETE FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [r.kind, r.key]);
+            if (!payload) {
+                await removeEntity(tx, r.kind, r.payload, { dryRun: false });   // its parent is gone: it cannot exist
+                orphaned++;
+                continue;
+            }
+            await applyEntity(tx, r.kind, payload, { merge: false });
             await tx.query('INSERT INTO catalog_entities (entity_kind, entity_key, observation_id, last_run_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
                 [r.kind, r.key, r.observationId, r.runId, state?.first_seen_at ?? r.observedAt, r.observedAt]);
         }
         const after = await servingCounts(tx);
         const rows = {};
         for (const table of Object.keys(before)) if (after[table] !== before[table]) rows[table] = after[table] - before[table];
-        const counts = { ...computed.counts, rows };
+        const counts = { ...computed.counts, orphaned, rows };
         const [run] = await tx.query('SELECT summary FROM catalog_runs WHERE id = ?', [runId]);
         const summary = { ...(run.summary ? JSON.parse(run.summary) : {}), revert: { planId, ...counts, before, after } };
         await tx.query('UPDATE catalog_runs SET status = ?, summary = ? WHERE id = ?', ['reverted', JSON.stringify(summary), runId]);
@@ -549,7 +593,10 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
                             await tx.query('UPDATE catalog_entities SET last_run_id = ?, last_seen_at = ? WHERE entity_kind = ? AND entity_key = ?', [runId, row.observed_at, kind, row.entity_key]);
                             continue;
                         }
-                        await applyEntity(tx, kind, payload, { merge: true });
+                        // Rebuild from all provenance (baseline, earlier runs, this run) under source
+                        // precedence, so a lower-ranked source never overwrites a higher-ranked field.
+                        const rebuilt = await resolveParents(tx, kind, replayRows(kind, await provenanceOf(tx, kind, row.entity_key, { includeRun: runId })));
+                        await applyEntity(tx, kind, rebuilt ?? payload, { merge: false }); // no state: let the foreign key reject it
                         await tx.query('DELETE FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [kind, row.entity_key]);
                         await tx.query('INSERT INTO catalog_entities (entity_kind, entity_key, observation_id, last_run_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
                             [kind, row.entity_key, row.id, runId, firstSeen, row.observed_at]);
@@ -649,11 +696,18 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         /**
          * For an explicit legacy full reload: serving rows stop being under catalog provenance. Runs
          * keep their observations but become 'discarded' and can no longer be rolled back; open plans
-         * go stale. Call inside the reload transaction.
+         * go stale. Call inside the reload transaction, before it writes anything: the check for
+         * projections happens here, under the revision lock that every projection also takes, so a
+         * projection committed after an earlier (unlocked) check is never discarded by surprise.
          * @param {{ query: Function }} tx
+         * @param {{ allowDiscard: boolean }} opts - the owner passed --discard-catalog-projections
          */
-        async discardProjections(tx) {
+        async discardProjections(tx, { allowDiscard }) {
             await lockRevision(tx);
+            const [present] = await tx.query('SELECT 1 AS present FROM catalog_entities LIMIT 1');
+            if (present && !allowDiscard) {
+                throw new CatalogError('conflict', 'The catalog has projected data into these tables. Re-run with --discard-catalog-projections to replace it (catalog runs become discarded and cannot be rolled back).');
+            }
             await tx.query('DELETE FROM catalog_entities');
             const { affectedRows } = await tx.query("UPDATE catalog_runs SET status = 'discarded' WHERE status = 'succeeded' AND mode <> ?", [BASELINE_MODE]);
             await bumpRevision(tx);

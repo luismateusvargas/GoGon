@@ -64,7 +64,8 @@ async function insertRows(tx, table, columns, rows) {
 export async function main({ argv = process.argv.slice(2), fetchJson: fetchSource = fetchJson } = {}) {
     console.log('[DB_INIT] Starting database population...');
 
-    // 0. Refuse to overwrite catalog projections unless explicitly told to (before any fetch or write)
+    // 0. Refuse to overwrite catalog projections unless explicitly told to. This early check only
+    //    avoids a pointless download; discardProjections() repeats it under the revision lock.
     const db = await getConnection();
     const catalog = createCatalogStore(db);
     if (await catalog.hasCatalogProjections() && !argv.includes(DISCARD_FLAG)) {
@@ -150,7 +151,7 @@ export async function main({ argv = process.argv.slice(2), fetchJson: fetchSourc
 
     // 3. Replace the master-data tables atomically (children first: foreign keys)
     const counts = await db.transaction(async tx => {
-        const { discardedRuns } = await catalog.discardProjections(tx);
+        const { discardedRuns } = await catalog.discardProjections(tx, { allowDiscard: argv.includes(DISCARD_FLAG) });
         if (discardedRuns) console.warn(`[DB_INIT] ${discardedRuns} catalog run(s) marked discarded.`);
         for (const table of ['creature_drops', 'realm_creatures', 'quests', 'relics', 'realms', 'master_realms', 'creatures', 'items']) await tx.query(`DELETE FROM ${table}`);
         const base = {

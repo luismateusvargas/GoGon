@@ -4,7 +4,7 @@
 spec:
   id: "catalog-sync-v1"
   status: locked
-  version: "1.1.0"
+  version: "1.1.1"
   created: "2026-09-25"
   updated: "2026-09-28"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: ["data-model", "api-surface", "security"]
 
   changelog:
+    - version: "1.1.1"
+      date: "2026-09-28"
+      changes:
+        - "Review fixes to CAT-TASK-002: projection and rollback rebuild an entity from its provenance under field-level source precedence (game_session > manual_import > guide_baseline), so guide data no longer overwrites a game-supplied field. The legacy-reload guard is rechecked under the revision lock inside the reload transaction. A restored or re-projected realm never points at a master realm that no longer exists, and a relic, quest, or relation whose parent is gone is removed instead of restored (plan counts gain orphaned). [AC-CAT-005, AC-CAT-006, AC-CAT-010]"
     - version: "1.1.0"
       date: "2026-09-28"
       changes:
@@ -391,7 +395,7 @@ constraints:
   - "At most one Catalog game request is in flight process-wide; the default budget is at most 50 requests per job execution and the minimum delay is 3 seconds between game requests until an owner-approved game-policy/rate-limit decision supersedes it."
   - "A failed, throttled, mitigated, malformed, or unauthenticated response cannot advance a job cursor or highest-confirmed ID."
   - "Every observation is canonicalized and hash-deduplicated per source/entity before projection; the first_seen, last_seen, source, run ID, and observed timestamp remain queryable."
-  - "Guide-derived data is a dated baseline, not current truth. Game-session observations outrank guide baseline only for fields they actually provide; unknown relationships and set bonuses remain explicitly unknown."
+  - "Guide-derived data is a dated baseline, not current truth. Game-session observations outrank guide baseline only for fields they actually provide; unknown relationships and set bonuses remain explicitly unknown. Field precedence is game_session > manual_import > guide_baseline; within one source the later observation wins, and a lower-ranked source only fills fields no higher-ranked observation supplied."
   - "Existing Discord lookup tables remain available throughout rollout. Catalog refreshes use incremental transactionally consistent projection; scripts/populate_db.mjs is manual-only until explicitly retired or redesigned, and refuses to run while catalog projections exist unless given --discard-catalog-projections (DEC-CAT-009)."
   - "The first time a projection touches an existing serving row with no catalog provenance, that row is stored as a guide_baseline observation in a baseline_snapshot run, so rollback restores it (DEC-CAT-008)."
   - "Serving relations are normalized with foreign keys (DEC-CAT-010): quests (realm_id, name unique), realm_creatures, creature_drops, realms.master_realm_id (SET NULL), relics.realm_id (CASCADE). Serving writers upsert with INSERT ... ON DUPLICATE KEY UPDATE and never REPLACE INTO, which would cascade deletions. A relic's identity is (realm_id, name). realms.creatures remains the JSON view Discord reads and is kept in step with realm_creatures."
