@@ -36,6 +36,7 @@ The Catalog tab contains four subviews:
 | DEC-CAT-017 | (2026-09-28, supersedes the "unverified" part of DEC-CAT-016) The owner attests that guide index pages start at `index=0`, which holds the newest records; the last page holds the oldest (`catalog/contracts/guide.js` `GUIDE_ORDERING`). A daily check may stop one overlap page past the page that reaches `last_seen_id`, but every run re-checks that IDs descend within and across pages. A violation returns that kind to full sweeps. A full sweep still runs every 7 days to catch gaps and edits. |
 | DEC-CAT-018 | (2026-09-28) Guide policy (`catalog/contracts/policy.js` `GUIDE_POLICY`): one request in flight, 3 s minimum delay, 50 requests per relay lease, 2,000 requests per UTC day, 24 h check interval, one overlap page, 7-day full sweep, 30-day detail refresh (10 per lease), 5 detail attempts. The estimated full sweep is 1,279 index pages (661 item, 321 creature, 282 realm, 15 master realm): 26 leases and at least 64 minutes, inside the cap with 721 requests left for details. A first full detail pass over ~30,000 records takes about 15 days at this cap, so seed a baseline first (CAT-TASK-007). |
 | DEC-CAT-019 | (2026-09-28) The game `fetchLocation` response has never been captured. `catalog/contracts/gameLocation.js` stays unverified with no field mapping, and observe_realm jobs are refused until an owner captures one redacted response, commits it as a fixture, and fills in the mapping. No game creature- or item-detail read exists, so item_frontier is unavailable. |
+| DEC-CAT-020 | (2026-09-28) The approved seed source key is `fsdatabase`: the same four snapshot files `scripts/populate_db.mjs` loads. Seeding stages them as ordered parts of at most 2,000 observations; each part is promoted through a previewed plan with an exact confirmation, in order. `populate_db.mjs` stays manual and unchanged. |
 
 ## Work sequence
 
@@ -85,7 +86,7 @@ These do not block schema, fixture, UI, or security work, but they block product
 | Confirmation of the guide policy numbers (DEC-CAT-018) | Before the first daily guide job is enabled | The numbers are conservative defaults. Enabling the guide job in the Catalog tab shows them; changing them is a code change. |
 | Separate game creature/item detail response contract | Before enabling those game-side frontiers | `API.js` defines current-location and world-map reads but no separate creature/item detail builder. This does not block guide discovery or location identity collection. |
 | Validated owner browser availability for guide checks | Before unattended daily operation | A due check can wait for browser validation after a Cloudflare challenge; headless server fetch has not been established as reliable. |
-| Approved seed baseline artifacts/source keys | Before CAT-TASK-007 promotion | A public guide baseline is stale and Cloudflare-protected; no arbitrary URL importer is allowed. |
+| Confirmation that `fsdatabase` (DEC-CAT-020) is the baseline to promote | Before the first seed promotion | It is the snapshot the legacy script already loads; staging it writes nothing to serving tables, promotion is per part and confirmed. |
 | Long-term catalog observation retention and MySQL backup policy | Before production deployment | Determines storage growth and recovery guarantees. |
 
 ## Non-goals for v1

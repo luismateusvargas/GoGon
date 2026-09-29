@@ -251,6 +251,7 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
                 try { key = decodeURIComponent(match[2]); } catch { throw new HttpError(400, 'Invalid input.', { fields: { key: 'Malformed key.' } }); }
                 return send(res, 200, await svc.getEntity(match[1], key));
             }
+            if (p === '/api/catalog/seed-sources') { queryOnly(url, []); return send(res, 200, { sources: svc.seedSources() }); }
             if (p === '/api/catalog/runs') { queryOnly(url, ['page', 'pageSize']); return send(res, 200, await svc.listRuns({ page: intParam(url, 'page', 1), pageSize: intParam(url, 'pageSize', 25) })); }
             if ((match = p.match(/^\/api\/catalog\/runs\/([0-9a-f-]{36})$/)) && UUID.test(match[1])) { queryOnly(url, []); return send(res, 200, await svc.getRun(match[1])); }
         } catch (e) {
@@ -313,13 +314,44 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
                     throw e;
                 }
             }
+            if (p === '/api/catalog/seeds') {
+                const body = await readJson(req);
+                allowOnly(body, ['sourceKey']);
+                const sourceKey = text(body, 'sourceKey', { max: 64 });
+                try {
+                    const staged = await svc.stageSeed(sourceKey);
+                    await audit('catalog.seed.stage', sourceKey, 'success', { batchId: staged.batchId, parts: staged.parts, observations: staged.observations });
+                    broadcastSoon();
+                    return send(res, 201, { ok: true, staged });
+                } catch (e) {
+                    if (e instanceof CatalogError) await audit('catalog.seed.stage', sourceKey, 'denied', { reason: e.code });
+                    throw e;
+                }
+            }
+            if ((match = p.match(/^\/api\/catalog\/runs\/([0-9a-f-]{36})\/(promote-plan|discard)$/)) && UUID.test(match[1])) {
+                const action = match[2] === 'discard' ? 'catalog.seed.discard' : 'catalog.plan.create';
+                try {
+                    if (match[2] === 'discard') {
+                        await svc.discardStagedRun(match[1]);
+                        await audit(action, match[1]);
+                        broadcastSoon();
+                        return send(res, 200, { ok: true });
+                    }
+                    const plan = await svc.planPromotion(match[1]);
+                    await audit(action, match[1], 'success', { planId: plan.id, action: 'promote', observations: plan.expectedCounts.observations });
+                    return send(res, 201, { ok: true, plan });
+                } catch (e) {
+                    if (e instanceof CatalogError) await audit(action, match[1], 'denied', { reason: e.code });
+                    throw e;
+                }
+            }
             if ((match = p.match(/^\/api\/catalog\/plans\/([0-9a-f-]{36})\/execute$/)) && UUID.test(match[1])) {
                 const body = await readJson(req);
                 allowOnly(body, ['confirmation']);
                 const confirmation = text(body, 'confirmation', { max: 128 });
                 try {
                     const result = await svc.executePlan(match[1], confirmation);
-                    await audit('catalog.plan.execute', match[1], 'success', { runId: result.runId, entities: result.counts.entities });
+                    await audit('catalog.plan.execute', match[1], 'success', { runId: result.runId, action: result.action });
                     broadcastSoon();
                     return send(res, 200, { ok: true, result });
                 } catch (e) {

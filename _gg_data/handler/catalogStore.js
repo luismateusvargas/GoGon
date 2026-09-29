@@ -592,7 +592,74 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         return updated;
     }
 
+    /**
+     * Applies a recorded ('running') run to the serving tables inside tx (the caller holds the
+     * revision lock and bumps the revision). Marks the run succeeded; its summary keeps any fields
+     * recorded with it (a seed's batch/part) and gains the projection counts.
+     */
+    async function performProjection(tx, runId) {
+        // Recheck under the lock: a reload may have discarded the run since any earlier check.
+        const [current] = await tx.query('SELECT status, summary FROM catalog_runs WHERE id = ? FOR UPDATE', [runId]);
+        if (!current) throw new CatalogError('not_found', 'Unknown catalog run.');
+        if (current.status !== 'running') throw new CatalogError('conflict', `A ${current.status} run cannot be projected.`);
+        const rows = await tx.query(
+            `SELECT o.id, o.entity_kind, o.entity_key, o.payload, ro.observed_at FROM catalog_run_observations ro
+             JOIN catalog_observations o ON o.id = ro.observation_id WHERE ro.run_id = ? ORDER BY ro.seq`, [runId]);
+        rows.sort((a, b) => PROJECTION_ORDER.indexOf(a.entity_kind) - PROJECTION_ORDER.indexOf(b.entity_kind));
+        const counts = { projected: 0, unchanged: 0, baselines: 0 };
+        let baselineRunId = null;
+        const at = iso();
+        for (const row of rows) {
+            const kind = row.entity_kind;
+            const payload = parse(row.payload);
+            const [state] = await tx.query('SELECT observation_id, first_seen_at FROM catalog_entities WHERE entity_kind = ? AND entity_key = ? FOR UPDATE', [kind, row.entity_key]);
+            let firstSeen = state?.first_seen_at ?? row.observed_at;
+            if (!state) {
+                const baseline = await snapshotServing(tx, kind, payload);
+                if (baseline) {
+                    if (!baselineRunId) {
+                        baselineRunId = uuid();
+                        await tx.query('INSERT INTO catalog_runs (id, mode, source, status, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
+                            [baselineRunId, BASELINE_MODE, 'guide_baseline', 'succeeded', at, at]);
+                    }
+                    const json = canonicalJson(baseline);
+                    const obs = await upsertObservation(tx, 'guide_baseline', { kind, key: row.entity_key, externalId: baseline.id != null ? String(baseline.id) : null, json, hash: sha256(json) }, at);
+                    await linkObservation(tx, baselineRunId, obs.id, at);
+                    counts.baselines++;
+                    firstSeen = at;
+                }
+            } else if (state.observation_id === row.id) {
+                counts.unchanged++;
+                await tx.query('UPDATE catalog_entities SET last_run_id = ?, last_seen_at = ? WHERE entity_kind = ? AND entity_key = ?', [runId, row.observed_at, kind, row.entity_key]);
+                continue;
+            }
+            // Rebuild from all provenance (baseline, earlier runs, this run) under source
+            // precedence, so a lower-ranked source never overwrites a higher-ranked field.
+            const rebuilt = await resolveParents(tx, kind, replayRows(kind, await provenanceOf(tx, kind, row.entity_key, { includeRun: runId })));
+            await applyEntity(tx, kind, rebuilt ?? payload, { merge: false }); // no state: let the foreign key reject it
+            await tx.query('DELETE FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [kind, row.entity_key]);
+            await tx.query('INSERT INTO catalog_entities (entity_kind, entity_key, observation_id, last_run_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
+                [kind, row.entity_key, row.id, runId, firstSeen, row.observed_at]);
+            counts.projected++;
+        }
+        await refreshCompleteness(tx, rows.map(r => [r.entity_kind, r.entity_key]));
+        const summary = { ...(current.summary ? JSON.parse(current.summary) : {}), observations: rows.length, ...counts };
+        await tx.query('UPDATE catalog_runs SET status = ?, finished_at = ?, summary = ? WHERE id = ?', ['succeeded', iso(), JSON.stringify(summary), runId]);
+        return summary;
+    }
+
+    /** Projects runId inside tx and measures it: projection counts plus exact serving row deltas. */
+    async function measuredProjection(tx, runId) {
+        const before = await servingCounts(tx);
+        const summary = await performProjection(tx, runId);
+        const after = await servingCounts(tx);
+        const rows = {};
+        for (const table of Object.keys(before)) if (after[table] !== before[table]) rows[table] = after[table] - before[table];
+        return { counts: { observations: summary.observations, projected: summary.projected, unchanged: summary.unchanged, baselines: summary.baselines, rows }, before, after };
+    }
+
     const confirmationFor = (runId, counts) => `ROLLBACK ${runId.slice(0, 8)} ${counts.entities}`;
+    const promotionConfirmationFor = (runId, counts) => `PROMOTE ${runId.slice(0, 8)} ${counts.observations}`;
 
     const jobRow = r => r && ({
         id: r.id, kind: r.kind, cursor: JSON.parse(r.cursor_json), state: r.state,
@@ -623,9 +690,15 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
          * writes nothing; then stores the run and its provenance with status 'running'.
          * @param {{ mode: string, source: string, observations: Array<{ kind: string, payload: object, observedAt?: string }> }} input
          */
-        async recordRun({ mode, source, observations }) {
+        async recordRun({ mode, source, observations, summary = null }) {
             if (!RUN_MODES.includes(mode)) throw invalid('Unknown run mode.', 'mode');
             if (!SOURCES.includes(source)) throw invalid('Unknown source.', 'source');
+            let summaryJson = null;
+            if (summary !== null) {
+                if (typeof summary !== 'object' || Array.isArray(summary)) throw invalid('Run summary must be an object.', 'summary');
+                summaryJson = canonicalJson(summary);
+                if (Buffer.byteLength(summaryJson) > 2048) throw invalid('Run summary is too large.', 'summary');
+            }
             if (!Array.isArray(observations) || observations.length === 0) throw invalid('A run needs at least one observation.', 'observations');
             if (observations.length > MAX_OBSERVATIONS_PER_RUN) throw invalid(`A run holds at most ${MAX_OBSERVATIONS_PER_RUN} observations.`, 'observations');
             const at = iso();
@@ -643,7 +716,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             let created = 0;
             await db.transaction(async tx => {
                 await lockRevision(tx);   // ordered against discardProjections(): a run is recorded before or after a reload
-                await tx.query('INSERT INTO catalog_runs (id, mode, source, status, started_at) VALUES (?, ?, ?, ?, ?)', [runId, mode, source, 'running', at]);
+                await tx.query('INSERT INTO catalog_runs (id, mode, source, status, started_at, summary) VALUES (?, ?, ?, ?, ?, ?)', [runId, mode, source, 'running', at, summaryJson]);
                 for (const o of normalized) {
                     const obs = await upsertObservation(tx, source, o, o.observedAt);
                     if (obs.created) created++;
@@ -664,54 +737,9 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             try {
                 const summary = await db.transaction(async tx => {
                     await lockRevision(tx);
-                    // Recheck under the lock: a reload may have discarded the run since the check above.
-                    const [current] = await tx.query('SELECT status FROM catalog_runs WHERE id = ? FOR UPDATE', [runId]);
-                    if (current.status !== 'running') throw new CatalogError('conflict', `A ${current.status} run cannot be projected.`);
-                    const rows = await tx.query(
-                        `SELECT o.id, o.entity_kind, o.entity_key, o.payload, ro.observed_at FROM catalog_run_observations ro
-                         JOIN catalog_observations o ON o.id = ro.observation_id WHERE ro.run_id = ? ORDER BY ro.seq`, [runId]);
-                    rows.sort((a, b) => PROJECTION_ORDER.indexOf(a.entity_kind) - PROJECTION_ORDER.indexOf(b.entity_kind));
-                    const counts = { projected: 0, unchanged: 0, baselines: 0 };
-                    let baselineRunId = null;
-                    const at = iso();
-                    for (const row of rows) {
-                        const kind = row.entity_kind;
-                        const payload = parse(row.payload);
-                        const [state] = await tx.query('SELECT observation_id, first_seen_at FROM catalog_entities WHERE entity_kind = ? AND entity_key = ? FOR UPDATE', [kind, row.entity_key]);
-                        let firstSeen = state?.first_seen_at ?? row.observed_at;
-                        if (!state) {
-                            const baseline = await snapshotServing(tx, kind, payload);
-                            if (baseline) {
-                                if (!baselineRunId) {
-                                    baselineRunId = uuid();
-                                    await tx.query('INSERT INTO catalog_runs (id, mode, source, status, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
-                                        [baselineRunId, BASELINE_MODE, 'guide_baseline', 'succeeded', at, at]);
-                                }
-                                const json = canonicalJson(baseline);
-                                const obs = await upsertObservation(tx, 'guide_baseline', { kind, key: row.entity_key, externalId: baseline.id != null ? String(baseline.id) : null, json, hash: sha256(json) }, at);
-                                await linkObservation(tx, baselineRunId, obs.id, at);
-                                counts.baselines++;
-                                firstSeen = at;
-                            }
-                        } else if (state.observation_id === row.id) {
-                            counts.unchanged++;
-                            await tx.query('UPDATE catalog_entities SET last_run_id = ?, last_seen_at = ? WHERE entity_kind = ? AND entity_key = ?', [runId, row.observed_at, kind, row.entity_key]);
-                            continue;
-                        }
-                        // Rebuild from all provenance (baseline, earlier runs, this run) under source
-                        // precedence, so a lower-ranked source never overwrites a higher-ranked field.
-                        const rebuilt = await resolveParents(tx, kind, replayRows(kind, await provenanceOf(tx, kind, row.entity_key, { includeRun: runId })));
-                        await applyEntity(tx, kind, rebuilt ?? payload, { merge: false }); // no state: let the foreign key reject it
-                        await tx.query('DELETE FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [kind, row.entity_key]);
-                        await tx.query('INSERT INTO catalog_entities (entity_kind, entity_key, observation_id, last_run_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
-                            [kind, row.entity_key, row.id, runId, firstSeen, row.observed_at]);
-                        counts.projected++;
-                    }
-                    await refreshCompleteness(tx, rows.map(r => [r.entity_kind, r.entity_key]));
-                    const summary = { observations: rows.length, ...counts };
-                    await tx.query('UPDATE catalog_runs SET status = ?, finished_at = ?, summary = ? WHERE id = ?', ['succeeded', iso(), JSON.stringify(summary), runId]);
+                    const s = await performProjection(tx, runId);
                     await bumpRevision(tx);
-                    return summary;
+                    return s;
                 });
                 invalidateCaches();
                 return summary;
@@ -784,6 +812,54 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         },
 
         /**
+         * CAT-TASK-007 / AC-CAT-006, AC-CAT-009: a promotion preview for a staged seed run. The
+         * projection runs in a transaction that is rolled back; the plan records its exact counts.
+         * Parts of one seed batch are promoted in order, so relations never precede their parents.
+         */
+        async planPromotion(runId) {
+            const [run] = await db.query('SELECT id, mode, status, summary FROM catalog_runs WHERE id = ?', [runId]);
+            if (!run) throw new CatalogError('not_found', 'Unknown catalog run.');
+            if (run.mode !== 'seed' || run.status !== 'running') throw new CatalogError('conflict', 'Only a staged seed run can be promoted.');
+            const seed = run.summary ? JSON.parse(run.summary).seed : null;
+            if (seed?.batchId && seed.part > 1) {
+                const earlier = await db.query("SELECT summary, status FROM catalog_runs WHERE mode = 'seed' AND summary LIKE ? ESCAPE '!'", [`%${seed.batchId.replace(/[!%_]/g, m => `!${m}`)}%`]);
+                const pending = earlier.filter(r => { const s = JSON.parse(r.summary ?? 'null')?.seed; return s?.batchId === seed.batchId && s.part < seed.part && r.status !== 'succeeded'; });
+                if (pending.length) throw new CatalogError('conflict', 'Promote the earlier parts of this seed first.');
+            }
+            const preview = new Error('preview');
+            let simulated;
+            try {
+                await db.transaction(async tx => {
+                    simulated = { revision: await lockRevision(tx), ...(await measuredProjection(tx, runId)) };
+                    throw preview;
+                });
+            } catch (e) {
+                if (e !== preview) throw e instanceof CatalogError ? e : new CatalogError('projection_failed', 'The staged run cannot be projected.', { cause: e });
+            }
+            return db.transaction(async tx => {
+                const revision = await lockRevision(tx);
+                if (revision !== simulated.revision) throw new CatalogError('conflict', 'The catalog changed while the preview was built; try again.');
+                const { counts } = simulated;
+                const id = uuid();
+                const expiresAt = new Date(now() + PLAN_TTL_MS).toISOString();
+                const confirmation = promotionConfirmationFor(runId, counts);
+                await tx.query('INSERT INTO catalog_deletion_plans (id, action, target_run_id, revision, expected_counts, confirmation, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    [id, 'promote', runId, revision, JSON.stringify(counts), confirmation, iso(), expiresAt]);
+                return { id, action: 'promote', targetRunId: runId, expectedCounts: counts, confirmation, expiresAt };
+            });
+        },
+
+        /** Retires a staged seed run that was never promoted; its observations stay as provenance. */
+        async discardStagedRun(runId) {
+            const { affectedRows } = await db.query("UPDATE catalog_runs SET status = 'cancelled', finished_at = ? WHERE id = ? AND mode = 'seed' AND status = 'running'", [iso(), runId]);
+            if (!affectedRows) {
+                const [run] = await db.query('SELECT status FROM catalog_runs WHERE id = ?', [runId]);
+                if (!run) throw new CatalogError('not_found', 'Unknown catalog run.');
+                throw new CatalogError('conflict', 'Only a staged seed run can be discarded.');
+            }
+        },
+
+        /**
          * AC-CAT-009, AC-CAT-010: executes an unexpired, unused plan whose revision is current and whose
          * confirmation matches exactly. Denials throw CatalogError (plan_*) and change nothing.
          */
@@ -798,13 +874,27 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
                 if (typeof confirmation !== 'string' || confirmation !== plan.confirmation) throw new CatalogError('plan_confirmation', 'The confirmation does not match the preview.');
 
                 const runId = plan.target_run_id;
+                if (plan.action === 'promote') {
+                    let measured;
+                    try {
+                        measured = await measuredProjection(tx, runId);
+                    } catch (e) {
+                        throw e instanceof CatalogError ? e : new CatalogError('projection_failed', 'Catalog projection failed; nothing was applied.', { cause: e });
+                    }
+                    if (canonicalJson(measured.counts) !== canonicalJson(JSON.parse(plan.expected_counts))) {
+                        throw new CatalogError('plan_stale', 'The affected counts changed since this preview; build a new one.');
+                    }
+                    await tx.query('UPDATE catalog_deletion_plans SET used_at = ? WHERE id = ?', [iso(), planId]);
+                    await bumpRevision(tx);
+                    return { runId, action: 'promote', status: 'succeeded', counts: measured.counts, before: measured.before, after: measured.after };
+                }
                 const { counts, before, after } = await performRollback(tx, runId, planId);
                 if (canonicalJson(counts) !== canonicalJson(JSON.parse(plan.expected_counts))) {
                     throw new CatalogError('plan_stale', 'The affected counts changed since this preview; build a new one.');
                 }
                 await tx.query('UPDATE catalog_deletion_plans SET used_at = ? WHERE id = ?', [iso(), planId]);
                 await bumpRevision(tx);
-                return { runId, status: 'reverted', counts, before, after };
+                return { runId, action: 'rollback', status: 'reverted', counts, before, after };
             });
             invalidateCaches();
             return result;

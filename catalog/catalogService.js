@@ -7,6 +7,7 @@ import { CatalogError } from '../_gg_data/handler/catalogStore.js';
 import { GUIDE_POLICY, GAME_POLICY, fullSweepEstimate } from './contracts/policy.js';
 import { GUIDE_ORDERING } from './contracts/guide.js';
 import { readOperations, unavailableReason } from './requestPolicy.js';
+import { describeSeedSources } from './sourceRegistry.js';
 
 export const BROWSE_KINDS = Object.freeze(['item', 'creature', 'realm', 'master_realm', 'relic', 'quest']);
 export const JOB_ACTIONS = Object.freeze({ pause: 'paused', resume: 'queued', cancel: 'cancelled' });
@@ -48,8 +49,9 @@ function cell(col, value, spec) {
  * @param {object} [deps.operations] - read operations (test seam)
  * @param {() => number} [deps.now]
  * @param {() => string|null} [deps.relayLastSeenAt] - latest authenticated relay contact (CAT-TASK-010)
+ * @param {object} [deps.seeds] - catalog/seedService.js (CAT-TASK-007)
  */
-export function createCatalogService({ db, store, guideStore, collector = null, operations = readOperations(), now = Date.now, relayLastSeenAt = () => null }) {
+export function createCatalogService({ db, store, guideStore, collector = null, operations = readOperations(), now = Date.now, relayLastSeenAt = () => null, seeds = null }) {
     const entityKey = (kind, row) => (SERVING[kind].natural ? `${row.realm_id}:${row.name}` : String(row.id));
 
     async function statesFor(kind, keys) {
@@ -229,5 +231,14 @@ export function createCatalogService({ db, store, guideStore, collector = null, 
 
         planRollback: runId => store.planRollback(runId),
         executePlan: (planId, confirmation) => store.executePlan(planId, { confirmation }),
+
+        // --- staged seeds (CAT-TASK-007 / AC-CAT-006) ---
+        seedSources: () => describeSeedSources(),
+        stageSeed(sourceKey) {
+            if (!seeds) throw new CatalogError('conflict', 'Seeding is not configured.');
+            return seeds.stage(sourceKey);
+        },
+        planPromotion: runId => store.planPromotion(runId),
+        discardStagedRun: runId => store.discardStagedRun(runId),
     };
 }

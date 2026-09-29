@@ -15,6 +15,7 @@ import { createCatalogStore } from '../_gg_data/handler/catalogStore.js';
 import { createGuideDiscoveryStore } from '../_gg_data/handler/guideDiscoveryStore.js';
 import { createCollector } from '../catalog/collector.js';
 import { createCatalogService } from '../catalog/catalogService.js';
+import { createSeedService } from '../catalog/seedService.js';
 import { configureCatalogTask, runCatalogSync } from '../catalog/catalogTask.js';
 
 /**
@@ -31,7 +32,7 @@ export async function createCatalog() {
         sessionReady: () => (engine.isPaused() ? { ok: false, reason: 'engine_paused' } : { ok: true }),
     });
     configureCatalogTask({ store, collector });
-    const service = createCatalogService({ db, store, guideStore, collector });
+    const service = createCatalogService({ db, store, guideStore, collector, seeds: createSeedService({ db, store }) });
     return { db, store, guideStore, collector, service, runNow: () => runCatalogSync({}) };
 }
 

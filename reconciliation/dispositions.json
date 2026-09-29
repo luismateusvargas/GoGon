@@ -313,11 +313,11 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "72131f69eab34accb6a256080556c20fc609d203cafd0cb475a817792d3b9bfb",
+      "reviewedRootHash": "2747131f2b94389e6814617b78574cbe45308aaa16fc4672a615c14266ac7418",
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Bootstrap wiring for app.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: GG_CONTROL_ENABLED uses the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API)."
+      "rationale": "Root-only, added 2026-09-24. Bootstrap wiring for app.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: GG_CONTROL_ENABLED uses the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API). Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding)."
     },
     "control-plane/public/app.js": {
       "disposition": "retain-root",
@@ -373,11 +373,11 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "9dbe402bc39b4ce3ff5d7a23e4a3ff1a98b136b398350e4b8a98da09b2e47c2e",
+      "reviewedRootHash": "0afbd9bede27bb5f7e1015ebe419c305a2b020e0f39b1b7d703c1bc81279c3e6",
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Authenticated dashboard/API server. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: bootstrap settings use the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API)."
+      "rationale": "Root-only, added 2026-09-24. Authenticated dashboard/API server. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: bootstrap settings use the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API). Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding)."
     },
     "discord_modules/buff_data.json": {
       "disposition": "port",
@@ -700,11 +700,11 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "cc57626f6cc9cd50f9f7bbee01efbde3e33e31c5dc9641c28d6076ad378c2ca5",
+      "reviewedRootHash": "4f1977d2577f3426c9a99907723bcaa445676affaaa803d8c1afbe4ffe1ed5d5",
       "owners": [
         "catalog-sync-v1:CAT-TASK-002"
       ],
-      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas. Re-reviewed 2026-09-28 (catalog-sync 1.1.1 review fixes): projection and rollback rebuild state from provenance under field-level source precedence; restores resolve parents (unknown master realm -> NULL, orphaned relic/quest/relation removed); discardProjections rechecks for projections under the revision lock. Re-reviewed 2026-09-28 (catalog-sync 1.1.2): discard retires every succeeded/running run including baselines; recordRun takes and projectRun rechecks under the revision lock; entity keys capped at MAX_ENTITY_KEY (255). Re-reviewed 2026-09-28 (catalog-sync 1.1.3): hasDiscardableWork (projected entities or a running run) gates discardProjections without the flag; recordRun rejects non-object observations as invalid. Re-reviewed 2026-09-28 after CAT-TASK-009 (guide discovery state and completeness). Re-reviewed 2026-09-28 after CAT-TASK-003 (collector)."
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas. Re-reviewed 2026-09-28 (catalog-sync 1.1.1 review fixes): projection and rollback rebuild state from provenance under field-level source precedence; restores resolve parents (unknown master realm -> NULL, orphaned relic/quest/relation removed); discardProjections rechecks for projections under the revision lock. Re-reviewed 2026-09-28 (catalog-sync 1.1.2): discard retires every succeeded/running run including baselines; recordRun takes and projectRun rechecks under the revision lock; entity keys capped at MAX_ENTITY_KEY (255). Re-reviewed 2026-09-28 (catalog-sync 1.1.3): hasDiscardableWork (projected entities or a running run) gates discardProjections without the flag; recordRun rejects non-object observations as invalid. Re-reviewed 2026-09-28 after CAT-TASK-009 (guide discovery state and completeness). Re-reviewed 2026-09-28 after CAT-TASK-003 (collector). Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding)."
     },
     "_gg_data/handler/servingRelations.js": {
       "disposition": "retain-root",
@@ -740,14 +740,14 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "7d0f3b72bb7070931f64fb738776dc28c08577be40dc639bfa475a7aea0023c6",
+      "reviewedRootHash": "5829906df2bd26aac44ec6ae8441b08763ad389e2af15db06c775c8a7108c0a8",
       "owners": [
         "catalog-sync-v1:CAT-TASK-002",
         "catalog-sync-v1:CAT-TASK-001",
         "catalog-sync-v1:CAT-TASK-009",
         "catalog-sync-v1:CAT-TASK-010"
       ],
-      "rationale": "Root-only, added 2026-09-25 with catalog-sync-v1 and updated 2026-09-28 (DEC-CAT-008..011). Re-reviewed 2026-09-28 against catalog-sync 1.2.1, the supplied guide scripts, API.js, and the control-plane security boundary: DEC-CAT-012..016 require full guide index coverage until ID order is verified, a separate guide budget, and a scoped staging-only relay token through loopback. The plan records future work; no collector or endpoint is implemented. Retain the root plan; no backup counterpart exists. The spec remains the contract. Re-reviewed 2026-09-28 after CAT-TASK-001 (catalog contracts)."
+      "rationale": "Root-only, added 2026-09-25 with catalog-sync-v1 and updated 2026-09-28 (DEC-CAT-008..011). Re-reviewed 2026-09-28 against catalog-sync 1.2.1, the supplied guide scripts, API.js, and the control-plane security boundary: DEC-CAT-012..016 require full guide index coverage until ID order is verified, a separate guide budget, and a scoped staging-only relay token through loopback. The plan records future work; no collector or endpoint is implemented. Retain the root plan; no backup counterpart exists. The spec remains the contract. Re-reviewed 2026-09-28 after CAT-TASK-001 (catalog contracts). Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding)."
     },
     "_gg_data/migrations/005_catalog_key_width.sql": {
       "disposition": "retain-root",
@@ -859,9 +859,25 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "a966573472f98d453196ef9b6094e7657d6123148ca833047e27e133e6f11dd4",
+      "reviewedRootHash": "9a906ce4ed8d5adc191068b63f50bcd3096c507f10d55aa7550742b007f7da9e",
       "owners": [],
-      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-005: Catalog API service (browse, detail, jobs, plans) over code-owned column lists."
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-005: Catalog API service (browse, detail, jobs, plans) over code-owned column lists. Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding)."
+    },
+    "catalog/seedService.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "01378c8e09426d7b468db164faaea016eaab64aff168018b3aa322d82388ef26",
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-007: staged, validated, part-by-part seed promotion."
+    },
+    "catalog/sourceRegistry.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "7fb3ba361367b0cb8a0e00ac24a4a41b64c3460bb2ca17dd2dd155a5156f4825",
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-007: approved seed source keys (no dashboard URLs)."
     }
   }
 }

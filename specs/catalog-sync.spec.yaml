@@ -21,6 +21,7 @@ spec:
         - "CAT-TASK-003: catalog/requestPolicy.js (read allow-list, passive fetchdata URL assertion, process-wide serial queue), catalog/normalizers.js (contract-mapped fields only), catalog/collector.js (observe_realm and item_frontier executions; login/unauthenticated back off without a login, a challenge pauses, malformed/too-large/404 record a redacted failed run, validated data is stored before its cursor, an owner pause during an execution wins). Store: recordFailedRun and the running -> queued hand-back. With the committed contracts both game kinds are refused without a request (DEC-CAT-019). [AC-CAT-001..AC-CAT-005]"
         - "CAT-TASK-004: engine.js registers CatalogSync (60 s, disabled by default, preference persisted in module_preferences like every module). catalog/catalogTask.js runs queued game jobs serially, hands back jobs a crash left running, and shares a process-wide catalog lock with foreground commands; pauseAll (account switch) aborts a run in flight. No runtime setting was needed beyond enable/interval. [AC-CAT-001, AC-CAT-002, AC-CAT-008]"
         - "CAT-TASK-005: Catalog API on the existing control plane. GET /api/catalog/summary, /entities (kind, q, completeness, page, pageSize; unknown or repeated parameters are 400), /entities/:kind/:key (provenance and relations), /runs, /runs/:id. POST /api/catalog/jobs, /jobs/:id/(pause|resume|cancel), /sync-now, /runs/:id/rollback-plan, /plans/:id/execute behind the existing session + CSRF + same-origin gate, each audited (denials too). Dashboard SSE state carries catalog jobs, guide status, and job availability. catalog/catalogService.js reads through code-owned column lists; name search is case-insensitive with a literal '%'. [AC-CAT-002, AC-CAT-007, AC-CAT-008, AC-CAT-009, AC-CAT-010]"
+        - "CAT-TASK-007: staged seeding (DEC-CAT-020). catalog/sourceRegistry.js approves one key, fsdatabase (the snapshot scripts/populate_db.mjs loads). catalog/seedService.js downloads with a 64 MiB per-file cap, rejects non-array files and files with more than 5% unusable records before any write, excludes records whose payload cannot be represented (reported, never guessed), and stages 'seed' runs of at most 2,000 observations in projection order. catalogStore.planPromotion previews a staged part in a rolled-back transaction (exact counts and serving row deltas; parts promote in order); executePlan runs promote and rollback plans; discardStagedRun cancels an unpromoted part. API: GET /api/catalog/seed-sources, POST /api/catalog/seeds, /runs/:id/promote-plan, /runs/:id/discard. [AC-CAT-005, AC-CAT-006, AC-CAT-009]"
     - version: "1.2.1"
       date: "2026-09-28"
       changes:
@@ -636,10 +637,11 @@ tasks:
       with an approved-source-key or validated owner-import staging run, schema validation, diff
       preview, and transactional promotion. Preserve the manual legacy script until the owner
       separately approves its retirement.
-    affects: "catalog/seedService.js, catalog/sourceRegistry.js, control-plane/server.mjs, scripts/populate_db.mjs, tests/catalog-sync/seed.test.mjs"
+    affects: "catalog/seedService.js, catalog/sourceRegistry.js, catalog/catalogService.js, _gg_data/handler/catalogStore.js, control-plane/server.mjs, control-plane/index.mjs, tests/catalog-sync/seed.test.mjs, tests/control-plane/catalog-api.test.mjs"
     depends_on: ["CAT-TASK-002", "CAT-TASK-005"]
     source: "AC-CAT-005, AC-CAT-006, AC-CAT-009"
-    status: TODO
+    status: DONE
+    progress: "2026-09-28: staged seeding and promotion plans. scripts/populate_db.mjs is unchanged (manual, guarded since CAT-TASK-002); its retirement is still the owner's call."
 
   - id: CAT-TASK-008
     description: |

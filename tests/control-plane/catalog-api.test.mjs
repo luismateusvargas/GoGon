@@ -10,6 +10,8 @@ import { createControlStore } from '../../_gg_data/handler/controlStore.js';
 import { createCatalogStore } from '../../_gg_data/handler/catalogStore.js';
 import { createGuideDiscoveryStore } from '../../_gg_data/handler/guideDiscoveryStore.js';
 import { createCatalogService } from '../../catalog/catalogService.js';
+import { createSeedService } from '../../catalog/seedService.js';
+import { SEED_SOURCES } from '../../catalog/sourceRegistry.js';
 import { createKeyring, hashPassword } from '../../control-plane/crypto.mjs';
 import { createControlPlane } from '../../control-plane/server.mjs';
 
@@ -26,7 +28,9 @@ before(async () => {
     const now = () => clock.t;
     controlStore = createControlStore(db, createKeyring(crypto.randomBytes(32).toString('base64')));
     catalogStore = createCatalogStore(db, { now, invalidateCaches: () => {} });
-    const service = createCatalogService({ db, store: catalogStore, guideStore: createGuideDiscoveryStore(db, { now }), now });
+    const seedData = { master_realm: [{ id: 501, name: 'Seeded Master' }], realm: [], creature: [], item: [{ id: 50001, name: 'Seeded Item' }] };
+    const seeds = createSeedService({ db, store: catalogStore, fetchJson: async url => seedData[Object.keys(SEED_SOURCES.fsdatabase.files).find(k => SEED_SOURCES.fsdatabase.files[k] === url)] });
+    const service = createCatalogService({ db, store: catalogStore, guideStore: createGuideDiscoveryStore(db, { now }), now, seeds });
     const engine = { engineEvents: new EventEmitter(), isPaused: () => paused, listModuleIds: () => [], getTasksStatus: () => [] };
     const switcher = { events: new EventEmitter(), status: () => ({ state: 'idle', activeLabel: null, lastError: null }) };
     const config = { username: ADMIN, passwordHash: hashPassword(PASSWORD), sessionSecret: 'y'.repeat(48), host: '127.0.0.1', port: 0, cookieSecure: false };
@@ -206,6 +210,26 @@ test('AC-CAT-009 / AC-CAT-010: rollback is a previewed, confirmed, one-use plan;
     const expired = await req('POST', `/api/catalog/plans/${plan2.id}/execute`, { cookie: s2.cookie, csrf: s2.csrf, body: { confirmation: plan2.confirmation } });
     assert.equal(expired.status, 409);
     assert.match(expired.json.error, /expired/);
+});
+
+test('AC-CAT-006 / AC-CAT-009: seeds are staged by approved key only, then promoted through a confirmed plan', async () => {
+    const { cookie, csrf } = await session();
+    assert.deepEqual((await req('GET', '/api/catalog/seed-sources', { cookie })).json.sources.map(s => s.key), ['fsdatabase']);
+    const bad = await req('POST', '/api/catalog/seeds', { cookie, csrf, body: { sourceKey: 'https://evil.example/items.json' } });
+    assert.equal(bad.status, 400);
+    assert.deepEqual([(await lastAudit()).action, (await lastAudit()).outcome], ['catalog.seed.stage', 'denied']);
+    assert.equal((await req('POST', '/api/catalog/seeds', { cookie, csrf, body: { sourceKey: 'fsdatabase', url: 'x' } })).status, 400);
+    const staged = await req('POST', '/api/catalog/seeds', { cookie, csrf, body: { sourceKey: 'fsdatabase' } });
+    assert.equal(staged.status, 201);
+    const runId = staged.json.staged.runs[0].runId;
+    assert.equal((await db.query('SELECT COUNT(*) AS n FROM items WHERE id = 50001'))[0].n, 0, 'staged, not projected');
+    const plan = (await req('POST', `/api/catalog/runs/${runId}/promote-plan`, { cookie, csrf })).json.plan;
+    assert.equal(plan.action, 'promote');
+    const done = await req('POST', `/api/catalog/plans/${plan.id}/execute`, { cookie, csrf, body: { confirmation: plan.confirmation } });
+    assert.equal(done.status, 200);
+    assert.equal(done.json.result.action, 'promote');
+    assert.equal((await db.query('SELECT COUNT(*) AS n FROM items WHERE id = 50001'))[0].n, 1);
+    assert.equal((await req('POST', `/api/catalog/runs/${runId}/discard`, { cookie, csrf })).status, 409, 'a promoted run is not staged anymore');
 });
 
 test('AC-CAT-008: dashboard state (SSE) carries catalog jobs and guide status', async () => {
