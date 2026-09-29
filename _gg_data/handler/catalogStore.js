@@ -15,6 +15,7 @@
 // Every statement is parameterized; table and column names come only from the schemas below.
 import crypto from 'node:crypto';
 import { clearAllCaches } from './cacheLayer.js';
+import { canonicalImageUrl } from './mediaUrl.js';
 import { idsFrom, parseJsonColumn } from './servingRelations.js';
 import { GUIDE_POLICY } from '../../catalog/contracts/policy.js';
 
@@ -145,6 +146,7 @@ export function normalizeObservation(kind, payload) {
         if (v !== undefined && !allowed[k](v)) throw invalid(`Field "${k}" has an invalid value.`, k);
     }
     for (const k of required) if (payload[k] === undefined) throw invalid(`Field "${k}" is required for ${kind}.`, k);
+    if (typeof payload.imageUrl === 'string') payload = { ...payload, imageUrl: canonicalImageUrl(payload.imageUrl) };
     const json = canonicalJson(payload);
     if (Buffer.byteLength(json, 'utf8') > MAX_PAYLOAD_BYTES) throw invalid(`Payload exceeds ${MAX_PAYLOAD_BYTES} bytes.`, 'payload');
     const canonical = JSON.parse(json);

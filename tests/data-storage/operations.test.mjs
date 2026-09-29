@@ -101,7 +101,7 @@ test('AC-DATA-001: the project migrations create the expected tables, once per p
         'catalog_guide_state', 'catalog_guide_ids', 'catalog_guide_usage', 'catalog_relay_tokens', 'catalog_guide_leases']) {
         assert.ok(await tableExists(client, t), `missing table ${t}`);
     }
-    assert.deepEqual(await versions(client), ['001_initial_schema.sql', '002_control_plane.sql', '003_catalog_sync.sql', '004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql', '011_master_realm_connections.mjs']);
+    assert.deepEqual(await versions(client), ['001_initial_schema.sql', '002_control_plane.sql', '003_catalog_sync.sql', '004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql', '011_master_realm_connections.mjs', '012_media_host.mjs']);
 });
 
 // --- AC-DATA-002: FIFO lists -----------------------------------------------------------------------
@@ -187,6 +187,17 @@ test('AC-DATA-005: lookups query MySQL once, then serve from cache without a dat
 
     db.clearDatabaseCaches();
     assert.equal(await db.getItemById(582558641), undefined);
+});
+
+test('item and creature lookups serve images from the host Discord can load', async () => {
+    db.clearDatabaseCaches();
+    await sql('REPLACE INTO items (id, name, imageUrl) VALUES (?, ?, ?)', [23, 'Padded Armor', 'http://cdn.fallensword.com/items/23.gif']);
+    await sql('REPLACE INTO creatures (id, name, imageUrl) VALUES (?, ?, ?)', [426, 'Baron Von Drake (Super Elite)', 'https://cdn.fallensword.com/creatures/426bc7fd.png']);
+    assert.equal((await db.getItemById(23)).imageUrl, 'https://cdn2.fallensword.com/items/23.gif');
+    assert.equal((await db.getCreatureById(426)).imageUrl, 'https://cdn2.fallensword.com/creatures/426bc7fd.png');
+    await sql('DELETE FROM items WHERE id = ?', [23]);
+    await sql('DELETE FROM creatures WHERE id = ?', [426]);
+    db.clearDatabaseCaches();
 });
 
 test('AC-DATA-005: a missing ID resolves undefined and the miss is not cached', async () => {

@@ -6,6 +6,7 @@
 //
 import { fileURLToPath } from 'node:url';
 import { creatureCache, itemCache, realmCache, getCacheStats, clearAllCaches } from './cacheLayer.js';
+import { canonicalImageUrl } from './mediaUrl.js';
 import { runMigrations } from './migrationRunner.js';
 import { createMysqlClient } from './mysqlClient.js';
 import { getBooleanSetting } from '../../config/runtime.mjs';
@@ -294,6 +295,7 @@ export async function getItemById(id) {
     // Parse the JSON string fields back into objects
     const item = {
         ...row,
+        imageUrl: canonicalImageUrl(row.imageUrl),
         stats: safeJsonParse(row.stats),
         enhancements: safeJsonParse(row.enhancements),
         droppedBy: safeJsonParse(row.droppedBy),
@@ -323,6 +325,7 @@ export async function getCreatureById(id) {
     // Parse JSON fields
     const creature = {
         ...row,
+        imageUrl: canonicalImageUrl(row.imageUrl),
         stats: safeJsonParse(row.stats),
         enhancements: safeJsonParse(row.enhancements),
         droppedItems: safeJsonParse(row.droppedItems)
