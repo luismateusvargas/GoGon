@@ -381,6 +381,9 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             return SERVER_WORKER_ID;
         },
 
+        /** Spread existing snapshot item and creature detail reads over the next month. */
+        scheduleSeededDetails: () => guideStore.scheduleSeededDetails(),
+
         /** The token row for a bearer value, or null (unknown, revoked, expired, or wrong scope). */
         async authenticate(bearer) {
             if (typeof bearer !== 'string' || !bearer.startsWith(TOKEN_PREFIX) || bearer.length > 100) return null;

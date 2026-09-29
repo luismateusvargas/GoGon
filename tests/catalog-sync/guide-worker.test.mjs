@@ -11,9 +11,10 @@ const lease = () => ({
 });
 
 function fakeRelay() {
-    const calls = { ensured: 0, leases: 0, submissions: [] };
+    const calls = { scheduled: 0, ensured: 0, leases: 0, submissions: [] };
     return {
         calls,
+        async scheduleSeededDetails() { calls.scheduled++; },
         async ensureServerWorker() { calls.ensured++; return 'worker-id'; },
         async nextLease(workerId) {
             assert.equal(workerId, 'worker-id');
@@ -46,6 +47,7 @@ test('guide worker reads and stages a leased index with clearance and matching U
     assert.equal(relay.calls.submissions[0].results[0].outcome, 'ok');
     assert.equal(relay.calls.submissions[0].results[0].entries.length, 3);
     assert.equal(relay.calls.submissions[0].requests, 1);
+    assert.equal(relay.calls.scheduled, 1);
 });
 
 test('guide worker reports a challenge without staging guide data', async () => {
@@ -64,6 +66,7 @@ test('guide worker reports a challenge without staging guide data', async () => 
     clearance = 'renewed-clearance';
     assert.equal((await worker.run()).challenge, true);
     assert.equal(reads, 2);
+    assert.equal(relay.calls.scheduled, 1);
 });
 
 test('guide worker retries a failed submission without reading the page again', async () => {
@@ -100,6 +103,7 @@ test('guide worker skips missing or malformed clearance without contacting the r
     assert.deepEqual(await createGuideWorker({ relay, clearance: '' }).run(), { status: 'unconfigured' });
     assert.deepEqual(await createGuideWorker({ relay, clearance: 'bad\r\ncookie' }).run(), { status: 'invalid_configuration' });
     assert.equal(relay.calls.ensured, 0);
+    assert.equal(relay.calls.scheduled, 0);
 });
 
 test('guide worker picks up clearance saved after startup on its next run', async () => {

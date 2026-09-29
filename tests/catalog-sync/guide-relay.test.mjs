@@ -99,6 +99,28 @@ const state = async (g, kind) => g.getState(kind);
 const count = async (db, table) => Number((await db.query(`SELECT COUNT(*) AS n FROM ${table}`))[0].n);
 const enableJob = store => store.createJob({ kind: 'guide_discovery', cursor: {}, requestBudget: 50 });
 
+test('existing snapshot items and creatures enter guide coverage without an immediate detail backlog', async () => {
+    const { db, relay, guideStore, clock } = await setup();
+    await db.query('INSERT INTO items (id, name) VALUES (?, ?)', [17049, 'Snapshot item']);
+    await db.query('INSERT INTO creatures (id, name) VALUES (?, ?)', [7001, 'Snapshot creature']);
+    await db.query('INSERT INTO realms (id, name) VALUES (?, ?)', [1200, 'Snapshot realm']);
+
+    await relay.scheduleSeededDetails();
+    await relay.scheduleSeededDetails();
+    const tracked = await db.query('SELECT entity_kind, entity_id, detail_status, next_detail_at FROM catalog_guide_ids ORDER BY entity_kind');
+    assert.deepEqual(tracked.map(row => row.entity_kind), ['creature', 'item']);
+    assert.ok(tracked.every(row => row.detail_status === 'pending' && Date.parse(row.next_detail_at) > clock.t));
+    assert.equal((await guideStore.getIdState('realm', 1200)), null);
+
+    await guideStore.markDetail('item', 17049, { outcome: 'ok', hash: 'a'.repeat(64) }, GUIDE_POLICY);
+    await relay.scheduleSeededDetails();
+    assert.equal((await guideStore.getIdState('item', 17049)).status, 'ok');
+
+    await guideStore.recordIndexIds('item', [17050, 17049]);
+    assert.ok(Date.parse((await guideStore.getIdState('item', 17050)).nextDetailAt) <= clock.t);
+    assert.ok(Date.parse((await guideStore.getIdState('item', 17049)).nextDetailAt) > clock.t);
+});
+
 test('server guide worker has a stable lease identity without an external bearer token', async () => {
     const { db, relay, store } = await setup();
     assert.equal(await relay.ensureServerWorker(), SERVER_WORKER_ID);
