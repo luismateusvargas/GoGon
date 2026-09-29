@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const OUTPUT = path.join(ROOT, 'reconciliation', 'scrappers', 'gogon_guide_relay.user.js');
 export const MODULES = ['catalog/contracts/guide.js', 'catalog/contracts/classify.js', 'catalog/guideParsers.js', 'catalog/relayClient.js'];
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
 
 const HEADER = `// ==UserScript==
 // @name         GoGon Guide Relay
@@ -45,6 +45,7 @@ const GLUE = `
     const TOKEN_KEY = 'gogonRelayToken';
     const RUN_KEY = 'gogonRelayRunning';
     const LOCK_KEY = 'gogonRelayLock';
+    const RESULTS_KEY = 'gogonRelayResults';
     const IDLE_POLL_MS = 5 * 60 * 1000;
     const ERROR_POLL_MS = 60 * 1000;
     const LOCK_STALE_MS = 90 * 1000;
@@ -99,24 +100,31 @@ const GLUE = `
     }
     const parseHtml = html => new DOMParser().parseFromString(html, 'text/html');
 
+    // Results read for a lease are kept in Tampermonkey storage until GoGon settles them, so a failed
+    // submission is resent as read, never read again (relayCycle in catalog/relayClient.js).
+    const saved = {
+        get: () => GM_getValue(RESULTS_KEY, null),
+        set: value => GM_setValue(RESULTS_KEY, value),
+    };
+
     async function cycle() {
         const token = GM_getValue(TOKEN_KEY, '');
         if (!token) { show('no relay token. In Tampermonkey, open this script\\'s Storage tab and set gogonRelayToken.'); return stop(); }
-        let r;
-        try { r = await relayRequest('GET', '/relay/guide/lease', null, token); } catch { show('GoGon is not reachable on 127.0.0.1:' + port() + ' (is the SSH tunnel open?).'); return sleep(ERROR_POLL_MS); }
-        if (r.status === 401) { show('the relay token is missing, expired, or revoked.'); return stop(); }
-        if (r.status !== 200 || !r.json) { show('GoGon answered HTTP ' + r.status + '.'); return sleep(ERROR_POLL_MS); }
-        if (r.json.status !== 'lease') { show(STATUS_TEXT[r.json.status] || String(r.json.status)); return sleep(IDLE_POLL_MS); }
-        const lease = r.json.lease;
-        show('reading ' + lease.work.length + ' ' + lease.kind + (lease.work[0].type === 'index' ? ' index' : ' detail') + ' page(s)...');
-        const results = await runLease(lease, { fetchPage, parseHtml, sleep, stopped: () => stopped });
-        let s;
-        try { s = await relayRequest('POST', '/relay/guide/leases/' + lease.leaseId, { results }, token); } catch { show('could not send the results; trying again later.'); return sleep(ERROR_POLL_MS); }
-        if (s.status !== 200) { show('GoGon refused the results (HTTP ' + s.status + ').'); return sleep(ERROR_POLL_MS); }
-        const last = results[results.length - 1];
-        if (last && last.outcome === 'challenge') { show('Cloudflare asked for a check. Complete it yourself on a guide page, then press Start.'); return stop(); }
-        show('sent ' + results.length + ' result(s)' + (s.json && s.json.sweepComplete ? '; sweep complete' : '') + '.');
-        return sleep(lease.minDelayMs);
+        const out = await relayCycle({
+            getLease: () => relayRequest('GET', '/relay/guide/lease', null, token),
+            postResults: (leaseId, body) => relayRequest('POST', '/relay/guide/leases/' + leaseId, body, token),
+            saved, fetchPage, parseHtml, sleep, stopped: () => stopped,
+            onRead: lease => show('reading ' + lease.work.length + ' ' + lease.kind + (lease.work[0].type === 'index' ? ' index' : ' detail') + ' page(s)...'),
+        });
+        const keep = out.kept ? ' The results are kept and will be sent again, not read again.' : '';
+        if (out.step === 'unreachable') { show('GoGon is not reachable on 127.0.0.1:' + port() + ' (is the SSH tunnel open?).' + keep); return sleep(ERROR_POLL_MS); }
+        if (out.step === 'unauthorized') { show('the relay token is missing, expired, or revoked.'); return stop(); }
+        if (out.step === 'http') { show('GoGon answered HTTP ' + out.status + '.' + keep); return sleep(ERROR_POLL_MS); }
+        if (out.step === 'no_lease') { show(STATUS_TEXT[out.status] || String(out.status)); return sleep(IDLE_POLL_MS); }
+        if (out.step === 'refused') { show('GoGon refused the results (HTTP ' + out.status + '); asking for new work.'); return sleep(ERROR_POLL_MS); }
+        if (out.challenge) { show('Cloudflare asked for a check. Complete it yourself on a guide page, then press Start.'); return stop(); }
+        show((out.resent ? 'resent ' : 'sent ') + out.results + ' result(s)' + (out.sweepComplete ? '; sweep complete' : '') + '.');
+        return sleep(out.minDelayMs);
     }
 
     function otherTabRunning() {

@@ -76,6 +76,43 @@ test('CAT-TASK-009 (real MySQL): 007 replaces the 003 CHECKs and re-adds columns
     // And a second run changes nothing.
     await db.query("DELETE FROM schema_migrations WHERE version = '007_catalog_discovery_columns.mjs'");
     assert.deepEqual(await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations'))), ['007_catalog_discovery_columns.mjs']);
+
+    // An upgrade that lost the allow-list (the old CHECK dropped, the new one never added) gets it back on re-run.
+    await db.query('ALTER TABLE catalog_runs DROP CHECK catalog_runs_mode_chk');
+    await db.query("DELETE FROM schema_migrations WHERE version = '007_catalog_discovery_columns.mjs'");
+    await db.query("INSERT INTO catalog_runs (id, mode, source, status, started_at) VALUES ('z', 'attack', 'guide_baseline', 'running', 'now')");
+    await db.query("DELETE FROM catalog_runs WHERE id = 'z'");
+    assert.deepEqual(await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations'))), ['007_catalog_discovery_columns.mjs']);
+    await assert.rejects(db.query("INSERT INTO catalog_runs (id, mode, source, status, started_at) VALUES ('z', 'attack', 'guide_baseline', 'running', 'now')"));
+});
+
+test('CAT-TASK-009: 007 replaces an old allow-list in one statement and restores a missing one', async () => {
+    const { up, RUN_MODES_CHECK } = await import('../../_gg_data/migrations/007_catalog_discovery_columns.mjs');
+    const run = async checks => {
+        const sql = [];
+        const client = { async query(s, p) { sql.push(s.replace(/\s+/g, ' ')); return /information_schema/.test(s) ? checks[p[0]] ?? [] : []; } };
+        await quietly(() => up(client));
+        return sql.filter(s => /DROP CHECK|ADD CONSTRAINT/.test(s));
+    };
+    const old = { catalog_runs: [{ name: 'catalog_runs_chk_1', clause: "mode in ('observe_realm','seed')" }], catalog_jobs: [{ name: 'catalog_jobs_chk_1', clause: "kind in ('observe_realm')" }] };
+    const replaced = await run(old);
+    assert.equal(replaced.length, 2, 'one ALTER per table: the drop is never separate from the add');
+    assert.match(replaced[0], /^ALTER TABLE catalog_runs DROP CHECK `catalog_runs_chk_1`, ADD CONSTRAINT catalog_runs_mode_chk CHECK/);
+    assert.deepEqual(await run({ catalog_runs: [], catalog_jobs: [{ name: 'catalog_jobs_kind_chk', clause: "kind in ('observe_realm','guide_discovery')" }] }),
+        [`ALTER TABLE catalog_runs ADD CONSTRAINT catalog_runs_mode_chk CHECK (${RUN_MODES_CHECK})`],
+        'an interrupted upgrade that lost the CHECK gets it back; a current one is left alone');
+});
+
+test('CAT-TASK-009: a fresh database lists its allow-list CHECKs, so 007 has nothing to replace', async () => {
+    const { db } = await setup();
+    const rows = await db.query(`SELECT tc.TABLE_NAME AS t, cc.CHECK_CLAUSE AS clause FROM information_schema.TABLE_CONSTRAINTS tc
+        JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+        WHERE tc.CONSTRAINT_SCHEMA = DATABASE() AND tc.TABLE_NAME IN ('catalog_runs', 'catalog_jobs') AND tc.CONSTRAINT_TYPE = 'CHECK'`);
+    for (const t of ['catalog_runs', 'catalog_jobs']) {
+        const allowList = rows.filter(r => r.t === t && /observe_realm/.test(r.clause));
+        assert.equal(allowList.length, 1, t);
+        assert.match(allowList[0].clause, /guide_discovery/, t);
+    }
 });
 
 test('CAT-TASK-009 / AC-CAT-011: index IDs become pending details; details refresh by due time; hash changes are detected', async () => {

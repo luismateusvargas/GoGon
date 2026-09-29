@@ -133,10 +133,15 @@ came from, and every change it makes to the tables Discord reads can be rolled b
      relay box.
 
   The relay asks GoGon what to read. It reads one page at a time, 3 s apart, at most 50 per lease and
-  2,000 per day. Index page 0 is the newest, so a daily check stops shortly after it reaches IDs it
-  already knows. A full sweep of about 1,279 pages runs weekly, or at once if the index is not in
+  2,000 per day. You have said index page 0 is the newest (DEC-CAT-017), so a daily check stops shortly
+  after it reaches IDs it already knows. Every page is checked for that order. A full sweep of about 1,279 pages runs weekly, or at once if the index is not in
   descending order. If Cloudflare asks for a check, the relay stops. Complete the check yourself, then
-  press *Start*; it resumes at the same page. A kind shows *waiting for browser* when it is due and no
+  press *Start*; it resumes at the same page. If GoGon cannot take a batch of results (tunnel down, server
+  error), the relay keeps them and sends them again; it does not read those pages again. A batch too large
+  for one submission is sent in parts. A single page too large to send stops that sweep as
+  *page too large to submit*; it is retried after an hour. A detail page GoGon cannot read (for example, after a guide
+  layout change) also stops the relay and is retried later; only a 404 marks a record missing. GoGon
+  cannot run the daily check by itself: a kind that is due stays due until a relay is running. A kind shows *waiting for browser* when it is due and no
   relay has been seen for 30 minutes. It shows *overdue* after 48 hours. Revoke a token from *Sync* at
   any time.
 - **Game jobs.** `observe_realm` needs one captured `fetchLocation` response before it can be enabled
@@ -144,4 +149,5 @@ came from, and every change it makes to the tables Discord reads can be rolled b
   which does not exist yet. The *CatalogSync* module on the Modules tab is off by default.
 - **History & delete.** Every run can be previewed for rollback. The preview is valid for 10 minutes,
   can be used once, and needs its exact phrase. Rollback restores the previous values, or removes rows
-  the run created.
+  the run created. Rolling back a guide run marks the guide details it read as unverified; the relay
+  reads them again at their normal refresh, 30 days later, not at once.

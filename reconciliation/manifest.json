@@ -133,12 +133,12 @@
       "path": "_gg_data/handler/guideDiscoveryStore.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "dd4653f0734d80468141fcd22d60c675909b287b357ac383fa312f7cff25ee8d",
+      "rootHash": "b52a70bf1d5f04db6f3ba513c9c9fcb171f9b7855d603ea0f48858839ff9d3ae",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-009: guide discovery repository (checkpoints, per-ID refresh, daily cap counter)."
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-009: guide discovery repository (checkpoints, per-ID refresh, daily cap counter). Re-reviewed 2026-09-28 after the relay audit fixes (unparseable detail is invalid, not missing; atomic lease issue and claim with cap reservation; single-statement 007 CHECK replacement)."
     },
     {
       "path": "_gg_data/handler/migrationRunner.js",
@@ -255,23 +255,23 @@
       "path": "_gg_data/migrations/007_catalog_discovery_columns.mjs",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "36603ba82f097933ed570490a79eb9febc24817efba08c45a9d4286164fc5d98",
+      "rootHash": "cddf8643c03fbd63f2c30a694fab48c133ec8988583e4024322e74e84cf49a9b",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-009: completeness columns and guide_discovery CHECK replacement, safe to re-run."
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-009: completeness columns and guide_discovery CHECK replacement, safe to re-run. Re-reviewed 2026-09-28 after the relay audit fixes (unparseable detail is invalid, not missing; atomic lease issue and claim with cap reservation; single-statement 007 CHECK replacement)."
     },
     {
       "path": "_gg_data/migrations/008_catalog_relay.sql",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "905a5687720307e2458c76468912e77161b2522b6e51407bfce37f6594efe73d",
+      "rootHash": "5a7d211dc8f0fd90237e1f9321c42b0ccec236ae14199293cd0ed0a317cc333c",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: relay token hashes and guide work leases."
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: relay token hashes and guide work leases. Re-reviewed 2026-09-28 after the relay audit fixes (unparseable detail is invalid, not missing; atomic lease issue and claim with cap reservation; single-statement 007 CHECK replacement)."
     },
     {
       "path": "_sws_data/database/sws_data.db",
@@ -595,12 +595,12 @@
       "path": "catalog/guideRelay.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "f0267a47e564f2ec0f1e6cc4c68fceab8fc48a9f923d5e928e1299022b06e0c9",
+      "rootHash": "e2b58315a1653c29c3c2a0167d6b06448dd0a10d0825186930c7bb3fedff012f",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: server half of the guide relay (tokens, leases, validated staging, checkpoints). Re-reviewed 2026-09-28 after the CAT-TASK-010 review fixes (partial retry interval, https-only seed redirects)."
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: server half of the guide relay (tokens, leases, validated staging, checkpoints). Re-reviewed 2026-09-28 after the CAT-TASK-010 review fixes (partial retry interval, https-only seed redirects). Re-reviewed 2026-09-28 after the relay audit fixes (unparseable detail is invalid, not missing; atomic lease issue and claim with cap reservation; single-statement 007 CHECK replacement)."
     },
     {
       "path": "catalog/normalizers.js",
@@ -617,12 +617,12 @@
       "path": "catalog/relayClient.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "94433f70954c1370da785748e8f5e43ca7be5903bc7f61b407333c988dbc1e5b",
+      "rootHash": "8a650789a19a5bd9462f5903b94d39d6b2276dd896dad6c66bebcf444f76eeb7",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: browser relay loop, inlined into the userscript."
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: browser relay loop, inlined into the userscript. Re-reviewed 2026-09-28 after the relay audit fixes (unparseable detail is invalid, not missing; atomic lease issue and claim with cap reservation; single-statement 007 CHECK replacement)."
     },
     {
       "path": "catalog/requestPolicy.js",
@@ -948,14 +948,14 @@
       "path": "docs/deployment.md",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "28445e7862fcf61cbe5cb833b127dc3d2112891f0288db124468ddd4a32c733e",
+      "rootHash": "48c481b872c2ccf87e820dc7583d2bda007caaf49e227ad7684b7d9ba254b54c",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "control-plane-v1:CTRL-TASK-006"
       ],
-      "rationale": "Root-only, added 2026-09-24. Owner deployment and SSH-tunnel guide. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. MySQL setup, populate step, and key rotation without snapshots. Re-reviewed 2026-09-28 after the CAT-TASK-010 review fixes (partial retry interval, https-only seed redirects)."
+      "rationale": "Root-only, added 2026-09-24. Owner deployment and SSH-tunnel guide. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. MySQL setup, populate step, and key rotation without snapshots. Re-reviewed 2026-09-28 after the CAT-TASK-010 review fixes (partial retry interval, https-only seed redirects). Re-reviewed 2026-09-28 after the relay audit fixes (attested order wording, unreadable detail pages, relay-only daily check)."
     },
     {
       "path": "engine.js",
@@ -1044,12 +1044,12 @@
       "path": "scripts/catalog/build-relay-userscript.mjs",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "62baaaf8731825a870edd022c4f24fcb17be2799529225067b366fd1af74267b",
+      "rootHash": "c5b5b58da61b116b5e8c21eb240576e190ea6fb485e6254da90cef0991a56280",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: builds reconciliation/scrappers/gogon_guide_relay.user.js."
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: builds reconciliation/scrappers/gogon_guide_relay.user.js. Re-reviewed 2026-09-28 after the relay audit fixes (unparseable detail is invalid, not missing; atomic lease issue and claim with cap reservation; single-statement 007 CHECK replacement)."
     },
     {
       "path": "scripts/control-plane/demo-server.mjs",

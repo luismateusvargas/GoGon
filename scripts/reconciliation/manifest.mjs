@@ -161,7 +161,7 @@ function requiresRetainRoot(rel) {
 
 /**
  * Joins a scan with reviewed dispositions and evaluates the AC-REC-001 preflight rules.
- * A path is merge-ready only when its reviewed hashes equal the current hashes.
+ * A path has a current local review only when its reviewed hashes equal the current hashes.
  * @returns {{ manifest: object, failures: object[], warnings: object[] }}
  */
 export function evaluate(scan, review) {
@@ -183,7 +183,7 @@ export function evaluate(scan, review) {
             if ((r.reviewedBackupHash ?? null) !== entry.backupHash || (r.reviewedRootHash ?? null) !== entry.rootHash) {
                 reviewState = 'stale';
                 fail(entry.path, 'stale-review',
-                    'Path changed after review; regenerate the manifest and repeat the review before merging it.');
+                    'Path changed after review; repeat the review if this local comparison is needed.');
             }
             if (!r.rationale || !String(r.rationale).trim()) {
                 fail(entry.path, 'missing-rationale', 'Reviewed dispositions must record a rationale.');

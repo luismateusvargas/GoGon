@@ -16,6 +16,7 @@
 import crypto from 'node:crypto';
 import { clearAllCaches } from './cacheLayer.js';
 import { idsFrom, parseJsonColumn } from './servingRelations.js';
+import { GUIDE_POLICY } from '../../catalog/contracts/policy.js';
 
 export const ENTITY_KINDS = Object.freeze(['item', 'creature', 'realm', 'master_realm', 'relic', 'quest', 'relation']);
 export const SOURCES = Object.freeze(['game_session', 'guide_baseline', 'manual_import']);
@@ -463,6 +464,25 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
     }
 
     /**
+     * After a guide_discovery run is rolled back, its guide details no longer describe what the catalog
+     * serves: they become pending (unverified, so completeness says guide_detail_missing) with no hash,
+     * so the next read stages them again. That read keeps the normal refresh interval (owner decision
+     * 2026-09-28), so the rollback holds until then.
+     */
+    async function unverifyGuideDetails(tx, runId) {
+        const [run] = await tx.query('SELECT mode FROM catalog_runs WHERE id = ?', [runId]);
+        if (run?.mode !== 'guide_discovery') return;
+        const rows = await tx.query(
+            `SELECT DISTINCT o.entity_kind, o.entity_key FROM catalog_run_observations ro JOIN catalog_observations o ON o.id = ro.observation_id
+             WHERE ro.run_id = ? AND o.entity_kind IN ('item', 'creature', 'realm', 'master_realm')`, [runId]);
+        const next = new Date(now() + GUIDE_POLICY.detailRefreshAfterMs).toISOString();
+        for (const r of rows) {
+            await tx.query("UPDATE catalog_guide_ids SET detail_status = 'pending', detail_hash = NULL, detail_attempts = 0, next_detail_at = ? WHERE entity_kind = ? AND entity_id = ?",
+                [next, r.entity_kind, Number(r.entity_key)]);
+        }
+    }
+
+    /**
      * Rolls runId back inside tx. The exact effect on the serving tables is returned as per-table row
      * deltas, so a plan can preview it by running this in a transaction that is then rolled back.
      */
@@ -488,6 +508,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             await tx.query('INSERT INTO catalog_entities (entity_kind, entity_key, observation_id, last_run_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
                 [r.kind, r.key, r.observationId, r.runId, state?.first_seen_at ?? r.observedAt, r.observedAt]);
         }
+        await unverifyGuideDetails(tx, runId);
         await refreshCompleteness(tx, [...computed.restore, ...computed.remove].map(r => [r.kind, r.key]), computed.remove);
         const after = await servingCounts(tx);
         const rows = {};
@@ -689,8 +710,10 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
          * Transaction 1 (AC-CAT-005, AC-CAT-006): validates everything first, so an invalid batch
          * writes nothing; then stores the run and its provenance with status 'running'.
          * @param {{ mode: string, source: string, observations: Array<{ kind: string, payload: object, observedAt?: string }> }} input
+         * @param {{ onRecorded?: (tx: object, runId: string) => Promise<void> }} [opts] - runs inside the
+         *   same transaction, so a caller can link the run to its own record atomically (a throw records nothing)
          */
-        async recordRun({ mode, source, observations, summary = null }) {
+        async recordRun({ mode, source, observations, summary = null }, { onRecorded } = {}) {
             if (!RUN_MODES.includes(mode)) throw invalid('Unknown run mode.', 'mode');
             if (!SOURCES.includes(source)) throw invalid('Unknown source.', 'source');
             let summaryJson = null;
@@ -722,6 +745,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
                     if (obs.created) created++;
                     await linkObservation(tx, runId, obs.id, o.observedAt);
                 }
+                if (onRecorded) await onRecorded(tx, runId);
             });
             return { runId, observations: normalized.length, newObservations: created };
         },
@@ -767,8 +791,8 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         },
 
         /** recordRun then projectRun. */
-        async ingest(input) {
-            const recorded = await this.recordRun(input);
+        async ingest(input, opts) {
+            const recorded = await this.recordRun(input, opts);
             return { ...recorded, ...(await this.projectRun(recorded.runId)) };
         },
 

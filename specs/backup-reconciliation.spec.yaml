@@ -4,13 +4,17 @@
 spec:
   id: "backup-reconciliation-v1"
   status: draft
-  version: "1.6.0"
+  version: "1.6.1"
   created: "2026-09-23"
   updated: "2026-09-28"
   version_policy:
     sync_group: "reconciliation"
     depends_on: ["auth-session-v1", "data-storage-v1", "discord-integration-v1", "game-monitors-v1", "task-engine-v1"]
   changelog:
+    - version: "1.6.1"
+      date: "2026-09-28"
+      changes:
+        - "Owner decision: reconciliation is an opt-in local diagnostic, not a merge or release gate. REC-TASK-008 removes the workspace manifest assertion from the test suite and merge-blocking wording from the local preflight; fixture tests and manual commands remain available. [AC-REC-001]"
     - version: "1.6.0"
       date: "2026-09-28"
       changes:
@@ -63,7 +67,7 @@ entities:
       - { name: status, type: string, constraints: [required], description: "differing, root-only, or backup-only" }
       - { name: backupHash, type: string, constraints: [optional], description: "SHA-256 of the canonical content (text: CRLF -> LF; binary: raw bytes); null only for root-only paths" }
       - { name: rootHash, type: string, constraints: [optional], description: "SHA-256 of the canonical content (text: CRLF -> LF; binary: raw bytes); null only for backup-only paths" }
-      - { name: reviewState, type: string, constraints: [required], description: "reviewed, stale, or unreviewed; only reviewed paths may be merged" }
+      - { name: reviewState, type: string, constraints: [required], description: "reviewed, stale, or unreviewed for an opt-in local comparison" }
       - { name: disposition, type: string, constraints: [required], description: "port, retain-root, import-data, or retire-legacy" }
   - name: DatabaseImportReport
     description: "Counts, integrity results, and rollback location for a staged legacy database import."
@@ -75,14 +79,14 @@ entities:
 
 acceptance_criteria:
   - id: AC-REC-001
-    description: "A reproducible manifest distinguishes files to port from root-only capabilities to retain"
+    description: "An opt-in local manifest distinguishes files to port from root-only capabilities to retain"
     given: "The current root and backup/ trees"
     when: "The reconciliation preflight runs"
     then: "It records SHA-256 hashes and a reviewed disposition for every differing or one-sided application path, excluding .env, node_modules, build output, and database secrets"
     error_cases:
       - given: "A selected source path changes after review"
-        when: "Implementation begins"
-        then: "The manifest is regenerated and the affected review is repeated before that path is merged"
+        when: "The owner runs the local reconciliation preflight"
+        then: "It reports the stale review for local follow-up without blocking a merge or release"
   - id: AC-REC-002
     description: "Root-only operational capabilities are retained while backup behavior is ported selectively"
     given: "Root-only migration, cache, validation, health, metrics, and constants modules"
@@ -132,6 +136,7 @@ security:
 
 constraints:
   - "backup/ is read-only evidence during reconciliation."
+  - "Reconciliation preflight and the workspace manifest are opt-in local diagnostics, excluded from automated tests, CI, and release gates."
   - "No reconciliation task may contact FallenSword, HuntedCow, Discord, or a webhook in automated tests."
   - "Legacy _sws_data paths are retired only after data migration and import compatibility are accepted."
   - "The working root is not a Git repository; initialize version control and establish an owner-controlled remote before implementation branches or CI are created."
@@ -212,6 +217,14 @@ tasks:
       compare the committed manifest the same way. Re-pin only reviews whose file is unchanged
       since review; review changed files again.
     affects: "scripts/reconciliation/manifest.mjs, tests/reconciliation/manifest.test.mjs, reconciliation/dispositions.json, reconciliation/manifest.json"
+    depends_on: ["REC-TASK-001"]
+    source: "AC-REC-001"
+    status: DONE
+  - id: REC-TASK-008
+    description: |
+      Deactivate the automatic workspace manifest check and remove merge-blocking language
+      from reconciliation. Keep fixture tests and the explicit local preflight command.
+    affects: "tests/reconciliation/manifest.test.mjs, scripts/reconciliation/manifest.mjs, scripts/reconciliation/preflight.mjs, .github/workflows/ci.yml, specs/backup-reconciliation.spec.yaml"
     depends_on: ["REC-TASK-001"]
     source: "AC-REC-001"
     status: DONE

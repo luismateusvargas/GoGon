@@ -11,9 +11,11 @@
 // are enforced on the real-MySQL CI run only (CAT-TASK-002).
 // ALTER TABLE ... MODIFY col VARCHAR(n) is a no-op here (SQLite ignores VARCHAR widths); column
 // widths are checked on the real-MySQL run.
-// information_schema.CHECK_CONSTRAINTS is always empty here: fake databases are built from the
-// current migrations, so migration 007 never has a CHECK to replace. Replacing one on an upgraded
-// database is covered on the real-MySQL run (CAT-TASK-009).
+// CHECKs declared in CREATE TABLE are listed in information_schema.CHECK_CONSTRAINTS and
+// TABLE_CONSTRAINTS under MySQL's generated names (<table>_chk_<n>, or the CONSTRAINT name), so
+// migration 007 sees the allow-lists a fresh database has. SQLite cannot drop or add a CHECK on an
+// existing table, so replacing one on an upgraded database is covered on the real-MySQL run only
+// (CAT-TASK-009); a CHECK added through ALTER TABLE ... ADD COLUMN is enforced but not listed.
 import { DatabaseSync } from 'node:sqlite';
 
 /** Shared state, like one MySQL server per test process: databases survive pool.end(). */
@@ -46,8 +48,33 @@ function database(name) {
 
 // Stand-in for information_schema.TABLE_CONSTRAINTS (retrofitted foreign keys only).
 const FAKE_CONSTRAINTS = '__fake_table_constraints';
-// Stand-in for information_schema.CHECK_CONSTRAINTS: always empty (see the header).
+// Stand-in for information_schema.CHECK_CONSTRAINTS (CREATE TABLE CHECKs; see the header).
 const FAKE_CHECKS = '__fake_check_constraints';
+
+/** The CHECKs in a CREATE TABLE statement, named as MySQL names them. */
+function tableChecks(table, sql) {
+    const checks = [];
+    let generated = 0;
+    const re = /\bCHECK\s*\(/gi;
+    let m;
+    while ((m = re.exec(sql))) {
+        let depth = 1;
+        let i = re.lastIndex;
+        let quote = null;
+        for (; i < sql.length && depth; i++) {
+            const ch = sql[i];
+            if (quote) { if (ch === '\\') i++; else if (ch === quote) quote = null; }
+            else if (ch === "'" || ch === '"') quote = ch;
+            else if (ch === '(') depth++;
+            else if (ch === ')') depth--;
+        }
+        const named = sql.slice(0, m.index).match(/\bCONSTRAINT\s+`?(\w+)`?\s*$/i);
+        checks.push({ name: named ? named[1] : `${table}_chk_${++generated}`, clause: sql.slice(re.lastIndex, i - 1).trim() });
+        re.lastIndex = i;
+    }
+    return checks;
+}
+const literal = v => `'${String(v).replace(/'/g, "''")}'`;
 
 class FakeMysqlError extends Error {
     constructor(message, code, errno) {
@@ -95,6 +122,10 @@ export function translate(sql) {
     const extra = [];
     if (/^CREATE\s+TABLE/i.test(s)) {
         const table = s.match(/^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?/i)?.[1];
+        for (const c of tableChecks(table, s)) {
+            extra.push(`INSERT OR IGNORE INTO ${FAKE_CONSTRAINTS} (TABLE_NAME, CONSTRAINT_NAME, CONSTRAINT_TYPE) VALUES (${literal(table)}, ${literal(c.name)}, 'CHECK')`);
+            extra.push(`INSERT INTO ${FAKE_CHECKS} (CONSTRAINT_SCHEMA, CONSTRAINT_NAME, CHECK_CLAUSE) SELECT 'fake', ${literal(c.name)}, ${literal(c.clause)} WHERE NOT EXISTS (SELECT 1 FROM ${FAKE_CHECKS} WHERE CONSTRAINT_NAME = ${literal(c.name)})`);
+        }
         s = s.replace(/\)\s*((?:ENGINE|DEFAULT\s+CHARSET|CHARSET|COLLATE)\s*=?\s*\w+\s*)+$/i, ')');
         s = s.replace(/\b\w*INT\b(\s+NOT\s+NULL)?\s+AUTO_INCREMENT\s+PRIMARY\s+KEY/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT');
         // Inline, non-unique INDEX name (cols) -> separate CREATE INDEX.

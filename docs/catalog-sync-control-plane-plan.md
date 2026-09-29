@@ -1,6 +1,6 @@
 # Fallen Sword Catalog Sync: delivery plan
 
-Status: implemented on `feat/CAT-TASK-009-guide-discovery-stack` against `catalog-sync-v1` 1.3.0 (2026-09-28). CAT-TASK-002..007, 009, and 010 are done. CAT-TASK-001 waits only on one owner-captured `fetchLocation` response (DEC-CAT-019). The CAT-TASK-008 release gate has its automated part done; its live evidence (real-MySQL CI run, Docker loopback, SSH-tunnel browser acceptance, a live relay sweep, a live passive observation) is open.
+Status: implemented on `feat/CAT-TASK-009-guide-discovery-stack` against `catalog-sync-v1` 1.3.1 (2026-09-28). CAT-TASK-002..007, 009, and 010 are done. CAT-TASK-001 waits on one owner-captured `fetchLocation` response (DEC-CAT-019); guide index order rests on the owner attestation (DEC-CAT-017) until the first live relay sweep records it as verified. The CAT-TASK-008 release gate has its automated part done; its live evidence (real-MySQL CI run, Docker loopback, SSH-tunnel browser acceptance, a live relay sweep, a live passive observation) is open.
 
 ## Outcome
 
@@ -37,6 +37,7 @@ The Catalog tab contains four subviews:
 | DEC-CAT-018 | (2026-09-28) Guide policy (`catalog/contracts/policy.js` `GUIDE_POLICY`): one request in flight, 3 s minimum delay, 50 requests per relay lease, 2,000 requests per UTC day, 24 h check interval, one overlap page, 7-day full sweep, 30-day detail refresh (10 per lease), 5 detail attempts, and a 60-minute wait before retrying a sweep stopped by a bad or failed page. The estimated full sweep is 1,279 index pages (661 item, 321 creature, 282 realm, 15 master realm): 26 leases and at least 64 minutes, inside the cap with 721 requests left for details. A first full detail pass over ~30,000 records takes about 15 days at this cap, so seed a baseline first (CAT-TASK-007). |
 | DEC-CAT-019 | (2026-09-28) The game `fetchLocation` response has never been captured. `catalog/contracts/gameLocation.js` stays unverified with no field mapping, and observe_realm jobs are refused until an owner captures one redacted response, commits it as a fixture, and fills in the mapping. No game creature- or item-detail read exists, so item_frontier is unavailable. |
 | DEC-CAT-020 | (2026-09-28) The approved seed source key is `fsdatabase`: the same four snapshot files `scripts/populate_db.mjs` loads. Seeding stages them as ordered parts of at most 2,000 observations; each part is promoted through a previewed plan with an exact confirmation, in order. `populate_db.mjs` stays manual and unchanged. |
+| DEC-CAT-021 | (2026-09-28) Rolling back a `guide_discovery` run returns the guide details it staged to unverified (pending, no hash), so completeness no longer claims them. Their next read keeps the normal detail refresh interval (30 days) instead of running at once, so the rollback holds until then. A relay lease is checkpointed only with the exact results its staged run was built from, and only while that run is applied; otherwise the lease is closed without moving checkpoints and its pages are read again. |
 
 ## Work sequence
 

@@ -4,8 +4,9 @@
 //     MySQL has no ADD COLUMN IF NOT EXISTS, so a duplicate column (ER_DUP_FIELDNAME) means done.
 //   - catalog_runs.mode and catalog_jobs.kind accept 'guide_discovery'. Their CHECKs were declared
 //     inline in 003, so MySQL named them <table>_chk_<n>. Databases created from the current 003
-//     already accept the value; on older ones the CHECK is found through information_schema, dropped,
-//     and re-added under a stable name.
+//     already accept the value; on older ones the CHECK is found through information_schema and
+//     replaced under a stable name in a single statement, so an interrupted run cannot leave the
+//     column unchecked and a re-run adds the allow-list back if it is absent.
 
 const COLUMNS = [
     "ALTER TABLE catalog_entities ADD COLUMN completeness VARCHAR(16) CHECK (completeness IS NULL OR completeness IN ('complete', 'incomplete'))",
@@ -37,9 +38,11 @@ export async function up(client) {
              WHERE tc.CONSTRAINT_SCHEMA = DATABASE() AND tc.TABLE_NAME = ? AND tc.CONSTRAINT_TYPE = 'CHECK'`, [c.table]);
         // The allow-list CHECK on this column is the one naming 'observe_realm'.
         const current = rows.find(r => /observe_realm/.test(String(r.clause)));
-        if (!current || /guide_discovery/.test(String(current.clause))) continue;
-        await client.query(`ALTER TABLE ${c.table} DROP CHECK \`${current.name}\``);
-        await client.query(`ALTER TABLE ${c.table} ADD CONSTRAINT ${c.name} CHECK (${c.check})`);
+        if (current && /guide_discovery/.test(String(current.clause))) continue;
+        // Drop and add in one ALTER TABLE, which MySQL 8 applies atomically: the column is never left
+        // without its allow-list. If none is found (the column lost it some other way), it is added.
+        const drop = current ? `DROP CHECK \`${current.name}\`, ` : '';
+        await client.query(`ALTER TABLE ${c.table} ${drop}ADD CONSTRAINT ${c.name} CHECK (${c.check})`);
         console.log(`[GG_DB] ${c.table}.${c.column} now accepts guide_discovery.`);
     }
 }

@@ -1,6 +1,7 @@
 # .github/workflows/ci.yml - DATA-TASK-009 / AC-DATA-008
 # CI runs on the tracked code only (owner decision 2026-09-24): backup/ is Git-ignored and never
-# supplied here, so no reconciliation comparison or preflight runs in CI.
+# supplied here. Reconciliation is an opt-in local diagnostic, not a release gate;
+# no reconciliation comparison or preflight runs in CI.
 #   test   - the whole suite on Node 22 with the in-process MySQL fake and the no-network guard
 #   mysql  - the data-layer, catalog, and control-plane tests again, against a real MySQL 8.4
 #            (includes the catalog migration upgrade tests that only run on MySQL)

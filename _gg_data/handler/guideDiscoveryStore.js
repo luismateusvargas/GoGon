@@ -174,5 +174,12 @@ export function createGuideDiscoveryStore(db, { now = Date.now } = {}) {
             if (!(Number.isSafeInteger(n) && n >= 0)) throw new Error('Usage must be a non-negative integer.');
             await q.query('INSERT INTO catalog_guide_usage (day, requests) VALUES (?, ?) AS new ON DUPLICATE KEY UPDATE requests = catalog_guide_usage.requests + new.requests', [day, n]);
         },
+
+        /** Gives back reserved requests that were not made (never below zero). */
+        async refundUsage(n, q = db, day = this.dayOf()) {
+            if (!(Number.isSafeInteger(n) && n >= 0)) throw new Error('Usage must be a non-negative integer.');
+            if (!n) return;
+            await q.query('UPDATE catalog_guide_usage SET requests = CASE WHEN requests > ? THEN requests - ? ELSE 0 END WHERE day = ?', [n, n, day]);
+        },
     };
 }
