@@ -106,6 +106,7 @@ test('AC-CAT-007: browse renders hostile names and details as text, with coverag
     assert.match(row.textContent, /a known drop is not in the catalog/);
     assert.match($('#catalog-kinds').textContent, /item: 2 rows, 2 tracked, 1 incomplete/);
     assert.match($('#guide-policy').textContent, /12 of 2000 used today/);
+    assert.match($('#relay-tokens').textContent, /set gogonRelayToken to a token issued here/, 'relay setup is explained; no token is shown');
     // Switch the filter to creatures and search through the form.
     [...ui.document.querySelectorAll('#cf-kind option')].find(o => o.getAttribute('value') === 'creature').selected = true;
     $('#cf-q').value = 'Golem';

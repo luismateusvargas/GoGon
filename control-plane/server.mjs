@@ -13,6 +13,7 @@ import { hmac, randomToken, safeEqual, verifyPassword } from './crypto.mjs';
 import { VALIDATORS, CONFIG_BY_KEY, SECTIONS, MODULE_INTERVAL_BOUNDS, validateSetting } from '../config/registry.mjs';
 import { describeSettings, applyOverride, getSetting } from '../config/runtime.mjs';
 import { CatalogError } from '../_gg_data/handler/catalogStore.js';
+import { MAX_RELAY_BODY } from '../catalog/guideRelay.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const STATIC_FILES = {
@@ -105,7 +106,7 @@ class HttpError extends Error {
  * @param {() => object|Promise<object>} [opts.healthReport] - { status, ... } for /api/health
  * @param {() => object} [opts.metrics] - telemetry for /api/metrics
  * @param {() => object} [opts.validation] - configValidator summary
- * @param {object} [opts.catalog] - CAT-TASK-005: { service (catalog/catalogService.js), runNow() }
+ * @param {object} [opts.catalog] - CAT-TASK-005: { service (catalog/catalogService.js), runNow(), relay (catalog/guideRelay.js) }
  */
 export function createControlPlane({ config, store, engine, switcher, rebind = async () => {}, healthReport = () => ({ status: 'ok' }), metrics = () => ({}), validation = () => null, catalog = null, now = Date.now, sessionIdleMs = 30 * 60_000, sessionMaxMs = 8 * 3600_000 }) {
     const sessions = new Map();     // id -> { csrf, createdAt, lastSeen }
@@ -314,6 +315,26 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
                     throw e;
                 }
             }
+            if (p === '/api/catalog/relay-tokens') {
+                const body = await readJson(req);
+                allowOnly(body, ['label', 'ttlDays']);
+                try {
+                    const issued = await svc.issueRelayToken({ label: body.label, ttlDays: body.ttlDays });
+                    await audit('catalog.relay-token.issue', issued.id, 'success', { label: issued.label, days: body.ttlDays });
+                    broadcastSoon();
+                    // The token is returned this once and never again; only its hash is stored.
+                    return send(res, 201, { ok: true, ...issued });
+                } catch (e) {
+                    if (e instanceof CatalogError) await audit('catalog.relay-token.issue', 'relay', 'denied', { reason: e.code });
+                    throw e;
+                }
+            }
+            if ((match = p.match(/^\/api\/catalog\/relay-tokens\/([0-9a-f-]{36})\/revoke$/)) && UUID.test(match[1])) {
+                await svc.revokeRelayToken(match[1]);
+                await audit('catalog.relay-token.revoke', match[1]);
+                broadcastSoon();
+                return send(res, 200, { ok: true });
+            }
             if (p === '/api/catalog/seeds') {
                 const body = await readJson(req);
                 allowOnly(body, ['sourceKey']);
@@ -362,6 +383,64 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
         } catch (e) {
             throw e instanceof HttpError ? e : catalogHttp(e);
         }
+        throw new HttpError(404, 'Not found.');
+    }
+
+    // --- guide relay (CAT-TASK-010 / AC-CAT-014) -----------------------------------------------
+    // The only routes that accept a bearer token instead of the dashboard session. A token is
+    // stage-only: it can ask for a lease and return that lease's results, nothing else. No cookie,
+    // CSRF value, URL, or HTML is ever read from these requests.
+    const relayLimiter = createLimiter({ max: 120, windowMs: 60_000, now });
+
+    async function readRelayJson(req) {
+        const type = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+        if (type !== 'application/json') throw new HttpError(415, 'Content-Type must be application/json.');
+        if (Number(req.headers['content-length'] || 0) > MAX_RELAY_BODY) throw new HttpError(413, 'Request body too large.');
+        let size = 0;
+        const chunks = [];
+        for await (const chunk of req) {
+            size += chunk.length;
+            if (size > MAX_RELAY_BODY) throw new HttpError(413, 'Request body too large.');
+            chunks.push(chunk);
+        }
+        try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null'); } catch { throw new HttpError(400, 'Malformed JSON.'); }
+    }
+
+    async function handleRelay(req, res, url) {
+        const relay = catalog?.relay;
+        if (!relay) throw new HttpError(404, 'Not found.');
+        const auth = String(req.headers.authorization || '');
+        const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+        const holder = await relay.authenticate(token);
+        if (!holder) {
+            deny(req, 'catalog.relay', token ? 'invalid, expired, or revoked token' : 'missing token');
+            throw new HttpError(401, 'Relay token required.');
+        }
+        const rate = relayLimiter.hit(holder.id);
+        if (rate.limited) throw new HttpError(429, 'Too many relay requests.', { retryAfterS: rate.retryAfterS });
+        const actor = `relay:${holder.id.slice(0, 8)}`;
+        let match;
+        try {
+            if (req.method === 'GET' && url.pathname === '/relay/guide/lease') {
+                queryOnly(url, []);
+                return send(res, 200, await relay.nextLease(holder.id));
+            }
+            if (req.method === 'POST' && (match = url.pathname.match(/^\/relay\/guide\/leases\/([0-9a-f-]{36})$/)) && UUID.test(match[1])) {
+                const body = await readRelayJson(req);
+                try {
+                    const summary = await relay.submit(holder.id, match[1], body);
+                    await store.audit({ actor, action: 'catalog.relay.submit', subject: match[1], detail: { requests: summary.requests, observations: summary.observations, pages: summary.pages, details: summary.details, sweepComplete: summary.sweepComplete } });
+                    broadcastSoon();
+                    return send(res, 200, { ok: true, ...summary });
+                } catch (e) {
+                    if (e instanceof CatalogError) await store.audit({ actor, action: 'catalog.relay.submit', subject: match[1], outcome: 'denied', detail: { reason: e.code } });
+                    throw e;
+                }
+            }
+        } catch (e) {
+            throw e instanceof HttpError ? e : catalogHttp(e);
+        }
+        deny(req, 'catalog.relay', 'route not allowed for a relay token');
         throw new HttpError(404, 'Not found.');
     }
 
@@ -592,6 +671,8 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
                 if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed.');
                 return await handleLogin(req, res);
             }
+            // CAT-TASK-010: the guide relay's token-authenticated routes. Never a session route.
+            if (url.pathname.startsWith('/relay/')) return await handleRelay(req, res, url);
             const session = readSession(req);
             const asset = STATIC_FILES[url.pathname];
             if (asset && req.method === 'GET') {

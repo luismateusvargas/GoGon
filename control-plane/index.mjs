@@ -16,6 +16,7 @@ import { createGuideDiscoveryStore } from '../_gg_data/handler/guideDiscoverySto
 import { createCollector } from '../catalog/collector.js';
 import { createCatalogService } from '../catalog/catalogService.js';
 import { createSeedService } from '../catalog/seedService.js';
+import { createGuideRelay } from '../catalog/guideRelay.js';
 import { configureCatalogTask, runCatalogSync } from '../catalog/catalogTask.js';
 
 /**
@@ -32,8 +33,9 @@ export async function createCatalog() {
         sessionReady: () => (engine.isPaused() ? { ok: false, reason: 'engine_paused' } : { ok: true }),
     });
     configureCatalogTask({ store, collector });
-    const service = createCatalogService({ db, store, guideStore, collector, seeds: createSeedService({ db, store }) });
-    return { db, store, guideStore, collector, service, runNow: () => runCatalogSync({}) };
+    const relay = createGuideRelay({ db, store, guideStore });
+    const service = createCatalogService({ db, store, guideStore, collector, relay, seeds: createSeedService({ db, store }) });
+    return { db, store, guideStore, collector, relay, service, runNow: () => runCatalogSync({}) };
 }
 
 export function isControlPlaneEnabled(env = process.env) {

@@ -299,7 +299,43 @@ async function loadCatalogSummary() {
         `Checked every ${Math.round(g.checkIntervalMs / 3600_000)} h in your validated browser; ${g.minDelayMs / 1000} s between requests, ` +
         `${g.maxRequestsPerExecution} per run, ${s.guideRequestsToday} of ${g.dailyRequestCap} used today. Index order: ${s.policy.ordering.order} ` +
         `from page ${s.policy.ordering.firstIndex}, checked every run. A full sweep is about ${s.policy.fullSweep.indexPages} pages.`;
+    renderRelayTokens(s.relayTokens ?? []);
     renderCatalogState();
+}
+
+/** CAT-TASK-010: stage-only relay tokens. A new token is shown once and never again. */
+function renderRelayTokens(tokens, issued = null) {
+    const box = document.getElementById('relay-tokens');
+    const rows = tokens.map(t => {
+        const revoke = el('button', { type: 'button', class: 'ghost danger', disabled: !t.active }, 'Revoke');
+        revoke.addEventListener('click', async () => {
+            if (!window.confirm(`Revoke relay token "${t.label}"? The browser using it stops at its next request.`)) return;
+            try { await api('POST', `/api/catalog/relay-tokens/${t.id}/revoke`); showBanner('Relay token revoked.', 'ok'); loadCatalogSummary(); } catch (e) { showBanner(fieldMessage(e)); }
+        });
+        return el('tr', {}, el('td', {}, t.label), el('td', {}, t.active ? 'active' : (t.revokedAt ? 'revoked' : 'expired')),
+            el('td', {}, fmtTime(t.expiresAt)), el('td', {}, fmtTime(t.lastUsedAt)), el('td', { class: 'actions' }, revoke));
+    });
+    const label = el('input', { maxLength: 64, placeholder: 'browser label', value: 'my browser', id: 'rt-label' });
+    const days = el('input', { type: 'number', min: 1, max: 7, value: 7, class: 'interval', id: 'rt-days' });
+    const issue = el('button', { type: 'submit' }, 'Issue relay token');
+    const form = el('form', { class: 'toolbar', autocomplete: 'off' }, el('label', { htmlFor: 'rt-label' }, 'Relay token'), label,
+        el('label', { htmlFor: 'rt-days' }, 'days'), days, issue);
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+            const r = await api('POST', '/api/catalog/relay-tokens', { label: label.value.trim(), ttlDays: Number(days.value) });
+            renderRelayTokens((await api('GET', '/api/catalog/summary')).relayTokens, r);
+        } catch (e) { showBanner(fieldMessage(e)); }
+    });
+    box.replaceChildren(
+        el('h3', {}, 'Guide relay'),
+        el('p', { class: 'muted' }, 'Install reconciliation/scrappers/gogon_guide_relay.user.js in Tampermonkey. In the script\'s Storage tab, set gogonRelayToken to a token issued here. Open the SSH tunnel, open a guide page, and press Start. The token can only fetch leases and return guide results.'),
+        issued ? el('div', { class: 'card' }, el('strong', {}, 'Copy this token now; it is not shown again: '), el('code', {}, issued.token),
+            el('div', { class: 'muted' }, `Expires ${fmtTime(issued.expiresAt)}.`)) : null,
+        tokens.length ? el('div', { class: 'table-wrap' }, el('table', {},
+            el('thead', {}, el('tr', {}, el('th', {}, 'Label'), el('th', {}, 'State'), el('th', {}, 'Expires'), el('th', {}, 'Last used'), el('th', {}, ''))),
+            el('tbody', {}, ...rows))) : null,
+        form);
 }
 
 async function loadEntities() {

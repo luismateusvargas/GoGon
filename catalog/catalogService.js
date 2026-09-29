@@ -48,10 +48,11 @@ function cell(col, value, spec) {
  * @param {object} [deps.collector] - for per-job latest results
  * @param {object} [deps.operations] - read operations (test seam)
  * @param {() => number} [deps.now]
- * @param {() => string|null} [deps.relayLastSeenAt] - latest authenticated relay contact (CAT-TASK-010)
+ * @param {object} [deps.relay] - catalog/guideRelay.js (CAT-TASK-010): relay presence and tokens
  * @param {object} [deps.seeds] - catalog/seedService.js (CAT-TASK-007)
  */
-export function createCatalogService({ db, store, guideStore, collector = null, operations = readOperations(), now = Date.now, relayLastSeenAt = () => null, seeds = null }) {
+export function createCatalogService({ db, store, guideStore, collector = null, operations = readOperations(), now = Date.now, relay = null, seeds = null }) {
+    const relayLastSeenAt = async () => (relay ? relay.lastSeenAt() : null);
     const entityKey = (kind, row) => (SERVING[kind].natural ? `${row.realm_id}:${row.name}` : String(row.id));
 
     async function statesFor(kind, keys) {
@@ -60,12 +61,11 @@ export function createCatalogService({ db, store, guideStore, collector = null, 
         return new Map(rows.map(r => [r.entity_key, r]));
     }
 
-    function guideStatus(state, t) {
+    function guideStatus(state, t, seen) {
         const last = state.lastSuccessfulCheckAt ? Date.parse(state.lastSuccessfulCheckAt) : null;
         const age = last === null ? null : t - last;
         const due = age === null || age >= GUIDE_POLICY.checkIntervalMs;
         const overdue = age === null ? Boolean(state.sweepStartedAt) : age >= 2 * GUIDE_POLICY.checkIntervalMs;
-        const seen = relayLastSeenAt();
         const browserRecent = seen && t - Date.parse(seen) < 30 * 60_000;
         let display = state.status;
         if (state.status === 'idle' || state.status === 'partial') {
@@ -81,9 +81,11 @@ export function createCatalogService({ db, store, guideStore, collector = null, 
             const t = now();
             const jobs = await store.listJobs();
             const results = collector?.lastResults?.() ?? {};
+            const seen = await relayLastSeenAt();
             return {
                 jobs: jobs.slice(0, 20).map(j => ({ ...j, lastResult: results[j.id] ?? null })),
-                guide: (await guideStore.listStates()).map(s => guideStatus(s, t)),
+                guide: (await guideStore.listStates()).map(s => guideStatus(s, t, seen)),
+                relayLastSeenAt: seen,
                 available: Object.fromEntries(['observe_realm', 'item_frontier', 'guide_discovery'].map(k => [k, unavailableReason(k, operations)])),
             };
         },
@@ -103,7 +105,7 @@ export function createCatalogService({ db, store, guideStore, collector = null, 
                 kinds,
                 coverage: await guideStore.coverage(),
                 guideRequestsToday: await guideStore.usage(),
-                relayLastSeenAt: relayLastSeenAt(),
+                relayTokens: relay ? await relay.listTokens() : [],
                 policy: { game: GAME_POLICY, guide: GUIDE_POLICY, ordering: GUIDE_ORDERING, fullSweep: fullSweepEstimate() },
             };
         },
@@ -240,5 +242,15 @@ export function createCatalogService({ db, store, guideStore, collector = null, 
         },
         planPromotion: runId => store.planPromotion(runId),
         discardStagedRun: runId => store.discardStagedRun(runId),
+
+        // --- guide relay tokens (CAT-TASK-010; owner session only) ---
+        issueRelayToken(input) {
+            if (!relay) throw new CatalogError('conflict', 'The guide relay is not configured.');
+            return relay.issueToken(input);
+        },
+        revokeRelayToken(id) {
+            if (!relay) throw new CatalogError('conflict', 'The guide relay is not configured.');
+            return relay.revokeToken(id);
+        },
     };
 }

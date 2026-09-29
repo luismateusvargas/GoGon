@@ -9,12 +9,12 @@
     "reviewer": "Claude Code (pending owner confirmation)"
   },
   "summary": {
-    "paths": 87,
+    "paths": 92,
     "identical": 1,
     "byDisposition": {
       "import-data": 1,
       "port": 7,
-      "retain-root": 76,
+      "retain-root": 81,
       "retire-legacy": 3
     },
     "failures": 0
@@ -263,6 +263,17 @@
       "rationale": "Root-only, added 2026-09-28 by CAT-TASK-009: completeness columns and guide_discovery CHECK replacement, safe to re-run."
     },
     {
+      "path": "_gg_data/migrations/008_catalog_relay.sql",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "905a5687720307e2458c76468912e77161b2522b6e51407bfce37f6594efe73d",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: relay token hashes and guide work leases."
+    },
+    {
       "path": "_sws_data/database/sws_data.db",
       "status": "backup-only",
       "backupHash": "af800c5f4981735a6b3e8e1c0dafacc7cfcfe3a4a3b6d5d53fbbc4cf2dc322e6",
@@ -485,12 +496,12 @@
       "path": "catalog/catalogService.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "9a906ce4ed8d5adc191068b63f50bcd3096c507f10d55aa7550742b007f7da9e",
+      "rootHash": "5aa04aca2426560a7679f739afbcdead38b7bddd7e9a55da320ada46b1cd351b",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-005: Catalog API service (browse, detail, jobs, plans) over code-owned column lists. Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding)."
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-005: Catalog API service (browse, detail, jobs, plans) over code-owned column lists. Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding). Re-reviewed 2026-09-28 after CAT-TASK-010 (guide relay)."
     },
     {
       "path": "catalog/catalogTask.js",
@@ -559,6 +570,17 @@
       "rationale": "Root-only, added 2026-09-28 by CAT-TASK-001: code-owned catalog source contracts (game/guide request policy, guide URL/order contract, unverified game location contract, response classification)."
     },
     {
+      "path": "catalog/guideNormalizers.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "eb08d6390644c4a69ba68c11df551bca445937714af4f0a46056873e7473b5f0",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: strict wire schemas for relay records."
+    },
+    {
       "path": "catalog/guideParsers.js",
       "status": "root-only",
       "backupHash": null,
@@ -570,6 +592,17 @@
       "rationale": "Root-only, added 2026-09-28 by CAT-TASK-001: guide page parsers ported from the supplied reconciliation/scrappers userscripts; inlined into the relay userscript."
     },
     {
+      "path": "catalog/guideRelay.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "45699f702062691d4d4a57f5b294c38714f418c898ddc38293354cdb95a9f253",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: server half of the guide relay (tokens, leases, validated staging, checkpoints)."
+    },
+    {
       "path": "catalog/normalizers.js",
       "status": "root-only",
       "backupHash": null,
@@ -579,6 +612,17 @@
       "secretBearing": false,
       "owners": [],
       "rationale": "Root-only, added 2026-09-28 by CAT-TASK-003: contract-mapped game response normalizers."
+    },
+    {
+      "path": "catalog/relayClient.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "94433f70954c1370da785748e8f5e43ca7be5903bc7f61b407333c988dbc1e5b",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: browser relay loop, inlined into the userscript."
     },
     {
       "path": "catalog/requestPolicy.js",
@@ -693,27 +737,27 @@
       "path": "control-plane/index.mjs",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "2747131f2b94389e6814617b78574cbe45308aaa16fc4672a615c14266ac7418",
+      "rootHash": "06a45424daf65438838cd95a4e32991f4aaaab01adafde244891da191c67bfef",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Bootstrap wiring for app.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: GG_CONTROL_ENABLED uses the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API). Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding)."
+      "rationale": "Root-only, added 2026-09-24. Bootstrap wiring for app.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: GG_CONTROL_ENABLED uses the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API). Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding). Re-reviewed 2026-09-28 after CAT-TASK-010 (guide relay)."
     },
     {
       "path": "control-plane/public/app.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "84657722c3e5f91c4f7db675f372f216058d26bfdf5f3d2a94f0906e4d303225",
+      "rootHash": "147b73cef2416e9787ddd8753ac31777007999b83083fecf01eb2a1a43544ad6",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Dashboard client (textContent rendering only). Re-reviewed 2026-09-28 after CAT-TASK-006 (Catalog tab)."
+      "rationale": "Root-only, added 2026-09-24. Dashboard client (textContent rendering only). Re-reviewed 2026-09-28 after CAT-TASK-006 (Catalog tab). Re-reviewed 2026-09-28 after CAT-TASK-010 (guide relay)."
     },
     {
       "path": "control-plane/public/index.html",
@@ -771,14 +815,14 @@
       "path": "control-plane/server.mjs",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "0afbd9bede27bb5f7e1015ebe419c305a2b020e0f39b1b7d703c1bc81279c3e6",
+      "rootHash": "cabe77c2407354f4361586c3ba702c792fe489e5f6f9c96e736ee4d96ae2e096",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Authenticated dashboard/API server. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: bootstrap settings use the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API). Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding)."
+      "rationale": "Root-only, added 2026-09-24. Authenticated dashboard/API server. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: bootstrap settings use the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API). Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding). Re-reviewed 2026-09-28 after CAT-TASK-010 (guide relay)."
     },
     {
       "path": "discordBot.mjs",
@@ -995,6 +1039,17 @@
         "REC-TASK-006"
       ],
       "rationale": "Legacy Windows launcher with a hardcoded deployment path; root starts with npm start."
+    },
+    {
+      "path": "scripts/catalog/build-relay-userscript.mjs",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "62baaaf8731825a870edd022c4f24fcb17be2799529225067b366fd1af74267b",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: builds reconciliation/scrappers/gogon_guide_relay.user.js."
     },
     {
       "path": "scripts/control-plane/demo-server.mjs",

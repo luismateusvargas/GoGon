@@ -12,6 +12,7 @@ import { createGuideDiscoveryStore } from '../../_gg_data/handler/guideDiscovery
 import { createCatalogService } from '../../catalog/catalogService.js';
 import { createSeedService } from '../../catalog/seedService.js';
 import { SEED_SOURCES } from '../../catalog/sourceRegistry.js';
+import { createGuideRelay } from '../../catalog/guideRelay.js';
 import { createKeyring, hashPassword } from '../../control-plane/crypto.mjs';
 import { createControlPlane } from '../../control-plane/server.mjs';
 
@@ -30,11 +31,13 @@ before(async () => {
     catalogStore = createCatalogStore(db, { now, invalidateCaches: () => {} });
     const seedData = { master_realm: [{ id: 501, name: 'Seeded Master' }], realm: [], creature: [], item: [{ id: 50001, name: 'Seeded Item' }] };
     const seeds = createSeedService({ db, store: catalogStore, fetchJson: async url => seedData[Object.keys(SEED_SOURCES.fsdatabase.files).find(k => SEED_SOURCES.fsdatabase.files[k] === url)] });
-    const service = createCatalogService({ db, store: catalogStore, guideStore: createGuideDiscoveryStore(db, { now }), now, seeds });
+    const guideStore = createGuideDiscoveryStore(db, { now });
+    const relay = createGuideRelay({ db, store: catalogStore, guideStore, now });
+    const service = createCatalogService({ db, store: catalogStore, guideStore, now, seeds, relay });
     const engine = { engineEvents: new EventEmitter(), isPaused: () => paused, listModuleIds: () => [], getTasksStatus: () => [] };
     const switcher = { events: new EventEmitter(), status: () => ({ state: 'idle', activeLabel: null, lastError: null }) };
     const config = { username: ADMIN, passwordHash: hashPassword(PASSWORD), sessionSecret: 'y'.repeat(48), host: '127.0.0.1', port: 0, cookieSecure: false };
-    cp = createControlPlane({ config, store: controlStore, engine, switcher, now, catalog: { service, runNow: async () => runNowResult } });
+    cp = createControlPlane({ config, store: controlStore, engine, switcher, now, catalog: { service, relay, runNow: async () => runNowResult } });
     const { port } = await cp.listen(0, '127.0.0.1');
     cp.allowHost(`127.0.0.1:${port}`);
     base = `http://127.0.0.1:${port}`;
@@ -230,6 +233,57 @@ test('AC-CAT-006 / AC-CAT-009: seeds are staged by approved key only, then promo
     assert.equal(done.json.result.action, 'promote');
     assert.equal((await db.query('SELECT COUNT(*) AS n FROM items WHERE id = 50001'))[0].n, 1);
     assert.equal((await req('POST', `/api/catalog/runs/${runId}/discard`, { cookie, csrf })).status, 409, 'a promoted run is not staged anymore');
+});
+
+async function relayReq(method, url, { token, body, rawBody, contentType = 'application/json', cookie } = {}) {
+    const headers = {};
+    if (token !== undefined) headers.Authorization = `Bearer ${token}`;
+    if (body !== undefined || rawBody !== undefined) headers['Content-Type'] = contentType;
+    if (cookie) headers.Cookie = cookie;
+    const res = await fetch(base + url, { method, headers, body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)) });
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* not JSON */ }
+    return { status: res.status, json, text };
+}
+
+test('AC-CAT-014: the owner issues a stage-only relay token once; it opens the relay routes and nothing else', async () => {
+    const { cookie, csrf } = await session();
+    assert.equal((await req('POST', '/api/catalog/relay-tokens', { cookie, body: { label: 'laptop', ttlDays: 7 } })).status, 403, 'issuing needs CSRF');
+    assert.equal((await req('POST', '/api/catalog/relay-tokens', { cookie, csrf, body: { label: 'laptop', ttlDays: 30 } })).status, 400, 'at most seven days');
+    const issued = await req('POST', '/api/catalog/relay-tokens', { cookie, csrf, body: { label: 'laptop', ttlDays: 7 } });
+    assert.equal(issued.status, 201);
+    const { token, id } = issued.json;
+    assert.match(token, /^ggr_/);
+    const summary = await req('GET', '/api/catalog/summary', { cookie });
+    assert.ok(!summary.text.includes(token), 'the token is never shown again');
+    assert.equal(summary.json.relayTokens[0].label, 'laptop');
+    assert.ok(!JSON.stringify(await controlStore.listAudit(50)).includes(token), 'nor audited');
+
+    assert.equal((await relayReq('GET', '/relay/guide/lease')).status, 401);
+    assert.equal((await relayReq('GET', '/relay/guide/lease', { token: 'ggr_not-a-real-token-value' })).status, 401);
+    const lease = await relayReq('GET', '/relay/guide/lease', { token });
+    assert.equal(lease.status, 200, 'no session, Origin, or CSRF is needed on the relay route');
+    assert.deepEqual(lease.json, { status: 'disabled' }, 'no guide job is enabled yet');
+    assert.equal((await relayReq('GET', '/relay/guide/lease?kind=item', { token })).status, 400);
+
+    // The token is not a session: every ordinary Catalog route still refuses it.
+    const jobsBefore = (await catalogStore.listJobs()).length;
+    assert.equal((await relayReq('GET', '/api/catalog/summary', { token })).status, 401);
+    assert.equal((await relayReq('POST', '/api/catalog/jobs', { token, body: { kind: 'guide_discovery', requestBudget: 5 } })).status, 401);
+    assert.equal((await relayReq('POST', '/relay/guide/jobs', { token, body: {} })).status, 404);
+    assert.equal((await relayReq('POST', `/relay/guide/plans/${crypto.randomUUID()}/execute`, { token, body: {} })).status, 404);
+    assert.equal((await catalogStore.listJobs()).length, jobsBefore, 'the token created no job');
+
+    const leaseId = crypto.randomUUID();
+    assert.equal((await relayReq('POST', `/relay/guide/leases/${leaseId}`, { token, body: { results: [] } })).status, 404, 'unknown lease');
+    assert.equal((await relayReq('POST', `/relay/guide/leases/${leaseId}`, { token, rawBody: 'results=1', contentType: 'application/x-www-form-urlencoded' })).status, 415);
+    assert.equal((await relayReq('POST', `/relay/guide/leases/${leaseId}`, { token, rawBody: JSON.stringify({ results: [], pad: 'x'.repeat(600 * 1024) }) })).status, 413);
+
+    // Revoked: denied, and the denial is audited without the token.
+    assert.equal((await req('POST', `/api/catalog/relay-tokens/${id}/revoke`, { cookie, csrf })).status, 200);
+    assert.equal((await relayReq('GET', '/relay/guide/lease', { token })).status, 401);
+    assert.ok(await (async () => { for (let i = 0; i < 100; i++) { const a = await controlStore.listAudit(5); if (a.some(e => e.action === 'catalog.relay' && e.outcome === 'denied')) return true; await new Promise(r => setTimeout(r, 10)); } return false; })());
 });
 
 test('AC-CAT-008: dashboard state (SSE) carries catalog jobs and guide status', async () => {

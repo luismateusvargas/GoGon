@@ -17,6 +17,7 @@ spec:
       date: "2026-09-28"
       changes:
         - "catalog-sync CAT-TASK-009: migrations 006_catalog_discovery.sql and 007_catalog_discovery_columns.mjs (guarded ADD COLUMN via ER_DUP_FIELDNAME and CHECK replacement through information_schema, both safe to re-run, AC-DATA-001). The MySQL fake emulates information_schema.CHECK_CONSTRAINTS as empty and maps duplicate columns to ER_DUP_FIELDNAME; CHECK replacement is verified on the real-MySQL CI run."
+        - "catalog-sync CAT-TASK-010: migration 008_catalog_relay.sql (relay token hashes and guide leases; idempotent CREATE TABLE IF NOT EXISTS)."
     - version: "2.1.0"
       date: "2026-09-28"
       changes:
