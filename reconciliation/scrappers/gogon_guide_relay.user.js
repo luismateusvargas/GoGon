@@ -92,6 +92,12 @@
         return previousMin === null || ids.length === 0 || ids[0] < previousMin;
     }
 
+    /** The guide repeats its final non-empty page for every later index. */
+    function isRepeatedIndexPage(ids, previousIds) {
+        return Array.isArray(previousIds) && ids.length > 0 && ids.length === previousIds.length
+            && ids.every((id, index) => id === previousIds[index]);
+    }
+
     // --- inlined from catalog/contracts/classify.js ---
     // catalog/contracts/classify.js - CAT-TASK-001 / AC-CAT-003, AC-CAT-004, AC-CAT-011 (catalog-sync-v1 1.2.x)
     // Classifies a game or guide response before anything reads it. Only 'ok' may be parsed; every other
@@ -446,7 +452,7 @@
      * A lease also carries maxBodyBytes, the server's body limit: the relay stops before its results would
      * no longer fit in one submission. A page that does not fit is left for the next lease (its request is
      * still reported); one that cannot fit even alone is sent as 'too_large', so the server stops there.
-     * @param {{ kind: string, work: Array<{ type: 'index'|'detail', page?: number, id?: number }>, minDelayMs: number, expiresAt: string, maxBodyBytes?: number, stopAtId?: number|null, overlapPages?: number }} lease
+     * @param {{ kind: string, work: Array<{ type: 'index'|'detail', page?: number, id?: number }>, minDelayMs: number, expiresAt: string, maxBodyBytes?: number, stopAtId?: number|null, overlapPages?: number, previousPageIds?: number[]|null }} lease
      * @param {object} deps
      * @param {(url: string) => Promise<{ status: number, contentType: string, cfMitigated: string|null, body: string }>} deps.fetchPage
      * @param {(html: string) => Document} deps.parseHtml
@@ -464,6 +470,7 @@
         let reachedAt = null;       // incremental: the page that reached stopAtId
         let descending = true;
         let prevMin = null;
+        let previousPageIds = lease.previousPageIds ?? null;
         for (let i = 0; i < lease.work.length; i++) {
             if (stopped()) break;
             if (i > 0) await sleep(lease.minDelayMs);
@@ -482,6 +489,8 @@
             if (stop) break;
             if (result.type === 'index') {
                 const ids = result.entries.map(e => e.id);
+                if (isRepeatedIndexPage(ids, previousPageIds)) break;
+                previousPageIds = ids;
                 descending = descending && isDescendingPage(ids, prevMin);
                 prevMin = Math.min(...ids);
                 if (descending && typeof lease.stopAtId === 'number' && reachedAt === null && prevMin <= lease.stopAtId) reachedAt = item.page;

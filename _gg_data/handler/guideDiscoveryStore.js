@@ -19,6 +19,7 @@ const STATE_COLUMNS = Object.freeze({
     sweepPagesChecked: 'sweep_pages_checked',
     sweepMaxId: 'sweep_max_id',
     sweepPrevMinId: 'sweep_prev_min_id',
+    sweepPrevPageIds: 'sweep_prev_page_ids',
     stopAfterPage: 'stop_after_page',
     orderState: 'order_state',
     status: 'status',
@@ -34,7 +35,7 @@ const stateRow = r => {
     const out = { entityKind: r.entity_kind, updatedAt: r.updated_at };
     for (const [field, col] of Object.entries(STATE_COLUMNS)) {
         const v = r[col];
-        out[field] = v === null || v === undefined ? null : INT_FIELDS.has(field) ? Number(v) : v;
+        out[field] = v === null || v === undefined ? null : field === 'sweepPrevPageIds' ? JSON.parse(v) : INT_FIELDS.has(field) ? Number(v) : v;
     }
     return out;
 };
@@ -73,7 +74,7 @@ export function createGuideDiscoveryStore(db, { now = Date.now } = {}) {
                 const col = STATE_COLUMNS[field];
                 if (!col) throw new Error(`Unknown guide state field ${field}.`);
                 sets.push(`${col} = ?`);
-                params.push(value);
+                params.push(field === 'sweepPrevPageIds' && value !== null ? JSON.stringify(value) : value);
             }
             sets.push('updated_at = ?');
             params.push(iso(), kind);

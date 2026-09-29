@@ -4,7 +4,7 @@
 spec:
   id: "catalog-sync-v1"
   status: locked
-  version: "1.4.1"
+  version: "1.4.2"
   created: "2026-09-25"
   updated: "2026-09-29"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: ["data-model", "api-surface", "security"]
 
   changelog:
+    - version: "1.4.2"
+      date: "2026-09-29"
+      changes:
+        - "The guide repeats its final nonempty index page for every later index. Full sweeps detect an identical adjacent page by ID sequence, persist the previous page's IDs across leases, and finish at the last distinct page without treating the repeated page as an order violation or reading the remaining lease pages. A new full sweep rechecks ordering so a clean sweep can restore verified order after an earlier false violation. Migration 009 adds the page checkpoint field. [AC-CAT-011, AC-CAT-015]"
     - version: "1.4.1"
       date: "2026-09-29"
       changes:
@@ -421,6 +425,7 @@ acceptance_criteria:
     given: "The supplied item, creature, realm, and master-realm guide index parsers and durable per-kind discovery state"
     when: "A 24-hour guide discovery check runs through the approved browser relay or server guide worker"
     then: "It validates each response, checks every index page unless an ID sort contract has been verified, stages minimal incomplete records for newly found IDs and changed known records, and records last successful check, last seen ID, page coverage, and source provenance for the Catalog tab"
+    pagination: "The guide repeats its final nonempty index page beyond the end. An identical adjacent ID sequence ends a full sweep at the previous page, even when the pages are in different leases; the repeated request is counted but its page is not counted as covered."
     error_cases:
       - given: "An index page is missing, challenged, malformed, or unexpectedly empty"
         when: "The check reaches it"
