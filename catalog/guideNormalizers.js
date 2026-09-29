@@ -104,7 +104,9 @@ export function normalizeGuideRecord(kind, record, expectedId) {
             relations.push({ type: 'realm_creature', realm_id: record.id, creature_id: c.creatureId });
         }
     } else {
-        observations.push({ kind: 'master_realm', payload: { id: record.id, name: record.name } });
+        observations.push({ kind: 'master_realm', payload: {
+            id: record.id, name: record.name, connected_realms: record.realms,
+        } });
         for (const r of record.realms) {
             observations.push({ kind: 'realm', payload: { id: r.realmId, master_realm_id: record.id } });
             references.push({ kind: 'realm', id: r.realmId, name: r.realmName ?? null });

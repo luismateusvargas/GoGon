@@ -4,13 +4,13 @@
 // (retrofitted foreign keys are enforced there only; see tests/helpers/fake-mysql.mjs).
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, copyFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, copyFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { freshClient, closeClients } from '../helpers/db-client.mjs';
 
 const { createCatalogStore, CatalogError, canonicalJson, normalizeObservation, PLAN_TTL_MS, MAX_PAYLOAD_BYTES } = await import('../../_gg_data/handler/catalogStore.js');
-const { runMigrations } = await import('../../_gg_data/handler/migrationRunner.js');
+const { runMigrations, splitStatements } = await import('../../_gg_data/handler/migrationRunner.js');
 const { up: migration004 } = await import('../../_gg_data/migrations/004_serving_relations.mjs');
 const { idsFrom, namesFrom } = await import('../../_gg_data/handler/servingRelations.js');
 const ggdb = await import('../../_gg_data/handler/gg_database.js');
@@ -59,6 +59,21 @@ test('CAT-TASK-002: migrations 003/004 create the catalog tables and re-run as a
     const fks = (await db.query("SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_TYPE = 'FOREIGN KEY' AND TABLE_NAME IN ('realms', 'relics')"))
         .map(r => r.CONSTRAINT_NAME).sort();
     assert.deepEqual(fks, ['realms_master_realm_fk', 'relics_realm_fk']);
+});
+
+test('a guide cursor reset and startup migration check preserve the last completed check', async () => {
+    const { db } = await setup();
+    const completedAt = '2026-09-28T11:00:00.000Z';
+    await db.query("UPDATE catalog_guide_state SET last_successful_check_at = ?, last_full_sweep_at = ?, last_page_seen = 14, next_page = 8, status = 'running' WHERE entity_kind = 'master_realm'", [completedAt, completedAt]);
+    for (const statement of splitStatements(readFileSync(path.resolve('_gg_data/migrations/010_guide_full_index_scan.sql'), 'utf8'))) {
+        await db.query(statement);
+    }
+    await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations')));
+    const [state] = await db.query("SELECT last_successful_check_at, last_full_sweep_at, last_page_seen, next_page, status FROM catalog_guide_state WHERE entity_kind = 'master_realm'");
+    assert.deepEqual(state, {
+        last_successful_check_at: completedAt, last_full_sweep_at: completedAt,
+        last_page_seen: 14, next_page: 0, status: 'idle',
+    });
 });
 
 test('CAT-TASK-002: relation tables reject dangling references and cascade with their parents', async () => {
@@ -525,7 +540,7 @@ test('CAT-TASK-002: a database that applied the narrow 003 gets 255-character en
     const db = await quietly(() => freshClient({ migrate: false }));
     await quietly(() => runMigrations(db, dir));
     const applied = await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations')));
-    assert.deepEqual(applied, ['004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql'], '003 is skipped by name; 005 widens it');
+    assert.deepEqual(applied, ['004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql', '011_master_realm_connections.mjs'], '003 is skipped by name; 005 widens it');
     if (REAL_MYSQL) {
         const widths = await db.query("SELECT TABLE_NAME AS t, CHARACTER_MAXIMUM_LENGTH AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'entity_key' ORDER BY TABLE_NAME");
         assert.deepEqual(widths.map(w => [w.t, Number(w.n)]), [['catalog_entities', 255], ['catalog_observations', 255]]);

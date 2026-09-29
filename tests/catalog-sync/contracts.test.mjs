@@ -131,7 +131,10 @@ test('CAT-TASK-001: detail parsers read the scraper fields', () => {
     const master = parseMasterRealmDetail(doc('guide-masterrealm-detail.html'), 5);
     assert.deepEqual(master, {
         id: 5, name: 'Elya Desert', minLevel: 5, imageUrl: 'https://cdn2.fallensword.com/masterrealms/5.jpg',
-        realms: [{ realmId: 1200, realmName: 'Mountain Path', minLevel: 1 }],
+        realms: [
+            { realmId: 18, realmName: 'Elya Plains North', minLevel: 4 },
+            { realmId: 20, realmName: 'Otha Caves (Level 1)', minLevel: 10 },
+        ],
     });
 
     assert.equal(parseItemDetail(doc('guide-item-index-empty.html'), 1), null, 'a page without a record name is not a record');

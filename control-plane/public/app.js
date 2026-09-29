@@ -369,11 +369,12 @@ async function showEntity(kind, key) {
     try { d = await api('GET', `/api/catalog/entities/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`); } catch (e) { showBanner(fieldMessage(e)); return; }
     const fields = el('dl', { class: 'kv' });
     for (const [k, value] of Object.entries(d.fields)) {
+        if (kind === 'master_realm' && k === 'connected_realms') continue;
         fields.append(el('dt', {}, k), el('dd', {}, value !== null && typeof value === 'object' ? jsonBlock(value) : (value ?? '-')));
     }
     const relations = Object.entries(d.relations).map(([name, list]) => el('div', {},
         el('strong', {}, `${name}: `),
-        list.length ? list.map(r => (typeof r === 'string' ? r : `${r.name ?? r.id}${r.id ? ` (#${r.id})` : ''}`)).join(', ') : 'none known'));
+        list.length ? list.map(r => (typeof r === 'string' ? r : `${r.name ?? r.id}${r.id ? ` (#${r.id})` : ''}${r.minLevel == null ? '' : `, level ${r.minLevel}`}`)).join('; ') : 'none known'));
     const provenance = el('table', {},
         el('thead', {}, el('tr', {}, el('th', {}, 'Observed'), el('th', {}, 'Source'), el('th', {}, 'Run'), el('th', {}, 'Hash'))),
         el('tbody', {}, ...d.provenance.map(p => el('tr', {},

@@ -95,7 +95,7 @@ const field = {
 // table/columns are the serving projection. json: columns stored as JSON text. Realm creature/relic/
 // quest lists are projected through relations, not realm payloads.
 const SCHEMAS = {
-    master_realm: { table: 'master_realms', columns: { id: field.id, name: field.text(256) }, json: [] },
+    master_realm: { table: 'master_realms', columns: { id: field.id, name: field.text(256), connected_realms: field.json }, json: ['connected_realms'] },
     realm: {
         table: 'realms',
         columns: { id: field.id, name: field.text(256), min_level: field.intOrNull, master_realm_id: field.idOrNull, shops: field.json, connections: field.json, map_objects: field.json },
