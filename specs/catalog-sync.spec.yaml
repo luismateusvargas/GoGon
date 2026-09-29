@@ -4,7 +4,7 @@
 spec:
   id: "catalog-sync-v1"
   status: locked
-  version: "1.4.0"
+  version: "1.4.1"
   created: "2026-09-25"
   updated: "2026-09-29"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: ["data-model", "api-surface", "security"]
 
   changelog:
+    - version: "1.4.1"
+      date: "2026-09-29"
+      changes:
+        - "CAT-TASK-012: before the first server guide lease, register existing snapshot item and creature rows in guide detail state as pending, with checks spread across the next 30 days. This avoids an immediate reread of more than 20,000 seeded details while keeping newly discovered IDs due now and realm details due for relic and quest discovery. Existing guide detail state is never overwritten. [AC-CAT-016]"
     - version: "1.4.0"
       date: "2026-09-29"
       changes:
@@ -474,6 +478,9 @@ acceptance_criteria:
       - given: "The guide challenges the server or a result submission fails"
         when: "The worker handles that lease"
         then: "A challenge stops the lease without declaring a successful sweep; a transient submission failure retains the read results for retry rather than reading the same pages again"
+      - given: "The serving tables already contain snapshot items and creatures before guide discovery begins"
+        when: "The server worker prepares its first lease"
+        then: "It registers those known IDs as pending guide details due across the next 30 days, without claiming them verified or moving successful index checkpoints; newly discovered IDs remain due immediately and realm details remain due for relic and quest discovery"
 
 security:
   constitutions:
@@ -734,3 +741,15 @@ tasks:
     source: "AC-CAT-011, AC-CAT-016"
     status: IN_PROGRESS
     progress: "2026-09-29: local worker, encrypted setting, scheduler integration, fixture tests, and VPS-network HTTP access proof. Node 22 repository gate: 308 pass, 2 real-MySQL-only skips, 0 fail. Open: live deployed worker acceptance and proof of interactive clearance renewal (if pursued)."
+
+  - id: CAT-TASK-012
+    description: |
+      Reconcile existing serving-table item and creature IDs into guide detail tracking before
+      server guide discovery starts. Mark them pending and distribute their first detail reads
+      across 30 days, without overwriting previously tracked guide IDs. Keep newly discovered
+      IDs immediately due and read realm details promptly to discover relic and quest names.
+    affects: "_gg_data/handler/guideDiscoveryStore.js, catalog/guideRelay.js, catalog/guideWorker.js, tests/catalog-sync/guide-relay.test.mjs, tests/catalog-sync/guide-worker.test.mjs, docs/deployment.md"
+    depends_on: ["CAT-TASK-009", "CAT-TASK-011"]
+    source: "AC-CAT-016"
+    status: IN_PROGRESS
+    progress: "2026-09-29: implementation and focused fake-MySQL tests pass. Node 22 repository gate: 309 pass, 2 real-MySQL-only skips, 0 fail. Open: real-MySQL CI and live VPS acceptance."

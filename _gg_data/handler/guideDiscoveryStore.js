@@ -26,6 +26,8 @@ const STATE_COLUMNS = Object.freeze({
 });
 const INT_FIELDS = new Set(['lastSeenId', 'lastPageSeen', 'nextPage', 'sweepPagesChecked', 'sweepMaxId', 'sweepPrevMinId', 'stopAfterPage']);
 const HOUR = 3600_000;
+const DAY = 24 * HOUR;
+const SEEDED_DETAIL_DAYS = 30;
 
 const stateRow = r => {
     if (!r) return null;
@@ -76,6 +78,22 @@ export function createGuideDiscoveryStore(db, { now = Date.now } = {}) {
             sets.push('updated_at = ?');
             params.push(iso(), kind);
             await q.query(`UPDATE catalog_guide_state SET ${sets.join(', ')} WHERE entity_kind = ?`, params);
+        },
+
+        /** Existing snapshot items and creatures are tracked without an immediate full detail reread. */
+        async scheduleSeededDetails() {
+            const startedAt = now();
+            const firstSeenAt = iso(startedAt);
+            const dueDates = Array.from({ length: SEEDED_DETAIL_DAYS }, (_, index) => iso(startedAt + (index + 1) * DAY));
+            const dueById = `CASE id % ${SEEDED_DETAIL_DAYS} ${dueDates.map((_, index) => `WHEN ${index} THEN ?`).join(' ')} END`;
+            await db.transaction(async tx => {
+                for (const [kind, table] of [['item', 'items'], ['creature', 'creatures']]) {
+                    await tx.query(
+                        `INSERT IGNORE INTO catalog_guide_ids (entity_kind, entity_id, first_seen_at, next_detail_at)
+                         SELECT ?, id, ?, ${dueById} FROM ${table}`,
+                        [kind, firstSeenAt, ...dueDates]);
+                }
+            });
         },
 
         /**

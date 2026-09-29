@@ -35,6 +35,9 @@ GG_MYSQL_DATABASE=gogon
 
 If any of these values is missing or invalid, or MySQL cannot be reached, the container exits before
 the game login and never opens the dashboard port. It "fails closed".
+`GG_CONTROL_ENCRYPTION_KEY_PREVIOUS` is only for key rotation. Keep an existing encryption key rather
+than generating a replacement for an already configured database. Guide clearance can be entered later
+in the dashboard Settings tab; it is not a bootstrap `.env` requirement.
 
 ## 2. Build and start
 
@@ -138,8 +141,11 @@ came from, and every change it makes to the tables Discord reads can be rolled b
 
   The server uses the existing guide lease planner and parsers: one page at a time, 3 s apart, at most
   50 per lease and 2,000 per day. Index page 0 is checked for new IDs, older details are refreshed,
-  and a full sweep runs weekly. A Cloudflare challenge stops that lease without moving the successful
-  checkpoint; the kind remains incomplete until a valid clearance is saved. The cookie's browser
+  and a full sweep runs weekly. Existing snapshot item and creature IDs are tracked as pending with
+  their first detail checks spread across 30 days; new IDs are due at once. Realm details are read
+  promptly so their relic and quest names can be added. A Cloudflare challenge stops that lease
+  without moving the successful checkpoint; the kind remains incomplete until a valid clearance is
+  saved. The cookie's browser
   expiry is not a guarantee that Cloudflare will accept it until that date. If it is invalidated, the
   one-time browser verification and secret setting update must be repeated. Automated renewal of an
   interactive challenge is not established.

@@ -36,6 +36,7 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
     fetchFn = globalThis.fetch, parseHtml = html => parseHTML(html).document, now = Date.now }) {
     let pendingSubmission = null;
     let challengedConfiguration = null;
+    let seededDetailsScheduled = false;
 
     async function fetchPage(url, signal, currentClearance, currentUserAgent) {
         const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
@@ -82,6 +83,10 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
             if (challengedConfiguration === currentConfiguration) return { status: 'challenged' };
             challengedConfiguration = null;
 
+            if (!seededDetailsScheduled) {
+                await relay.scheduleSeededDetails();
+                seededDetailsScheduled = true;
+            }
             const workerId = await relay.ensureServerWorker();
             if (pendingSubmission) {
                 if (now() >= Date.parse(pendingSubmission.lease.expiresAt)) pendingSubmission = null;
