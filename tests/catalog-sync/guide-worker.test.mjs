@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createGuideWorker, DEFAULT_GUIDE_USER_AGENT } from '../../catalog/guideWorker.js';
 import { GUIDE_POLICY } from '../../catalog/contracts/policy.js';
@@ -49,6 +50,42 @@ test('guide worker reads and stages a leased index with clearance and matching U
     assert.equal(relay.calls.submissions[0].results[0].entries.length, 3);
     assert.equal(relay.calls.submissions[0].requests, 1);
     assert.equal(relay.calls.scheduled, 1);
+});
+
+test('guide worker keeps its clearance when the app installs a game-cookie fetch wrapper', () => {
+    const script = `
+        import assert from 'node:assert/strict';
+        import { readFileSync } from 'node:fs';
+        import { CookieJar } from 'tough-cookie';
+        import fetchCookie from 'fetch-cookie';
+
+        const observedCookies = [];
+        const index = readFileSync('tests/catalog-sync/fixtures/guide-item-index.html', 'utf8');
+        globalThis.fetch = async (url, options) => {
+            observedCookies.push(new Headers(options.headers).get('cookie'));
+            return new Response(index, { status: 200, headers: { 'content-type': 'text/html' } });
+        };
+        const { createGuideWorker } = await import('./catalog/guideWorker.js');
+        const jar = new CookieJar();
+        await jar.setCookie('game_session=example; Domain=.fallensword.com; Path=/', 'https://guide.fallensword.com/');
+        globalThis.fetch = fetchCookie(globalThis.fetch, jar);
+        const relay = {
+            async scheduleSeededDetails() {},
+            async ensureServerWorker() { return 'worker-id'; },
+            async nextLease() { return { status: 'lease', lease: {
+                leaseId: 'lease-id', kind: 'item', work: [{ type: 'index', page: 0 }],
+                minDelayMs: 0, expiresAt: new Date(Date.now() + 60_000).toISOString(), maxBodyBytes: 524288,
+            } }; },
+            async submit() { return { sweepComplete: false }; },
+        };
+        const worker = createGuideWorker({ relay, clearance: 'sample-clearance' });
+        assert.equal((await worker.run()).challenge, false);
+        assert.deepEqual(observedCookies, ['cf_clearance=sample-clearance']);
+    `;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-'], {
+        cwd: process.cwd(), input: script, encoding: 'utf8', timeout: 10_000,
+    });
+    assert.equal(child.status, 0, child.stderr || child.error?.message);
 });
 
 test('guide worker reports a challenge without staging guide data', async () => {

@@ -5,6 +5,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseHTML } from 'linkedom';
 import { CatalogError } from '../_gg_data/handler/catalogStore.js';
+import { nativeFetch } from '../session.mjs';
 import { runLease } from './relayClient.js';
 import { GUIDE_POLICY } from './contracts/policy.js';
 
@@ -34,7 +35,7 @@ async function readBoundedBody(response) {
 /** Runs at most one guide lease per CatalogSync tick. No clearance value enters a log or result. */
 export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_USER_AGENT,
     getClearance = () => clearance, getUserAgent = () => userAgent,
-    fetchFn = globalThis.fetch, parseHtml = html => parseHTML(html).document, now = Date.now }) {
+    fetchFn = nativeFetch, parseHtml = html => parseHTML(html).document, now = Date.now }) {
     let pendingSubmission = null;
     let lastChallenge = null;
     let seededDetailsScheduled = false;
