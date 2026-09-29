@@ -4,7 +4,7 @@
 spec:
   id: "catalog-sync-v1"
   status: locked
-  version: "1.5.0"
+  version: "1.6.0"
   created: "2026-09-25"
   updated: "2026-09-29"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: ["data-model", "api-surface", "security"]
 
   changelog:
+    - version: "1.6.0"
+      date: "2026-09-29"
+      changes:
+        - "CAT-TASK-014 / DEC-CAT-023: the owner prefers one complete guide pass a week over a rolling daily one. Guide discovery becomes due every 7 days per kind; when a kind's weekly sweep starts, every tracked detail of that kind becomes due, and after all index sweeps the planner reads every due detail (creatures, items, master realms, realms) with no per-lease refresh cap. Snapshot item and creature IDs are registered due at once instead of across 30 days (supersedes the CAT-TASK-012 spread). Migration 013 makes never-read details due now. Serial reads, three-second delay, 50-request leases, usage accounting, challenge handling, and content-hash deduplication are unchanged. [AC-CAT-011, AC-CAT-012, AC-CAT-015, AC-CAT-016]"
     - version: "1.5.0"
       date: "2026-09-29"
       changes:
@@ -425,10 +429,10 @@ acceptance_criteria:
         then: "The preview identifies it as a removal candidate; execution removes it only as part of the confirmed transaction and never leaves dangling relations"
 
   - id: AC-CAT-011
-    description: "The guide discovers new catalog IDs daily from its known index pages."
+    description: "The guide discovers new catalog IDs and refreshes every known record weekly from its known index and detail pages."
     given: "The supplied item, creature, realm, and master-realm guide index parsers and durable per-kind discovery state"
-    when: "A 24-hour guide discovery check runs through the approved browser relay or server guide worker"
-    then: "It validates each response, checks every index page for each active kind, records newly found IDs for detail reads, and records last successful check, last seen ID, page coverage, and source provenance for the Catalog tab"
+    when: "A weekly (7-day) guide discovery check runs through the approved browser relay or server guide worker"
+    then: "It validates each response, checks every index page for each active kind, records newly found IDs, then reads every known detail of each checked kind without a per-lease refresh cap, and records last successful check, last seen ID, page coverage, and source provenance for the Catalog tab"
     pagination: "The guide repeats its final nonempty index page beyond the end. An identical adjacent ID sequence ends a full sweep at the previous page, even when the pages are in different leases; the repeated request is counted but its page is not counted as covered."
     error_cases:
       - given: "An index page is missing, challenged, malformed, or unexpectedly empty"
@@ -438,8 +442,8 @@ acceptance_criteria:
   - id: AC-CAT-012
     description: "A guide high-water mark does not hide older edits or gaps."
     given: "A previously successful guide scan with a last seen ID for each entity kind"
-    when: "The next daily scan checks guide indexes"
-    then: "It scans every index page, including pages before and after the highest known ID, because low-level releases can appear anywhere. Known IDs do not trigger immediate repeat detail reads; older detail pages are refreshed by due time or content hash."
+    when: "The next weekly scan checks guide indexes"
+    then: "It scans every index page, including pages before and after the highest known ID, because low-level releases can appear anywhere, and re-reads every known detail once in that check; unchanged content (same hash) stages no new observation."
     error_cases:
       - given: "An existing item, creature, or realm changes without receiving a new ID"
         when: "A later valid index or detail check detects the change"
@@ -472,7 +476,7 @@ acceptance_criteria:
     then: "It records a separate guide minimum delay, per-execution request budget, request usage, expected full-sweep size and duration, and a checkpointed chunk schedule that can cover every index page without a daily request cap"
     error_cases:
       - given: "A chunk stops before coverage is complete"
-        when: "The 24-hour check is reported"
+        when: "The weekly check is reported"
         then: "The Catalog tab shows partial or overdue coverage and preserves the cursor; it never advances last_successful_check_at or claims no new IDs"
 
   - id: AC-CAT-016
@@ -489,7 +493,7 @@ acceptance_criteria:
         then: "A challenge stops the lease without declaring a successful sweep; a transient submission failure retains the read results for retry rather than reading the same pages again"
       - given: "The serving tables already contain snapshot items and creatures before guide discovery begins"
         when: "The server worker prepares its first lease"
-        then: "It registers those known IDs as pending guide details due across the next 30 days, without claiming them verified or moving successful index checkpoints; newly discovered IDs remain due immediately and realm details remain due for relic and quest discovery"
+        then: "It registers those known IDs as pending guide details due at once, like newly discovered IDs, without claiming them verified or moving successful index checkpoints (DEC-CAT-023 supersedes the earlier 30-day spread)"
 
 security:
   constitutions:
@@ -550,7 +554,7 @@ constraints:
   - "No Catalog job may call game attack, move, travel, equip, use-item, join-group, post-form, or account-management endpoints."
   - "At most one Catalog game request is in flight process-wide; the default budget is at most 50 requests per job execution and the minimum delay is 3 seconds between game requests until an owner-approved game-policy/rate-limit decision supersedes it."
   - "A failed, throttled, mitigated, malformed, or unauthenticated response cannot advance a job cursor or highest-confirmed ID."
-  - "Guide discovery becomes due every 24 hours per entity kind by default; each kind has durable last successful check, last seen ID, and per-page coverage. Every due check covers all index pages because a low-level release can place new item, creature, or realm IDs anywhere (DEC-CAT-022). A maximum ID is a hint, never proof that older IDs cannot change or that gaps are absent. Only new IDs or separately due refreshes trigger detail reads."
+  - "Guide discovery becomes due every 7 days per entity kind by default (DEC-CAT-023); each kind has durable last successful check, last seen ID, and per-page coverage. Every due check covers all index pages because a low-level release can place new item, creature, or realm IDs anywhere (DEC-CAT-022), then reads every tracked detail of that kind once, creatures and items before master realms and realms. There is no per-lease refresh cap and no spread of first detail reads. A maximum ID is a hint, never proof that older IDs cannot change or that gaps are absent."
   - "Guide requests have their own minimum delay, per-execution budget, visible daily usage, and page-coverage checkpoint. There is no daily request cap. A partial sweep is reported as partial/overdue and never advances last_successful_check_at."
   - "The supplied reconciliation/scrappers scripts define the known guide URLs and parsing fields, but their hard-coded page ceilings, 500 ms delays, ten-request item batches, and error handling are not reused unchanged for scheduled collection. The guide relay is serial, bounded, and challenge-aware."
   - "The guide userscript changes from @grant none to GM_xmlhttpRequest, GM_getValue, and GM_setValue with @connect 127.0.0.1. It sends validated normalized batches only to a code-owned loopback relay endpoint through the owner's SSH tunnel, using a stage-only token issued by the authenticated Catalog tab. The token lives only in userscript extension storage, expires within seven days, is owner-revocable, and is never placed in page JavaScript, a URL, logs, or catalog data. The relay endpoint is the sole exception to normal Catalog same-origin/CSRF/session mutation checks; all other mutations retain them."
@@ -585,7 +589,7 @@ dependencies:
     criticality: HIGH
 
 git:
-  last_implementation_branch: "feat/CAT-TASK-009-guide-discovery-stack"
+  last_implementation_branch: "feat/CAT-TASK-014-weekly-full-guide-pass"
   last_pr_url: ""
   last_pr_merged: ""
   last_version_tag: ""
@@ -760,7 +764,8 @@ tasks:
     affects: "_gg_data/handler/guideDiscoveryStore.js, catalog/guideRelay.js, catalog/guideWorker.js, tests/catalog-sync/guide-relay.test.mjs, tests/catalog-sync/guide-worker.test.mjs, docs/deployment.md"
     depends_on: ["CAT-TASK-009", "CAT-TASK-011"]
     source: "AC-CAT-016"
-    status: IN_PROGRESS
+    status: OBSOLETE
+    obsolete_reason: "2026-09-29: the owner replaced the 30-day spread with a weekly full pass (DEC-CAT-023, CAT-TASK-014). Snapshot ID registration is kept there, due at once."
     progress: "2026-09-29: implementation and focused fake-MySQL tests pass. Node 22 repository gate: 309 pass, 2 real-MySQL-only skips, 0 fail. Open: real-MySQL CI and live VPS acceptance."
 
   - id: CAT-TASK-013
@@ -777,3 +782,17 @@ tasks:
     source: "AC-CAT-011, AC-CAT-012, AC-CAT-015, DEC-CAT-022"
     status: IN_PROGRESS
     progress: "2026-09-29: implementation and local verification in progress; CI and live VPS acceptance remain open."
+
+  - id: CAT-TASK-014
+    description: |
+      Run guide discovery as one complete weekly pass (DEC-CAT-023). A kind becomes due 7 days after
+      its last successful check; starting its sweep makes every tracked detail of that kind due. After
+      all due index sweeps, read every due detail, creatures and items first, without a per-lease
+      refresh cap. Register snapshot item and creature IDs due at once instead of across 30 days, and
+      make never-read details due now with a one-time migration. Keep serial reads, the three-second
+      delay, 50-request leases, usage accounting, challenge handling, and hash deduplication.
+    affects: "catalog/contracts/policy.js, catalog/guideRelay.js, _gg_data/handler/guideDiscoveryStore.js, _gg_data/migrations/013_guide_weekly_full_pass.sql, control-plane/public/app.js, docs/deployment.md, tests/catalog-sync/guide-relay.test.mjs, tests/data-storage"
+    depends_on: ["CAT-TASK-011", "CAT-TASK-013"]
+    source: "AC-CAT-011, AC-CAT-012, AC-CAT-015, AC-CAT-016, DEC-CAT-023"
+    status: IN_PROGRESS
+    progress: "2026-09-29: implementation and fake-MySQL tests pass locally. Open: real-MySQL CI and live VPS acceptance of a full weekly pass."

@@ -105,7 +105,7 @@ const state = async (g, kind) => g.getState(kind);
 const count = async (db, table) => Number((await db.query(`SELECT COUNT(*) AS n FROM ${table}`))[0].n);
 const enableJob = store => store.createJob({ kind: 'guide_discovery', cursor: {}, requestBudget: 50 });
 
-test('existing snapshot items and creatures enter guide coverage without an immediate detail backlog', async () => {
+test('CAT-TASK-014: existing snapshot items and creatures enter guide coverage due at once', async () => {
     const { db, relay, guideStore, clock } = await setup();
     await db.query('INSERT INTO items (id, name) VALUES (?, ?)', [17049, 'Snapshot item']);
     await db.query('INSERT INTO creatures (id, name) VALUES (?, ?)', [7001, 'Snapshot creature']);
@@ -115,7 +115,7 @@ test('existing snapshot items and creatures enter guide coverage without an imme
     await relay.scheduleSeededDetails();
     const tracked = await db.query('SELECT entity_kind, entity_id, detail_status, next_detail_at FROM catalog_guide_ids ORDER BY entity_kind');
     assert.deepEqual(tracked.map(row => row.entity_kind), ['creature', 'item']);
-    assert.ok(tracked.every(row => row.detail_status === 'pending' && Date.parse(row.next_detail_at) > clock.t));
+    assert.ok(tracked.every(row => row.detail_status === 'pending' && Date.parse(row.next_detail_at) <= clock.t), 'no 30-day spread (DEC-CAT-023)');
     assert.equal((await guideStore.getIdState('realm', 1200)), null);
 
     await guideStore.markDetail('item', 17049, { outcome: 'ok', hash: 'a'.repeat(64) }, GUIDE_POLICY);
@@ -124,7 +124,7 @@ test('existing snapshot items and creatures enter guide coverage without an imme
 
     await guideStore.recordIndexIds('item', [17050, 17049]);
     assert.ok(Date.parse((await guideStore.getIdState('item', 17050)).nextDetailAt) <= clock.t);
-    assert.ok(Date.parse((await guideStore.getIdState('item', 17049)).nextDetailAt) > clock.t);
+    assert.ok(Date.parse((await guideStore.getIdState('item', 17049)).nextDetailAt) > clock.t, 'a read detail waits for the next weekly check');
 });
 
 test('server guide worker has a stable lease identity without an external bearer token', async () => {
@@ -265,7 +265,7 @@ test('CAT-TASK-013 / AC-CAT-012: level-sorted items discover a new low-level ID 
     assert.equal((await guideStore.getIdState('item', 17052)).status, 'ok', 'its detail was read in the same check');
 });
 
-test('CAT-TASK-013 / AC-CAT-012: a daily scan finds low-level creature and realm IDs without rereading known details', async () => {
+test('CAT-TASK-013 / CAT-TASK-014 / AC-CAT-012: a weekly scan finds low-level creature and realm IDs and rereads known details once', async () => {
     const { store, guideStore, site, drain, clock } = await setup();
     await enableJob(store);
     await drain();
@@ -282,7 +282,39 @@ test('CAT-TASK-013 / AC-CAT-012: a daily scan finds low-level creature and realm
     assert.deepEqual(indexPages('realms'), [0, 1, 2]);
     assert.equal((await guideStore.getIdState('creature', 7003)).status, 'ok');
     assert.equal((await guideStore.getIdState('realm', 1201)).status, 'ok');
-    assert.equal(site.requests.filter(url => /subcmd=view&creature_id=7001|subcmd=view&realm_id=1200/.test(url)).length, 0);
+    assert.equal(site.requests.filter(url => /subcmd=view&creature_id=7001$/.test(url)).length, 1);
+    assert.equal(site.requests.filter(url => /subcmd=view&realm_id=1200$/.test(url)).length, 1);
+});
+
+test('CAT-TASK-014 / AC-CAT-011: each weekly check reads every known detail, creatures and items first, then idles for a week', async () => {
+    const { store, guideStore, site, drain, clock } = await setup();
+    await enableJob(store);
+    await drain();
+    assert.equal(GUIDE_POLICY.checkIntervalMs, 7 * 24 * 3600_000);
+    const known = { item: site.ids.item.length, creature: site.ids.creature.length, realm: site.ids.realm.length, master_realm: site.ids.master_realm.length };
+
+    // Six days later nothing is due: no guide request at all.
+    site.requests.length = 0;
+    clock.t += 6 * 24 * 3600_000;
+    assert.equal((await drain()).at(-1).status, 'idle');
+    assert.equal(site.requests.length, 0);
+
+    // A week after the check, every index is swept and every known detail is read exactly once.
+    clock.t += 24 * 3600_000;
+    await drain();
+    const detailReads = kind => site.requests.filter(url => url.includes(`cmd=${kind}&subcmd=view`));
+    assert.equal(detailReads('items').length, known.item, 'no per-lease refresh cap');
+    assert.equal(detailReads('creatures').length, known.creature);
+    assert.equal(detailReads('realms').length, known.realm);
+    assert.equal(detailReads('masterrealms').length, known.master_realm);
+    const firstDetail = site.requests.findIndex(url => url.includes('subcmd=view'));
+    assert.ok(site.requests.slice(0, firstDetail).every(url => url.includes('&index=')), 'all indexes are swept before details');
+    const order = [...new Set(site.requests.slice(firstDetail).map(url => new URL(url).searchParams.get('cmd')))];
+    assert.deepEqual(order, ['creatures', 'items', 'masterrealms', 'realms']);
+    for (const kind of ['item', 'creature', 'realm', 'master_realm']) {
+        const s = await state(guideStore, kind);
+        assert.equal(s.status, 'idle', kind);
+    }
 });
 
 test('AC-CAT-012 error case: an edited older record is re-read when due and staged as a new observation', async () => {

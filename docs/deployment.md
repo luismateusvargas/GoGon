@@ -140,11 +140,11 @@ came from, and every change it makes to the tables Discord reads can be rolled b
      CatalogSync run, without a container restart. Do not paste a full HAR into the dashboard.
 
   The server uses the existing guide lease planner and parsers: one page at a time, 3 s apart, at most
-  50 per lease, with no daily request cap. Each due check scans every index page until the guide
-  repeats its final page. The worker compares IDs with its tracking table and requests details only
-  for new IDs or scheduled refreshes. Existing snapshot item and creature IDs are tracked as pending with
-  their first detail checks spread across 30 days; new IDs are due at once. Realm details are read
-  promptly so their relic and quest names can be added. A Cloudflare challenge stops that lease
+  50 per lease, with no daily request cap. A kind is checked once a week: the check scans every index
+  page until the guide repeats its final page, then reads every known detail of that kind (creatures
+  first, then items, master realms and realms). Existing snapshot item and creature IDs are tracked as
+  pending and due at once, like new IDs. A full weekly pass is roughly 33,000 requests, about 28 hours
+  at 3 s apart; the worker is then idle until the next week. A Cloudflare challenge stops that lease
   without moving the successful checkpoint; the kind remains incomplete until a valid clearance is
   saved. The cookie's browser
   expiry is not a guarantee that Cloudflare will accept it until that date. If it is invalidated, the
@@ -159,4 +159,4 @@ came from, and every change it makes to the tables Discord reads can be rolled b
 - **History & delete.** Every run can be previewed for rollback. The preview is valid for 10 minutes,
   can be used once, and needs its exact phrase. Rollback restores the previous values, or removes rows
   the run created. Rolling back a guide run marks the guide details it read as unverified; the relay
-  reads them again at their normal refresh, 30 days later, not at once.
+  reads them again at their normal refresh, a week later, not at once.
