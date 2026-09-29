@@ -191,6 +191,15 @@ test('AC-CAT-015 error case: an unexpected empty page leaves the check partial; 
     assert.deepEqual([s.status, s.statusReason], ['partial', 'unexpected empty page']);
     assert.equal(s.lastSuccessfulCheckAt, before.lastSuccessfulCheckAt);
     assert.equal(s.sweepMode, 'full');
+    // No tight retry loop: the stopped page is not asked for again until the retry interval passes.
+    const pageOneReads = () => site.requests.filter(u => /cmd=items&index=1$/.test(u)).length;
+    const readsSoFar = pageOneReads();
+    await drain();
+    assert.equal(pageOneReads(), readsSoFar);
+    site.emptyPage = null;
+    clock.t += GUIDE_POLICY.partialRetryMs;
+    await drain();
+    assert.equal((await state(guideStore, 'item')).status, 'idle', 'the retry completes the sweep');
 });
 
 test('AC-CAT-012: IDs that do not descend mark the order violated and force a full sweep', async () => {

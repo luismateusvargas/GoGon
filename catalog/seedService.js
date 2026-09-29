@@ -37,7 +37,8 @@ const json = v => (v === undefined ? null : v);
 /** Default downloader: https only, a byte cap enforced while streaming, 60 s timeout. */
 export async function fetchJsonCapped(url, maxBytes) {
     if (!url.startsWith('https://')) throw invalid('Seed sources must be https.');
-    const res = await fetch(url, { signal: AbortSignal.timeout(60_000), redirect: 'error' });
+    const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+    if (res.url && !res.url.startsWith('https://')) throw invalid('Seed sources must stay on https.');
     if (!res.ok) throw invalid(`Seed source returned HTTP ${res.status}.`);
     if (Number(res.headers.get('content-length') || 0) > maxBytes) throw invalid('Seed file exceeds its size limit.');
     const chunks = [];

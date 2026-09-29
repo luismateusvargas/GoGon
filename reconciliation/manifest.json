@@ -37,12 +37,12 @@
       "path": ".github/workflows/ci.yml",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "24e719020241dd95f160830646ae8a657ceedc21745dbf3b3b7b3857bea4fc87",
+      "rootHash": "1f93d4ffab7170510664577e3b43be08c4bc65557dc6f3064efe3952675df0e1",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only CI (DATA-TASK-009): Node 22 suite on the fake, data layer on real MySQL 8.4, Docker build and compose check. No reconciliation (owner decision 2026-09-24)."
+      "rationale": "Root-only CI (DATA-TASK-009): Node 22 suite on the fake, data layer on real MySQL 8.4, Docker build and compose check. No reconciliation (owner decision 2026-09-24). Re-reviewed 2026-09-28 after the CAT-TASK-010 review fixes (partial retry interval, https-only seed redirects)."
     },
     {
       "path": ".gitignore",
@@ -562,12 +562,12 @@
       "path": "catalog/contracts/policy.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "77b717d2251fe572d49faf785e82775e2bd5dceece768a9d6a37a46a214287ae",
+      "rootHash": "259fc3c766c8656a55764d5504d623f98158a4cd052530dcdf95e2c0c0a12724",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-001: code-owned catalog source contracts (game/guide request policy, guide URL/order contract, unverified game location contract, response classification)."
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-001: code-owned catalog source contracts (game/guide request policy, guide URL/order contract, unverified game location contract, response classification). Re-reviewed 2026-09-28 after the CAT-TASK-010 review fixes (partial retry interval, https-only seed redirects)."
     },
     {
       "path": "catalog/guideNormalizers.js",
@@ -595,12 +595,12 @@
       "path": "catalog/guideRelay.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "45699f702062691d4d4a57f5b294c38714f418c898ddc38293354cdb95a9f253",
+      "rootHash": "f0267a47e564f2ec0f1e6cc4c68fceab8fc48a9f923d5e928e1299022b06e0c9",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: server half of the guide relay (tokens, leases, validated staging, checkpoints)."
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-010: server half of the guide relay (tokens, leases, validated staging, checkpoints). Re-reviewed 2026-09-28 after the CAT-TASK-010 review fixes (partial retry interval, https-only seed redirects)."
     },
     {
       "path": "catalog/normalizers.js",
@@ -639,12 +639,12 @@
       "path": "catalog/seedService.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "01378c8e09426d7b468db164faaea016eaab64aff168018b3aa322d82388ef26",
+      "rootHash": "6d55d8c7933e63b075793dce036fa1f6b489c0cde177854f808e3ed3520c1618",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [],
-      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-007: staged, validated, part-by-part seed promotion."
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-007: staged, validated, part-by-part seed promotion. Re-reviewed 2026-09-28 after the CAT-TASK-010 review fixes (partial retry interval, https-only seed redirects)."
     },
     {
       "path": "catalog/sourceRegistry.js",
@@ -932,7 +932,7 @@
       "path": "docs/catalog-sync-control-plane-plan.md",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "5829906df2bd26aac44ec6ae8441b08763ad389e2af15db06c775c8a7108c0a8",
+      "rootHash": "14ff5ca7316f1db265b43c9b0ae8377db8aafd865fe9e49895a36d5331ebf781",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
@@ -942,20 +942,20 @@
         "catalog-sync-v1:CAT-TASK-009",
         "catalog-sync-v1:CAT-TASK-010"
       ],
-      "rationale": "Root-only, added 2026-09-25 with catalog-sync-v1 and updated 2026-09-28 (DEC-CAT-008..011). Re-reviewed 2026-09-28 against catalog-sync 1.2.1, the supplied guide scripts, API.js, and the control-plane security boundary: DEC-CAT-012..016 require full guide index coverage until ID order is verified, a separate guide budget, and a scoped staging-only relay token through loopback. The plan records future work; no collector or endpoint is implemented. Retain the root plan; no backup counterpart exists. The spec remains the contract. Re-reviewed 2026-09-28 after CAT-TASK-001 (catalog contracts). Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding)."
+      "rationale": "Root-only, added 2026-09-25 with catalog-sync-v1 and updated 2026-09-28 (DEC-CAT-008..011). Re-reviewed 2026-09-28 against catalog-sync 1.2.1, the supplied guide scripts, API.js, and the control-plane security boundary: DEC-CAT-012..016 require full guide index coverage until ID order is verified, a separate guide budget, and a scoped staging-only relay token through loopback. The plan records future work; no collector or endpoint is implemented. Retain the root plan; no backup counterpart exists. The spec remains the contract. Re-reviewed 2026-09-28 after CAT-TASK-001 (catalog contracts). Re-reviewed 2026-09-28 after CAT-TASK-007 (staged seeding). Re-reviewed 2026-09-28 after the CAT-TASK-010 review fixes (partial retry interval, https-only seed redirects)."
     },
     {
       "path": "docs/deployment.md",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "1c812502114f037b636b15017d2f6f18cc05eee1bdf1a435b342be263030a575",
+      "rootHash": "28445e7862fcf61cbe5cb833b127dc3d2112891f0288db124468ddd4a32c733e",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "control-plane-v1:CTRL-TASK-006"
       ],
-      "rationale": "Root-only, added 2026-09-24. Owner deployment and SSH-tunnel guide. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. MySQL setup, populate step, and key rotation without snapshots."
+      "rationale": "Root-only, added 2026-09-24. Owner deployment and SSH-tunnel guide. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. MySQL setup, populate step, and key rotation without snapshots. Re-reviewed 2026-09-28 after the CAT-TASK-010 review fixes (partial retry interval, https-only seed redirects)."
     },
     {
       "path": "engine.js",

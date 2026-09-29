@@ -153,6 +153,8 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             const states = new Map((await guideStore.listStates()).map(s => [s.entityKind, s]));
             for (const k of LEASE_ORDER) {
                 const s = states.get(k);
+                // A sweep stopped at a bad or failed page is retried later, not in a tight loop.
+                if (s.sweepMode && s.status === 'partial' && t - Date.parse(s.updatedAt) < policy.partialRetryMs) continue;
                 if (!s.sweepMode) {
                     if (!due(s, t)) continue;
                     await guideStore.updateState(k, {

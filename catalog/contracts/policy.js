@@ -32,6 +32,7 @@ export const GUIDE_POLICY = Object.freeze({
     detailRefreshPerExecution: 10,        // at most this many due refreshes per lease
     maxDetailAttempts: 5,                 // then the ID stays incomplete with reason detail_failed
     leaseTtlMs: 10 * 60_000,              // an unanswered work lease expires and is re-issued
+    partialRetryMs: 60 * 60_000,          // a sweep stopped by a bad or failed page waits this long before retrying
     estimatedIndexPages: Object.freeze({ item: 661, creature: 321, realm: 282, master_realm: 15 }),
 });
 
