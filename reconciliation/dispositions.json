@@ -541,9 +541,9 @@
       "disposition": "retain-root",
       "status": "differing",
       "reviewedBackupHash": "925c7eea648a595619a0452ce90363ebb5120334fc12161610931c740760c210",
-      "reviewedRootHash": "f00d969fc7e4d594c18fe6254a2bb2784da315e04ebbf2a7ebc89c2832f70fed",
+      "reviewedRootHash": "22f5ace08d7a94d17b3d58714c646668ba8938dfd2a77bfb09f0d0e96eff36bb",
       "owners": [],
-      "rationale": "Backup has the older name, version, and dependency ranges; root adds scripts and newer ranges. Re-reviewed 2026-09-24 (REC-TASK-002): test script enables --experimental-test-module-mocks for fixture tests. Re-reviewed 2026-09-24 after REC-TASK-006: npm test preloads tests/helpers/no-network.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. mysql2 added; test preload adds tests/helpers/test-database.mjs. Re-reviewed 2026-09-24: npm test excludes local-only reconciliation tests; test:reconciliation retains that local workflow; better-sqlite3 removed. Re-reviewed 2026-09-25: version bumped 1.9.0 -> 2.0.0 for the MAJOR release (data-storage and health-metrics 2.0.0); no other change."
+      "rationale": "Backup has the older name, version, and dependency ranges; root adds scripts and newer ranges. Re-reviewed 2026-09-24 (REC-TASK-002): test script enables --experimental-test-module-mocks for fixture tests. Re-reviewed 2026-09-24 after REC-TASK-006: npm test preloads tests/helpers/no-network.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. mysql2 added; test preload adds tests/helpers/test-database.mjs. Re-reviewed 2026-09-24: npm test excludes local-only reconciliation tests; test:reconciliation retains that local workflow; better-sqlite3 removed. Re-reviewed 2026-09-25: version bumped 1.9.0 -> 2.0.0 for the MAJOR release (data-storage and health-metrics 2.0.0); no other change. Re-reviewed 2026-09-28 after CAT-TASK-001 (catalog contracts)."
     },
     "runSWS.bat": {
       "disposition": "retire-legacy",
@@ -740,14 +740,14 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "d8d52aafd4ed3e0943f8f7c725f123c28ecf4cf6b48bd139752d6c7fb1685613",
+      "reviewedRootHash": "7d0f3b72bb7070931f64fb738776dc28c08577be40dc639bfa475a7aea0023c6",
       "owners": [
         "catalog-sync-v1:CAT-TASK-002",
         "catalog-sync-v1:CAT-TASK-001",
         "catalog-sync-v1:CAT-TASK-009",
         "catalog-sync-v1:CAT-TASK-010"
       ],
-      "rationale": "Root-only, added 2026-09-25 with catalog-sync-v1 and updated 2026-09-28 (DEC-CAT-008..011). Re-reviewed 2026-09-28 against catalog-sync 1.2.1, the supplied guide scripts, API.js, and the control-plane security boundary: DEC-CAT-012..016 require full guide index coverage until ID order is verified, a separate guide budget, and a scoped staging-only relay token through loopback. The plan records future work; no collector or endpoint is implemented. Retain the root plan; no backup counterpart exists. The spec remains the contract."
+      "rationale": "Root-only, added 2026-09-25 with catalog-sync-v1 and updated 2026-09-28 (DEC-CAT-008..011). Re-reviewed 2026-09-28 against catalog-sync 1.2.1, the supplied guide scripts, API.js, and the control-plane security boundary: DEC-CAT-012..016 require full guide index coverage until ID order is verified, a separate guide budget, and a scoped staging-only relay token through loopback. The plan records future work; no collector or endpoint is implemented. Retain the root plan; no backup counterpart exists. The spec remains the contract. Re-reviewed 2026-09-28 after CAT-TASK-001 (catalog contracts)."
     },
     "_gg_data/migrations/005_catalog_key_width.sql": {
       "disposition": "retain-root",
@@ -758,6 +758,46 @@
         "catalog-sync-v1:CAT-TASK-002"
       ],
       "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002, catalog-sync 1.1.3). Idempotent ALTER ... MODIFY widening catalog entity_key to VARCHAR(255) on databases that applied the first 003."
+    },
+    "catalog/contracts/classify.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "927242ba3be0595c8799a143bd08bc5882739c526cd2da154218a535344d0603",
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-001: code-owned catalog source contracts (game/guide request policy, guide URL/order contract, unverified game location contract, response classification)."
+    },
+    "catalog/contracts/gameLocation.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "2b357683d102410ea40c35a1d4acc2d8435539dbf39ffd54df5d0d43bc004fc9",
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-001: code-owned catalog source contracts (game/guide request policy, guide URL/order contract, unverified game location contract, response classification)."
+    },
+    "catalog/contracts/guide.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "df33ab424d911bcf9eaa5742d2a96e24a00ab08fd8d7515581cae2fbe511bff5",
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-001: code-owned catalog source contracts (game/guide request policy, guide URL/order contract, unverified game location contract, response classification)."
+    },
+    "catalog/contracts/policy.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "77b717d2251fe572d49faf785e82775e2bd5dceece768a9d6a37a46a214287ae",
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-001: code-owned catalog source contracts (game/guide request policy, guide URL/order contract, unverified game location contract, response classification)."
+    },
+    "catalog/guideParsers.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "8bf8f6164475d2adda7e74856050aedc800f82e1448040d12752707538b65d30",
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-001: guide page parsers ported from the supplied reconciliation/scrappers userscripts; inlined into the relay userscript."
     }
   }
 }

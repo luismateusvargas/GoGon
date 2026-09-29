@@ -7,7 +7,7 @@
     "db:populate": "node scripts/populate_db.mjs",
     "reconcile:preflight": "node scripts/reconciliation/preflight.mjs",
     "reconcile:manifest": "node scripts/reconciliation/preflight.mjs --write",
-    "test": "node --import ./tests/helpers/no-network.mjs --import ./tests/helpers/test-database.mjs --experimental-test-module-mocks --test \"tests/auth-session/*.test.mjs\" \"tests/control-plane/*.test.mjs\" \"tests/data-storage/*.test.mjs\" \"tests/discord-integration/*.test.mjs\" \"tests/game-monitors/*.test.mjs\" \"tests/health-metrics/*.test.mjs\" \"tests/task-engine/*.test.mjs\"",
+    "test": "node --import ./tests/helpers/no-network.mjs --import ./tests/helpers/test-database.mjs --experimental-test-module-mocks --test \"tests/auth-session/*.test.mjs\" \"tests/catalog-sync/*.test.mjs\" \"tests/control-plane/*.test.mjs\" \"tests/data-storage/*.test.mjs\" \"tests/discord-integration/*.test.mjs\" \"tests/game-monitors/*.test.mjs\" \"tests/health-metrics/*.test.mjs\" \"tests/task-engine/*.test.mjs\"",
     "test:reconciliation": "node --import ./tests/helpers/no-network.mjs --import ./tests/helpers/test-database.mjs --experimental-test-module-mocks --test \"tests/reconciliation/*.test.mjs\""
   },
   "description": "Headless Firefox Browser to run Fallensword notifications and commands on discord",

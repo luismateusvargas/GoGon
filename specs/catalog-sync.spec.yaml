@@ -4,7 +4,7 @@
 spec:
   id: "catalog-sync-v1"
   status: locked
-  version: "1.2.1"
+  version: "1.3.0"
   created: "2026-09-25"
   updated: "2026-09-28"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: ["data-model", "api-surface", "security"]
 
   changelog:
+    - version: "1.3.0"
+      date: "2026-09-28"
+      changes:
+        - "CAT-TASK-001: source contracts in catalog/contracts (policy, guide, gameLocation, classify), guide parsers ported from the supplied userscripts (catalog/guideParsers.js), and synthetic fixtures. Owner decisions DEC-CAT-017 (guide index 0 is newest; order re-checked every run), DEC-CAT-018 (guide policy numbers), DEC-CAT-019 (fetchLocation uncaptured: observe_realm stays refused; item_frontier unavailable). [AC-CAT-003, AC-CAT-011, AC-CAT-012, AC-CAT-015]"
     - version: "1.2.1"
       date: "2026-09-28"
       changes:
@@ -556,7 +560,8 @@ tasks:
     affects: "catalog/contracts/, tests/catalog-sync/fixtures/, game_modules/API.js, reconciliation/scrappers/, docs/catalog-sync-control-plane-plan.md"
     depends_on: []
     source: "AC-CAT-001, AC-CAT-002, AC-CAT-003, AC-CAT-004"
-    status: TODO
+    status: IN_PROGRESS
+    progress: "2026-09-28: guide URL/order/parser contract, response classification, separate game and guide policies (DEC-CAT-017/018), synthetic fixtures, tests/catalog-sync/contracts.test.mjs. Open: one owner-captured, redacted fetchLocation response and its field mapping (DEC-CAT-019); game creature/item detail reads do not exist."
 
   - id: CAT-TASK-002
     description: |
