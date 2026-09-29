@@ -59,6 +59,10 @@ docker compose run --rm gogon node scripts/populate_db.mjs
 This replaces only the reference tables. Dedupe history, settings, account profiles, and the audit
 log are kept. Until it runs, alerts show IDs where they would show item, creature, or realm names.
 
+Once the catalog has projected anything (section 6), `populate_db.mjs` refuses to run unless you pass
+`--discard-catalog-projections`, because a full replace would throw that work away. After that point,
+prefer the Catalog tab's staged seed, which changes rows only through confirmed, reversible promotions.
+
 What `compose.yaml` enforces:
 
 | Control | Setting |
@@ -106,3 +110,38 @@ proxy you control), set `GG_CONTROL_COOKIE_SECURE=1`.
   backup reveals nothing.
 - **Audit log.** The Activity tab lists logins, denials, setting changes, and account switches. It records
   labels and keys only, never secret values.
+
+## 6. Catalog (`catalog-sync-v1`)
+
+The Catalog tab keeps items, creatures, realms, and master realms current. It records where each value
+came from, and every change it makes to the tables Discord reads can be rolled back.
+
+- **Browse.** Search by kind and name. Each item and creature shows `complete` or `incomplete` with
+  the reasons. Complete means its guide page was read and every drop it lists is in the catalog. It
+  never means no other drop exists.
+- **Seed (optional, recommended first).** *Stage fsdatabase* downloads the same snapshot `populate_db.mjs`
+  uses and records it without touching the serving tables. Promote each part in order: *Preview promotion*
+  shows the exact row changes, and you type the phrase it shows to apply it. Promoted parts can be rolled
+  back from *History & delete*.
+- **Guide discovery.** The guide is read by your own browser, not by the server:
+  1. In *Sync*, create a `guide_discovery` job (this enables it) and issue a relay token (1-7 days). Copy
+     the token; it is shown once.
+  2. Install `reconciliation/scrappers/gogon_guide_relay.user.js` in Tampermonkey. In the script's
+     *Storage* tab set `gogonRelayToken` to the token (and `gogonRelayPort` if not 8787). The token is
+     never typed into a web page.
+  3. Open the SSH tunnel (section 4), open any `guide.fallensword.com` page, and press *Start* in the
+     relay box.
+
+  The relay asks GoGon what to read. It reads one page at a time, 3 s apart, at most 50 per lease and
+  2,000 per day. Index page 0 is the newest, so a daily check stops shortly after it reaches IDs it
+  already knows. A full sweep of about 1,279 pages runs weekly, or at once if the index is not in
+  descending order. If Cloudflare asks for a check, the relay stops. Complete the check yourself, then
+  press *Start*; it resumes at the same page. A kind shows *waiting for browser* when it is due and no
+  relay has been seen for 30 minutes. It shows *overdue* after 48 hours. Revoke a token from *Sync* at
+  any time.
+- **Game jobs.** `observe_realm` needs one captured `fetchLocation` response before it can be enabled
+  (DEC-CAT-019), so it is shown disabled with that reason. `item_frontier` needs a game item-detail read,
+  which does not exist yet. The *CatalogSync* module on the Modules tab is off by default.
+- **History & delete.** Every run can be previewed for rollback. The preview is valid for 10 minutes,
+  can be used once, and needs its exact phrase. Rollback restores the previous values, or removes rows
+  the run created.

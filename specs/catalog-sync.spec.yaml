@@ -24,6 +24,7 @@ spec:
         - "CAT-TASK-007: staged seeding (DEC-CAT-020). catalog/sourceRegistry.js approves one key, fsdatabase (the snapshot scripts/populate_db.mjs loads). catalog/seedService.js downloads with a 64 MiB per-file cap, rejects non-array files and files with more than 5% unusable records before any write, excludes records whose payload cannot be represented (reported, never guessed), and stages 'seed' runs of at most 2,000 observations in projection order. catalogStore.planPromotion previews a staged part in a rolled-back transaction (exact counts and serving row deltas; parts promote in order); executePlan runs promote and rollback plans; discardStagedRun cancels an unpromoted part. API: GET /api/catalog/seed-sources, POST /api/catalog/seeds, /runs/:id/promote-plan, /runs/:id/discard. [AC-CAT-005, AC-CAT-006, AC-CAT-009]"
         - "CAT-TASK-006: Catalog tab in the existing dashboard with Browse (kind, name, coverage filters; paged; detail with fields, relations, provenance), Sync (guide status per kind including waiting-for-browser/challenged/overdue, policy and daily usage, jobs with pause/resume/cancel, allowed job kinds only, run-now), Seed (approved sources, staged parts, promotion preview), and History & delete (runs, rollback preview). Every value is rendered with textContent; a plan's action button stays disabled until the exact server phrase is typed. [AC-CAT-007, AC-CAT-008, AC-CAT-009]"
         - "CAT-TASK-010: guide relay. Migration 008 (catalog_relay_tokens: SHA-256 only, guide_stage scope, at most 7 days, revocable, at most 3 active; catalog_guide_leases). catalog/guideRelay.js plans server-owned leases (one kind; index pages or detail IDs; per-run budget and daily cap; one open lease; smaller indexes first), validates submissions against their lease before any write, stages and projects them under the enabled guide_discovery job, then moves checkpoints: incremental sweeps stop one overlap page past last_seen_id, a descending-ID violation forces a full sweep, a challenge/invalid page/failed request or unexpected empty page stops at that page, and only a complete sweep moves last_successful_check_at and last_seen_id. New index IDs get minimal named records; linked unknown entities are registered for detail reads; relations are staged only when both ends exist. catalog/guideNormalizers.js holds the strict wire schemas; catalog/relayClient.js is the browser loop. /relay/guide/lease and /relay/guide/leases/:id accept only a bearer relay token (no session, CSRF, or Origin), have their own 512 KiB body cap and per-token rate limit, and are audited; the token is refused on every /api route. scripts/catalog/build-relay-userscript.mjs generates reconciliation/scrappers/gogon_guide_relay.user.js (GM_xmlhttpRequest/GM_getValue/GM_setValue/GM_registerMenuCommand, @connect 127.0.0.1; the token is set in Tampermonkey storage, never prompted in the page). Catalog tab: issue/revoke tokens (shown once). [AC-CAT-006, AC-CAT-007, AC-CAT-011..AC-CAT-015]"
+        - "CAT-TASK-008 (automated part): CI runs tests/catalog-sync on the real-MySQL job and checks the relay userscript against its sources; docs/deployment.md section 6 and CHANGELOG. Live evidence remains open. [AC-CAT-001..AC-CAT-015]"
     - version: "1.2.1"
       date: "2026-09-28"
       changes:
@@ -546,7 +547,7 @@ dependencies:
     criticality: HIGH
 
 git:
-  last_implementation_branch: ""
+  last_implementation_branch: "feat/CAT-TASK-009-guide-discovery-stack"
   last_pr_url: ""
   last_pr_merged: ""
   last_version_tag: ""
@@ -656,7 +657,8 @@ tasks:
     affects: "tests/catalog-sync/, tests/control-plane/, .github/workflows/ci.yml, docs/deployment.md, CHANGELOG.md"
     depends_on: ["CAT-TASK-006", "CAT-TASK-007", "CAT-TASK-009", "CAT-TASK-010"]
     source: "AC-CAT-001..AC-CAT-015"
-    status: TODO
+    status: IN_PROGRESS
+    progress: "2026-09-28: automated gate done: fake-MySQL suite 285 pass (2 real-MySQL-only skips), catalog tests added to the real-MySQL CI job, userscript freshness check in CI, deployment and changelog docs. Open, needing the owner: a green CI run (real MySQL) on this branch, Docker loopback verification, SSH-tunnel browser acceptance of the Catalog tab, one live relay sweep with Tampermonkey (including a real Cloudflare challenge if one appears), and the live passive realm observation after the CAT-TASK-001 capture."
 
   - id: CAT-TASK-009
     description: |
