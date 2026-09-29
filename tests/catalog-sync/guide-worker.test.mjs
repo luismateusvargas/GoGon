@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createGuideWorker, DEFAULT_GUIDE_USER_AGENT } from '../../catalog/guideWorker.js';
+import { GUIDE_POLICY } from '../../catalog/contracts/policy.js';
 
 const itemIndex = readFileSync('tests/catalog-sync/fixtures/guide-item-index.html', 'utf8');
 const challenge = readFileSync('tests/catalog-sync/fixtures/cloudflare-challenge.html', 'utf8');
@@ -67,6 +68,35 @@ test('guide worker reports a challenge without staging guide data', async () => 
     assert.equal((await worker.run()).challenge, true);
     assert.equal(reads, 2);
     assert.equal(relay.calls.scheduled, 1);
+});
+
+test('guide worker retries a challenged clearance after the policy delay', async () => {
+    const relay = fakeRelay();
+    let currentTime = Date.now();
+    let reads = 0;
+    const nextLease = relay.nextLease;
+    relay.nextLease = async workerId => {
+        const next = await nextLease(workerId);
+        next.lease.expiresAt = new Date(currentTime + 60_000).toISOString();
+        return next;
+    };
+    const worker = createGuideWorker({ relay, clearance: 'sample-clearance', now: () => currentTime,
+        fetchFn: async () => {
+            const challenged = reads++ === 0;
+            return new Response(challenged ? challenge : itemIndex, {
+                status: challenged ? 403 : 200,
+                headers: { 'content-type': 'text/html' },
+            });
+        } });
+
+    assert.equal((await worker.run()).challenge, true);
+    currentTime += GUIDE_POLICY.partialRetryMs - 1;
+    assert.deepEqual(await worker.run(), { status: 'challenged' });
+    assert.equal(reads, 1);
+    currentTime++;
+    assert.equal((await worker.run()).challenge, false);
+    assert.equal(reads, 2);
+    assert.equal(relay.calls.submissions[1].results[0].outcome, 'ok');
 });
 
 test('guide worker retries a failed submission without reading the page again', async () => {

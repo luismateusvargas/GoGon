@@ -6,6 +6,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { parseHTML } from 'linkedom';
 import { CatalogError } from '../_gg_data/handler/catalogStore.js';
 import { runLease } from './relayClient.js';
+import { GUIDE_POLICY } from './contracts/policy.js';
 
 export const DEFAULT_GUIDE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0';
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -35,7 +36,7 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
     getClearance = () => clearance, getUserAgent = () => userAgent,
     fetchFn = globalThis.fetch, parseHtml = html => parseHTML(html).document, now = Date.now }) {
     let pendingSubmission = null;
-    let challengedConfiguration = null;
+    let lastChallenge = null;
     let seededDetailsScheduled = false;
 
     async function fetchPage(url, signal, currentClearance, currentUserAgent) {
@@ -59,7 +60,9 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
         try {
             const summary = await relay.submit(workerId, lease.leaseId, { results, requests });
             pendingSubmission = null;
-            if (results.at(-1)?.outcome === 'challenge') challengedConfiguration = currentConfiguration;
+            if (results.at(-1)?.outcome === 'challenge') {
+                lastChallenge = { configuration: currentConfiguration, at: now() };
+            }
             return { status: 'sent', kind: lease.kind, requests, results: results.length,
                 challenge: results.at(-1)?.outcome === 'challenge', sweepComplete: Boolean(summary.sweepComplete) };
         } catch (error) {
@@ -80,8 +83,9 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
                 || /[\r\n\x00-\x1f\x7f]/.test(currentUserAgent)) return { status: 'invalid_configuration' };
             if (signal?.aborted) return { status: 'aborted' };
             const currentConfiguration = `${currentClearance}\n${currentUserAgent}`;
-            if (challengedConfiguration === currentConfiguration) return { status: 'challenged' };
-            challengedConfiguration = null;
+            if (lastChallenge?.configuration === currentConfiguration
+                && now() - lastChallenge.at < GUIDE_POLICY.partialRetryMs) return { status: 'challenged' };
+            lastChallenge = null;
 
             if (!seededDetailsScheduled) {
                 await relay.scheduleSeededDetails();
