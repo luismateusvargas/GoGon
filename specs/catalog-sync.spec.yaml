@@ -22,6 +22,7 @@ spec:
         - "CAT-TASK-004: engine.js registers CatalogSync (60 s, disabled by default, preference persisted in module_preferences like every module). catalog/catalogTask.js runs queued game jobs serially, hands back jobs a crash left running, and shares a process-wide catalog lock with foreground commands; pauseAll (account switch) aborts a run in flight. No runtime setting was needed beyond enable/interval. [AC-CAT-001, AC-CAT-002, AC-CAT-008]"
         - "CAT-TASK-005: Catalog API on the existing control plane. GET /api/catalog/summary, /entities (kind, q, completeness, page, pageSize; unknown or repeated parameters are 400), /entities/:kind/:key (provenance and relations), /runs, /runs/:id. POST /api/catalog/jobs, /jobs/:id/(pause|resume|cancel), /sync-now, /runs/:id/rollback-plan, /plans/:id/execute behind the existing session + CSRF + same-origin gate, each audited (denials too). Dashboard SSE state carries catalog jobs, guide status, and job availability. catalog/catalogService.js reads through code-owned column lists; name search is case-insensitive with a literal '%'. [AC-CAT-002, AC-CAT-007, AC-CAT-008, AC-CAT-009, AC-CAT-010]"
         - "CAT-TASK-007: staged seeding (DEC-CAT-020). catalog/sourceRegistry.js approves one key, fsdatabase (the snapshot scripts/populate_db.mjs loads). catalog/seedService.js downloads with a 64 MiB per-file cap, rejects non-array files and files with more than 5% unusable records before any write, excludes records whose payload cannot be represented (reported, never guessed), and stages 'seed' runs of at most 2,000 observations in projection order. catalogStore.planPromotion previews a staged part in a rolled-back transaction (exact counts and serving row deltas; parts promote in order); executePlan runs promote and rollback plans; discardStagedRun cancels an unpromoted part. API: GET /api/catalog/seed-sources, POST /api/catalog/seeds, /runs/:id/promote-plan, /runs/:id/discard. [AC-CAT-005, AC-CAT-006, AC-CAT-009]"
+        - "CAT-TASK-006: Catalog tab in the existing dashboard with Browse (kind, name, coverage filters; paged; detail with fields, relations, provenance), Sync (guide status per kind including waiting-for-browser/challenged/overdue, policy and daily usage, jobs with pause/resume/cancel, allowed job kinds only, run-now), Seed (approved sources, staged parts, promotion preview), and History & delete (runs, rollback preview). Every value is rendered with textContent; a plan's action button stays disabled until the exact server phrase is typed. [AC-CAT-007, AC-CAT-008, AC-CAT-009]"
     - version: "1.2.1"
       date: "2026-09-28"
       changes:
@@ -629,7 +630,8 @@ tasks:
     affects: "control-plane/public/index.html, control-plane/public/app.js, control-plane/public/styles.css, tests/control-plane/catalog-ui.test.mjs"
     depends_on: ["CAT-TASK-005", "CAT-TASK-009"]
     source: "AC-CAT-007, AC-CAT-008, AC-CAT-009"
-    status: TODO
+    status: DONE
+    progress: "2026-09-28: Catalog tab and tests/control-plane/catalog-ui.test.mjs (the real page and script in linkedom). Browser acceptance through the SSH tunnel is part of CAT-TASK-008."
 
   - id: CAT-TASK-007
     description: |

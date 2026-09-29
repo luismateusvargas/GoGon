@@ -323,21 +323,21 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "8a86d04a04fc6a8d6fcb883812d60e0264097d20e3ecd5ac4158aaf1ed36ca3b",
+      "reviewedRootHash": "84657722c3e5f91c4f7db675f372f216058d26bfdf5f3d2a94f0906e4d303225",
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Dashboard client (textContent rendering only)."
+      "rationale": "Root-only, added 2026-09-24. Dashboard client (textContent rendering only). Re-reviewed 2026-09-28 after CAT-TASK-006 (Catalog tab)."
     },
     "control-plane/public/index.html": {
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "dfff26074d407a17ec373bcd30b84293b83b9b898305abce3a1ab2eb03b5544f",
+      "reviewedRootHash": "5e70b3d986d7011bb3c2d31b8a29a8705c82d9a39ed78d28da712511a19c5533",
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Dashboard page (no inline script/style)."
+      "rationale": "Root-only, added 2026-09-24. Dashboard page (no inline script/style). Re-reviewed 2026-09-28 after CAT-TASK-006 (Catalog tab)."
     },
     "control-plane/public/login.html": {
       "disposition": "retain-root",
@@ -363,11 +363,11 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "350bf8698f2f3bb298cfa16c8a9a457a10dddac632602f17c7d80f85bc79c737",
+      "reviewedRootHash": "3c811c0bf17e8d9f47bf93aaf81a10dcb6f09c9a8ddaf369ada1bbd04dfe969c",
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Dashboard styles."
+      "rationale": "Root-only, added 2026-09-24. Dashboard styles. Re-reviewed 2026-09-28 after CAT-TASK-006 (Catalog tab)."
     },
     "control-plane/server.mjs": {
       "disposition": "retain-root",
