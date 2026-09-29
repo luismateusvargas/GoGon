@@ -700,11 +700,11 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "fb5ae303190f3ed243f23e30c95e3170bf0a2869aac4df0bd570e655e162a3c8",
+      "reviewedRootHash": "cc57626f6cc9cd50f9f7bbee01efbde3e33e31c5dc9641c28d6076ad378c2ca5",
       "owners": [
         "catalog-sync-v1:CAT-TASK-002"
       ],
-      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas. Re-reviewed 2026-09-28 (catalog-sync 1.1.1 review fixes): projection and rollback rebuild state from provenance under field-level source precedence; restores resolve parents (unknown master realm -> NULL, orphaned relic/quest/relation removed); discardProjections rechecks for projections under the revision lock. Re-reviewed 2026-09-28 (catalog-sync 1.1.2): discard retires every succeeded/running run including baselines; recordRun takes and projectRun rechecks under the revision lock; entity keys capped at MAX_ENTITY_KEY (255). Re-reviewed 2026-09-28 (catalog-sync 1.1.3): hasDiscardableWork (projected entities or a running run) gates discardProjections without the flag; recordRun rejects non-object observations as invalid. Re-reviewed 2026-09-28 after CAT-TASK-009 (guide discovery state and completeness)."
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas. Re-reviewed 2026-09-28 (catalog-sync 1.1.1 review fixes): projection and rollback rebuild state from provenance under field-level source precedence; restores resolve parents (unknown master realm -> NULL, orphaned relic/quest/relation removed); discardProjections rechecks for projections under the revision lock. Re-reviewed 2026-09-28 (catalog-sync 1.1.2): discard retires every succeeded/running run including baselines; recordRun takes and projectRun rechecks under the revision lock; entity keys capped at MAX_ENTITY_KEY (255). Re-reviewed 2026-09-28 (catalog-sync 1.1.3): hasDiscardableWork (projected entities or a running run) gates discardProjections without the flag; recordRun rejects non-object observations as invalid. Re-reviewed 2026-09-28 after CAT-TASK-009 (guide discovery state and completeness). Re-reviewed 2026-09-28 after CAT-TASK-003 (collector)."
     },
     "_gg_data/handler/servingRelations.js": {
       "disposition": "retain-root",
@@ -822,6 +822,30 @@
       "reviewedRootHash": "36603ba82f097933ed570490a79eb9febc24817efba08c45a9d4286164fc5d98",
       "owners": [],
       "rationale": "Root-only, added 2026-09-28 by CAT-TASK-009: completeness columns and guide_discovery CHECK replacement, safe to re-run."
+    },
+    "catalog/collector.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "f38c3b1978543efedefa87121ec7be871742bffaa9e5c8c3bdc994f7e0893dba",
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-003: passive game collector (one request in flight, cursor only after validated responses)."
+    },
+    "catalog/normalizers.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "9d4b0820d03b9a75fb6a135ab3cbb2f2e9c229222ab86d7754ce3c554002914d",
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-003: contract-mapped game response normalizers."
+    },
+    "catalog/requestPolicy.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "583022334d70e94c8fcb55ab62e6ddf730ba50f2b9214b0851c8e14e47292340",
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-003: read allow-list, passive URL assertion, serial game queue."
     }
   }
 }

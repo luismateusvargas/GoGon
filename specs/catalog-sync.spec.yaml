@@ -18,6 +18,7 @@ spec:
       changes:
         - "CAT-TASK-001: source contracts in catalog/contracts (policy, guide, gameLocation, classify), guide parsers ported from the supplied userscripts (catalog/guideParsers.js), and synthetic fixtures. Owner decisions DEC-CAT-017 (guide index 0 is newest; order re-checked every run), DEC-CAT-018 (guide policy numbers), DEC-CAT-019 (fetchLocation uncaptured: observe_realm stays refused; item_frontier unavailable). [AC-CAT-003, AC-CAT-011, AC-CAT-012, AC-CAT-015]"
         - "CAT-TASK-009: migrations 006 (catalog_guide_state, catalog_guide_ids, catalog_guide_usage) and 007 (catalog_entities completeness/incomplete_reason/verified_at; guide_discovery run mode and job kind, replacing the 003 CHECKs on upgraded databases). _gg_data/handler/guideDiscoveryStore.js persists checkpoints, per-ID refresh with backoff, and the guide daily counter. Projection and rollback recompute completeness for touched items/creatures and for entities whose known drops changed. Reasons: guide_detail_missing, guide_detail_failed, required_field_missing, known_drop_unresolved. [AC-CAT-011, AC-CAT-012, AC-CAT-013, AC-CAT-015]"
+        - "CAT-TASK-003: catalog/requestPolicy.js (read allow-list, passive fetchdata URL assertion, process-wide serial queue), catalog/normalizers.js (contract-mapped fields only), catalog/collector.js (observe_realm and item_frontier executions; login/unauthenticated back off without a login, a challenge pauses, malformed/too-large/404 record a redacted failed run, validated data is stored before its cursor, an owner pause during an execution wins). Store: recordFailedRun and the running -> queued hand-back. With the committed contracts both game kinds are refused without a request (DEC-CAT-019). [AC-CAT-001..AC-CAT-005]"
     - version: "1.2.1"
       date: "2026-09-28"
       changes:
@@ -583,10 +584,11 @@ tasks:
       only after CAT-TASK-001 validates their contracts. Add strict response classifications,
       canonical JSON hashing, a serial rate-limited queue, AbortSignal support, backoff, cursor
       checkpointing, and redacted errors. No game-mutating request builder may be imported.
-    affects: "catalog/collector.js, catalog/normalizers.js, catalog/requestPolicy.js, game_modules/API.js, tests/catalog-sync/collector.test.mjs"
+    affects: "catalog/collector.js, catalog/normalizers.js, catalog/requestPolicy.js, _gg_data/handler/catalogStore.js, tests/catalog-sync/collector.test.mjs, tests/data-storage/catalog-store.test.mjs"
     depends_on: ["CAT-TASK-001", "CAT-TASK-002"]
     source: "AC-CAT-001, AC-CAT-002, AC-CAT-003, AC-CAT-004, AC-CAT-005"
-    status: TODO
+    status: DONE
+    progress: "2026-09-28: collector, normalizers, request policy. Positive paths are tested against a synthetic verified contract; live use waits for the owner-captured fetchLocation contract (CAT-TASK-001, DEC-CAT-019). API.js needed no change."
 
   - id: CAT-TASK-004
     description: |

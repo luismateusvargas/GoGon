@@ -9,12 +9,12 @@
     "reviewer": "Claude Code (pending owner confirmation)"
   },
   "summary": {
-    "paths": 80,
+    "paths": 83,
     "identical": 1,
     "byDisposition": {
       "import-data": 1,
       "port": 7,
-      "retain-root": 69,
+      "retain-root": 72,
       "retire-legacy": 3
     },
     "failures": 0
@@ -94,14 +94,14 @@
       "path": "_gg_data/handler/catalogStore.js",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "fb5ae303190f3ed243f23e30c95e3170bf0a2869aac4df0bd570e655e162a3c8",
+      "rootHash": "cc57626f6cc9cd50f9f7bbee01efbde3e33e31c5dc9641c28d6076ad378c2ca5",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "catalog-sync-v1:CAT-TASK-002"
       ],
-      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas. Re-reviewed 2026-09-28 (catalog-sync 1.1.1 review fixes): projection and rollback rebuild state from provenance under field-level source precedence; restores resolve parents (unknown master realm -> NULL, orphaned relic/quest/relation removed); discardProjections rechecks for projections under the revision lock. Re-reviewed 2026-09-28 (catalog-sync 1.1.2): discard retires every succeeded/running run including baselines; recordRun takes and projectRun rechecks under the revision lock; entity keys capped at MAX_ENTITY_KEY (255). Re-reviewed 2026-09-28 (catalog-sync 1.1.3): hasDiscardableWork (projected entities or a running run) gates discardProjections without the flag; recordRun rejects non-object observations as invalid. Re-reviewed 2026-09-28 after CAT-TASK-009 (guide discovery state and completeness)."
+      "rationale": "Root-only, added 2026-09-28 (CAT-TASK-002). Catalog provenance store: validated content-addressed observations, two-transaction provenance then projection, first-touch baselines, replay-based rollback behind one-use plans, durable job cursors. Parameterized SQL; identifiers come only from code-owned schemas. Re-reviewed 2026-09-28 (catalog-sync 1.1.1 review fixes): projection and rollback rebuild state from provenance under field-level source precedence; restores resolve parents (unknown master realm -> NULL, orphaned relic/quest/relation removed); discardProjections rechecks for projections under the revision lock. Re-reviewed 2026-09-28 (catalog-sync 1.1.2): discard retires every succeeded/running run including baselines; recordRun takes and projectRun rechecks under the revision lock; entity keys capped at MAX_ENTITY_KEY (255). Re-reviewed 2026-09-28 (catalog-sync 1.1.3): hasDiscardableWork (projected entities or a running run) gates discardProjections without the flag; recordRun rejects non-object observations as invalid. Re-reviewed 2026-09-28 after CAT-TASK-009 (guide discovery state and completeness). Re-reviewed 2026-09-28 after CAT-TASK-003 (collector)."
     },
     {
       "path": "_gg_data/handler/controlStore.js",
@@ -482,6 +482,17 @@
       "rationale": "Root is a superset: GG_DEBUG names plus formatGameTime, formatRemainingTime, and formatDuration helpers. Re-reviewed 2026-09-24 after CTRL-TASK-001: GG_DEBUG is a hot registry setting ('0' now really silences LOG); debug dir via registry."
     },
     {
+      "path": "catalog/collector.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "f38c3b1978543efedefa87121ec7be871742bffaa9e5c8c3bdc994f7e0893dba",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-003: passive game collector (one request in flight, cursor only after validated responses)."
+    },
+    {
       "path": "catalog/contracts/classify.js",
       "status": "root-only",
       "backupHash": null,
@@ -535,6 +546,28 @@
       "secretBearing": false,
       "owners": [],
       "rationale": "Root-only, added 2026-09-28 by CAT-TASK-001: guide page parsers ported from the supplied reconciliation/scrappers userscripts; inlined into the relay userscript."
+    },
+    {
+      "path": "catalog/normalizers.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "9d4b0820d03b9a75fb6a135ab3cbb2f2e9c229222ab86d7754ce3c554002914d",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-003: contract-mapped game response normalizers."
+    },
+    {
+      "path": "catalog/requestPolicy.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "583022334d70e94c8fcb55ab62e6ddf730ba50f2b9214b0851c8e14e47292340",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-003: read allow-list, passive URL assertion, serial game queue."
     },
     {
       "path": "compose.yaml",

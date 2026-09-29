@@ -333,7 +333,10 @@ test('AC-CAT-008: one active job per kind; transitions and checkpoints are valid
     assert.equal((await store.transitionJob(id, 'running')).state, 'running');
     await store.checkpointJob(id, { nextItemId: 17050, highestConfirmedItemId: 17048 });
     assert.deepEqual((await store.getJob(id)).cursor, { highestConfirmedItemId: 17048, nextItemId: 17050 });
-    await rejectsWith(store.transitionJob(id, 'queued'), 'conflict');
+    await rejectsWith(store.transitionJob(id, 'running'), 'conflict');   // not a transition
+    // running -> queued is the collector's hand-back after an execution (CAT-TASK-003).
+    assert.equal((await store.transitionJob(id, 'queued')).state, 'queued');
+    await store.transitionJob(id, 'running');
     await store.transitionJob(id, 'completed');
     await rejectsWith(store.transitionJob(id, 'running'), 'conflict');
     await store.createJob({ kind: 'item_frontier', cursor: { nextItemId: 17050 }, requestBudget: 10 }); // the kind is free again

@@ -610,9 +610,10 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         return json;
     }
 
+    // running -> queued: an execution ended with work left (CAT-TASK-003 collector, the next run resumes).
     const JOB_TRANSITIONS = {
         queued: ['running', 'paused', 'cancelled'],
-        running: ['paused', 'completed', 'failed', 'cancelled'],
+        running: ['queued', 'paused', 'completed', 'failed', 'cancelled'],
         paused: ['queued', 'running', 'cancelled'],
     };
 
@@ -720,6 +721,21 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
                 await db.query("UPDATE catalog_runs SET status = ?, finished_at = ?, summary = ? WHERE id = ? AND status = 'running'", ['failed', iso(), JSON.stringify(summary), runId]);
                 throw new CatalogError('projection_failed', 'Catalog projection failed; nothing was applied.', { cause: error, summary });
             }
+        },
+
+        /**
+         * AC-CAT-003 error case: a run that read nothing usable. It has no observations and only a
+         * redacted reason code (a response class or schema reason, never text from the response).
+         */
+        async recordFailedRun({ mode, source, stage, reason }) {
+            if (!RUN_MODES.includes(mode)) throw invalid('Unknown run mode.', 'mode');
+            if (!SOURCES.includes(source)) throw invalid('Unknown source.', 'source');
+            const code = typeof reason === 'string' && /^[a-z][a-z0-9_ ]{0,39}$/.test(reason) ? reason : 'error';
+            const runId = uuid();
+            const at = iso();
+            await db.query('INSERT INTO catalog_runs (id, mode, source, status, started_at, finished_at, summary) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                [runId, mode, source, 'failed', at, at, JSON.stringify({ error: { stage: String(stage).slice(0, 32), code } })]);
+            return runId;
         },
 
         /** recordRun then projectRun. */
