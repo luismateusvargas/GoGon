@@ -58,7 +58,8 @@ export function currentCredentials() {
 
 // ---------- Cookie jar ----------
 const jar = new CookieJar();
-export const authedFetch = fetchCookie(globalThis.fetch, jar);
+export const nativeFetch = globalThis.fetch;
+export const authedFetch = fetchCookie(nativeFetch, jar);
 
 /** Drops every game cookie, so the next request is anonymous (account switch, AC-CTRL-004). */
 export async function resetSession() {
