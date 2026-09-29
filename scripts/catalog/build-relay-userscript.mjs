@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const OUTPUT = path.join(ROOT, 'reconciliation', 'scrappers', 'gogon_guide_relay.user.js');
 export const MODULES = ['catalog/contracts/guide.js', 'catalog/contracts/classify.js', 'catalog/guideParsers.js', 'catalog/relayClient.js'];
-export const VERSION = '1.0.1';
+export const VERSION = '1.0.2';
 
 const HEADER = `// ==UserScript==
 // @name         GoGon Guide Relay
@@ -53,7 +53,6 @@ const GLUE = `
         disabled: 'the guide job is not enabled in the Catalog tab.',
         paused: 'the guide job is paused.',
         idle: 'nothing is due; checking again later.',
-        cap_reached: "today's guide request cap is used up.",
         busy: 'another browser is running the relay.',
     };
     const tabId = Math.random().toString(36).slice(2);

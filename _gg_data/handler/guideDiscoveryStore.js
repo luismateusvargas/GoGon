@@ -1,6 +1,6 @@
 // _gg_data/handler/guideDiscoveryStore.js - CAT-TASK-009 / AC-CAT-011, AC-CAT-012, AC-CAT-013, AC-CAT-015
 // Repository for guide discovery (tables in migration 006): one checkpoint row per guide kind, one
-// refresh row per guide ID, and the per-UTC-day request counter behind the guide daily cap. The
+// refresh row per guide ID, and a per-UTC-day request counter for visibility. The
 // sweep planner that decides what to read next is catalog/guideRelay.js; this module only persists.
 // Every statement is parameterized; column names come only from STATE_COLUMNS.
 
@@ -103,16 +103,26 @@ export function createGuideDiscoveryStore(db, { now = Date.now } = {}) {
          */
         async recordIndexIds(kind, ids, q = db) {
             kindOk(kind);
+            const uniqueIds = [...new Set(ids)];
+            uniqueIds.forEach(idOk);
+            if (!uniqueIds.length) return [];
             const at = iso();
+            const placeholders = uniqueIds.map(() => '?').join(', ');
+            const existing = await q.query(
+                `SELECT entity_id FROM catalog_guide_ids WHERE entity_kind = ? AND entity_id IN (${placeholders})`,
+                [kind, ...uniqueIds]);
+            const knownIds = new Set(existing.map(row => Number(row.entity_id)));
             const fresh = [];
-            for (const id of ids) {
-                idOk(id);
+            for (const id of uniqueIds) {
+                if (knownIds.has(id)) continue;
                 const { affectedRows } = await q.query(
                     'INSERT IGNORE INTO catalog_guide_ids (entity_kind, entity_id, first_seen_at, last_index_seen_at, next_detail_at) VALUES (?, ?, ?, ?, ?)',
                     [kind, id, at, at, at]);
                 if (affectedRows) fresh.push(id);
-                else await q.query('UPDATE catalog_guide_ids SET last_index_seen_at = ? WHERE entity_kind = ? AND entity_id = ?', [at, kind, id]);
             }
+            if (knownIds.size) await q.query(
+                `UPDATE catalog_guide_ids SET last_index_seen_at = ? WHERE entity_kind = ? AND entity_id IN (${placeholders})`,
+                [at, kind, ...uniqueIds]);
             return fresh;
         },
 
@@ -180,7 +190,7 @@ export function createGuideDiscoveryStore(db, { now = Date.now } = {}) {
             return out;
         },
 
-        // --- guide daily cap (AC-CAT-015) ---
+        // --- guide request accounting (AC-CAT-015) ---
 
         dayOf: (t = now()) => iso(t).slice(0, 10),
 

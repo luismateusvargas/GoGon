@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoGon Guide Relay
 // @namespace    gogon
-// @version      1.0.1
+// @version      1.0.2
 // @description  Reads the guide pages GoGon asks for (one at a time) and sends parsed records to your GoGon control plane over 127.0.0.1.
 // @match        https://guide.fallensword.com/*
 // @grant        GM_xmlhttpRequest
@@ -28,9 +28,8 @@
     // inlined into the relay userscript (scripts/catalog/build-relay-userscript.mjs), so it has no
     // imports and only plain data and pure functions.
     //
-    // Ordering: owner-attested 2026-09-28 (DEC-CAT-017). Index page 0 holds the newest records and the
-    // last page the oldest. It is still checked on every run (descending IDs within and across pages);
-    // a violation turns that kind back to full sweeps (AC-CAT-012).
+    // New IDs can appear on any index page when a low-level item, creature, or realm is released.
+    // Every active kind scans all its index pages; page counts are never fixed ceilings.
 
     const GUIDE_ORIGIN = 'https://guide.fallensword.com';
     const GUIDE_KINDS = Object.freeze(['item', 'creature', 'realm', 'master_realm']);
@@ -60,11 +59,11 @@
     });
 
     const GUIDE_ORDERING = Object.freeze({
-        order: 'newest_first',
+        indexCoverage: 'all_pages',
         firstIndex: 0,
         attestedBy: 'owner',
-        attestedOn: '2026-09-28',
-        runtimeCheck: 'descending_ids',
+        attestedOn: '2026-09-29',
+        runtimeCheck: 'repeated_final_page',
     });
 
     const MAX_GUIDE_ID = 10_000_000;
@@ -79,17 +78,6 @@
             : Number.isSafeInteger(value) && value > 0 && value <= MAX_GUIDE_ID;
         if (!ok) throw new Error('Guide page or ID out of range.');
         return GUIDE_ORIGIN + spec[phase].replace(phase === 'index' ? '{page}' : '{id}', String(value));
-    }
-
-    /**
-     * The newest-first check for one page of IDs in document order (duplicates already removed).
-     * @param {number[]} ids - this page
-     * @param {number|null} previousMin - the smallest ID of the previous page, or null for page 0
-     * @returns {boolean} true when the page is strictly descending and entirely below previousMin
-     */
-    function isDescendingPage(ids, previousMin) {
-        for (let i = 1; i < ids.length; i++) if (!(ids[i] < ids[i - 1])) return false;
-        return previousMin === null || ids.length === 0 || ids[0] < previousMin;
     }
 
     /** The guide repeats its final non-empty page for every later index. */
@@ -446,20 +434,18 @@
     const utf8Bytes = s => new TextEncoder().encode(s).length;
 
     /**
-     * An incremental lease carries stopAtId (the kind's last_seen_id) and overlapPages: once a page
-     * reaches stopAtId the relay reads overlapPages more and stops, as long as the pages it saw were in
-     * descending order. The server applies the same rule and stays authoritative; this only saves requests.
+     * An index lease stops when the guide repeats its final page. The previous page's IDs are carried
+     * across leases so the repeat is recognized even at a lease boundary.
      * A lease also carries maxBodyBytes, the server's body limit: the relay stops before its results would
      * no longer fit in one submission. A page that does not fit is left for the next lease (its request is
      * still reported); one that cannot fit even alone is sent as 'too_large', so the server stops there.
-     * @param {{ kind: string, work: Array<{ type: 'index'|'detail', page?: number, id?: number }>, minDelayMs: number, expiresAt: string, maxBodyBytes?: number, stopAtId?: number|null, overlapPages?: number, previousPageIds?: number[]|null }} lease
+     * @param {{ kind: string, work: Array<{ type: 'index'|'detail', page?: number, id?: number }>, minDelayMs: number, expiresAt: string, maxBodyBytes?: number, previousPageIds?: number[]|null }} lease
      * @param {object} deps
      * @param {(url: string) => Promise<{ status: number, contentType: string, cfMitigated: string|null, body: string }>} deps.fetchPage
      * @param {(html: string) => Document} deps.parseHtml
      * @param {(ms: number) => Promise<void>} deps.sleep
      * @param {() => boolean} [deps.stopped] - the owner pressed stop
-     * @param {() => number} [deps.now] - the relay stops at the lease's expiresAt; the server reserved its
-     *   requests against the daily cap only for the days up to then
+     * @param {() => number} [deps.now] - the relay stops at the lease's expiresAt
      * @param {() => void} [deps.onRequest] - called once per guide request
      * @returns {Promise<Array<object>>} results in lease order (possibly fewer than the work items)
      */
@@ -467,9 +453,6 @@
         const results = [];
         const budget = (lease.maxBodyBytes ?? Infinity) - ENVELOPE_BYTES;
         let size = 0;
-        let reachedAt = null;       // incremental: the page that reached stopAtId
-        let descending = true;
-        let prevMin = null;
         let previousPageIds = lease.previousPageIds ?? null;
         for (let i = 0; i < lease.work.length; i++) {
             if (stopped()) break;
@@ -491,10 +474,6 @@
                 const ids = result.entries.map(e => e.id);
                 if (isRepeatedIndexPage(ids, previousPageIds)) break;
                 previousPageIds = ids;
-                descending = descending && isDescendingPage(ids, prevMin);
-                prevMin = Math.min(...ids);
-                if (descending && typeof lease.stopAtId === 'number' && reachedAt === null && prevMin <= lease.stopAtId) reachedAt = item.page;
-                if (descending && reachedAt !== null && item.page >= reachedAt + (lease.overlapPages ?? 1)) break;
             }
         }
         return results;
@@ -516,7 +495,7 @@
         if (!isGuidePage(doc)) return { result: { ...key, outcome: 'invalid' }, stop: true };
         if (item.type === 'index') {
             const { entries } = parseIndexPage(doc, GUIDE_URLS[lease.kind].idParam);
-            if (!entries.length) return { result: { ...key, outcome: 'empty' }, stop: true };   // past the last page
+            if (!entries.length) return { result: { ...key, outcome: 'empty' }, stop: true };   // unexpected: the guide repeats its last page
             return { result: { ...key, outcome: 'ok', entries }, stop: false };
         }
         // Only an HTTP 404 means the record is gone; a guide page whose detail layout the parser
@@ -532,8 +511,8 @@
      * is resent exactly as read on the next cycle, before any new lease is asked for. The same pages are
      * never read twice for one lease, so every guide request is one the server reserved. Any other answer
      * settles the saved results: accepted, or refused for good (the lease closed, expired, or invalid).
-     * Each submission reports how many guide requests the relay made, so a page read but not sent is not
-     * given back to the daily cap. A submission the server finds too large (HTTP 413) is cut to its first
+     * Each submission reports how many guide requests the relay made, so a page read but not sent remains
+     * in the usage counter. A submission the server finds too large (HTTP 413) is cut to its first
      * half and sent again; the pages cut off are read under a later lease. A single result that still does
      * not fit is sent as too_large, so the relay never submits an empty batch for a page it read.
      * @param {object} deps - runLease's deps, plus:
@@ -597,7 +576,6 @@
         disabled: 'the guide job is not enabled in the Catalog tab.',
         paused: 'the guide job is paused.',
         idle: 'nothing is due; checking again later.',
-        cap_reached: "today's guide request cap is used up.",
         busy: 'another browser is running the relay.',
     };
     const tabId = Math.random().toString(36).slice(2);
