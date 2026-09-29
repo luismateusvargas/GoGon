@@ -9,7 +9,7 @@
 // Job kinds: observe_realm (recurring: one current-location read per execution) and item_frontier
 // (up to request_budget item-detail reads from its cursor). Both need a verified read contract;
 // with the committed contracts neither is available (DEC-CAT-019), and the collector refuses them
-// without making a request. guide_discovery jobs are run by the browser relay, not here.
+// without making a request. guide_discovery uses the server guide worker or legacy relay, not here.
 import { classifyResponse } from './contracts/classify.js';
 import { GAME_POLICY } from './contracts/policy.js';
 import { gameQueue, readOperations, unavailableReason } from './requestPolicy.js';

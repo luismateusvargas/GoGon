@@ -61,7 +61,7 @@ const count = async (db, table) => Number((await db.query(`SELECT COUNT(*) AS n 
 test('CAT-TASK-003 / DEC-CAT-019: with the committed contracts, game jobs are unavailable and make no request', async () => {
     assert.equal(unavailableReason('observe_realm'), 'contract_unverified');
     assert.equal(unavailableReason('item_frontier'), 'contract_unverified');
-    assert.equal(unavailableReason('guide_discovery'), 'browser_relay');
+    assert.equal(unavailableReason('guide_discovery'), null);
     assert.equal(unavailableReason('attack'), 'unknown_kind');
     const { store } = await setup({ respond: () => json(LOCATION_BODY) });
     const calls = [];

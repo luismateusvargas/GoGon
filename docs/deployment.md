@@ -123,27 +123,29 @@ came from, and every change it makes to the tables Discord reads can be rolled b
   uses and records it without touching the serving tables. Promote each part in order: *Preview promotion*
   shows the exact row changes, and you type the phrase it shows to apply it. Promoted parts can be rolled
   back from *History & delete*.
-- **Guide discovery.** The guide is read by your own browser, not by the server:
-  1. In *Sync*, create a `guide_discovery` job (this enables it) and issue a relay token (1-7 days). Copy
-     the token; it is shown once.
-  2. Install `reconciliation/scrappers/gogon_guide_relay.user.js` in Tampermonkey. In the script's
-     *Storage* tab set `gogonRelayToken` to the token (and `gogonRelayPort` if not 8787). The token is
-     never typed into a web page.
-  3. Open the SSH tunnel (section 4), open any `guide.fallensword.com` page, and press *Start* in the
-     relay box.
+- **Guide discovery.** After one browser verification through the VPS network, the server can run
+  scheduled guide reads itself:
+  1. Create a `guide_discovery` job in *Sync* and enable *CatalogSync* on the Modules tab.
+  2. On your computer, open a SOCKS tunnel to the VPS (`ssh -N -D 127.0.0.1:1087 administrator@VPS_HOST`).
+     Open the guide in a separate Firefox profile configured for SOCKS5 at `127.0.0.1:1087` with remote
+     DNS. Complete the initial verification there. A clearance issued for your ordinary local connection
+     may still be challenged from the VPS network.
+  3. In Firefox Storage Inspector, copy only the **value** of the guide's `cf_clearance` cookie. In the
+     dashboard Settings tab, under *Guide catalog*, save it as *Guide clearance*. Set *Guide User-Agent*
+     to that Firefox profile's User-Agent. The clearance is a write-only secret setting, encrypted in
+     the control database; neither the dashboard nor logs return its value. It takes effect on the next
+     CatalogSync run, without a container restart. Do not paste a full HAR into the dashboard.
 
-  The relay asks GoGon what to read. It reads one page at a time, 3 s apart, at most 50 per lease and
-  2,000 per day. You have said index page 0 is the newest (DEC-CAT-017), so a daily check stops shortly
-  after it reaches IDs it already knows. Every page is checked for that order. A full sweep of about 1,279 pages runs weekly, or at once if the index is not in
-  descending order. If Cloudflare asks for a check, the relay stops. Complete the check yourself, then
-  press *Start*; it resumes at the same page. If GoGon cannot take a batch of results (tunnel down, server
-  error), the relay keeps them and sends them again; it does not read those pages again. A batch too large
-  for one submission is sent in parts. A single page too large to send stops that sweep as
-  *page too large to submit*; it is retried after an hour. A detail page GoGon cannot read (for example, after a guide
-  layout change) also stops the relay and is retried later; only a 404 marks a record missing. GoGon
-  cannot run the daily check by itself: a kind that is due stays due until a relay is running. A kind shows *waiting for browser* when it is due and no
-  relay has been seen for 30 minutes. It shows *overdue* after 48 hours. Revoke a token from *Sync* at
-  any time.
+  The server uses the existing guide lease planner and parsers: one page at a time, 3 s apart, at most
+  50 per lease and 2,000 per day. Index page 0 is checked for new IDs, older details are refreshed,
+  and a full sweep runs weekly. A Cloudflare challenge stops that lease without moving the successful
+  checkpoint; the kind remains incomplete until a valid clearance is saved. The cookie's browser
+  expiry is not a guarantee that Cloudflare will accept it until that date. If it is invalidated, the
+  one-time browser verification and secret setting update must be repeated. Automated renewal of an
+  interactive challenge is not established.
+
+  The earlier Tampermonkey relay and its stage-only tokens remain available for manual recovery; the
+  scheduled server reader does not need an extension or a relay token.
 - **Game jobs.** `observe_realm` needs one captured `fetchLocation` response before it can be enabled
   (DEC-CAT-019), so it is shown disabled with that reason. `item_frontier` needs a game item-detail read,
   which does not exist yet. The *CatalogSync* module on the Modules tab is off by default.

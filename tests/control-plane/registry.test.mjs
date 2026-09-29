@@ -149,3 +149,14 @@ test('AC-CTRL-002: describeSettings covers every entry and reduces secrets to se
     assert.equal(described.find(d => d.key === 'GG_GUILD_NAME').value, 'Visible Guild');
     for (const d of described.filter(x => x.sensitivity === 'secret')) assert.equal('value' in d, false, d.key);
 });
+
+test('guide clearance accepts the observed cookie length and stays write-only', () => {
+    const clearance = 'a'.repeat(597);
+    assert.equal(validateSetting('GG_GUIDE_CLEARANCE', clearance).ok, true);
+    assert.equal(validateSetting('GG_GUIDE_CLEARANCE', 'bad\nvalue').ok, false);
+    applyOverride('GG_GUIDE_CLEARANCE', clearance);
+    assert.equal(getSetting('GG_GUIDE_CLEARANCE'), clearance);
+    const described = describeSettings({}).find(setting => setting.key === 'GG_GUIDE_CLEARANCE');
+    assert.equal(described.isSet, true);
+    assert.equal('value' in described, false);
+});

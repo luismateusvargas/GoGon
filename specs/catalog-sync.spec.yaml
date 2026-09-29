@@ -4,15 +4,19 @@
 spec:
   id: "catalog-sync-v1"
   status: locked
-  version: "1.3.1"
+  version: "1.4.0"
   created: "2026-09-25"
-  updated: "2026-09-28"
+  updated: "2026-09-29"
 
   version_policy:
     sync_group: "business-domain"
     depends_on: ["data-model", "api-surface", "security"]
 
   changelog:
+    - version: "1.4.0"
+      date: "2026-09-29"
+      changes:
+        - "CAT-TASK-011: a server-owned guide worker reuses the existing lease planner, parsers, daily budget, staging, and checkpoints. An owner-verified cf_clearance value issued through the VPS network and its matching User-Agent are supplied through authenticated hot settings; the clearance is encrypted at rest and never returned by the dashboard or logs. CatalogSync reads guide pages automatically while the clearance works, and stops a challenged lease without advancing a successful checkpoint. The browser relay remains available. Interactive clearance renewal is not yet automatic or proven. [AC-CAT-011, AC-CAT-016]"
     - version: "1.3.1"
       date: "2026-09-28"
       changes:
@@ -411,7 +415,7 @@ acceptance_criteria:
   - id: AC-CAT-011
     description: "The guide discovers new catalog IDs daily from its known index pages."
     given: "The supplied item, creature, realm, and master-realm guide index parsers and durable per-kind discovery state"
-    when: "A 24-hour guide discovery check runs in an approved browser context"
+    when: "A 24-hour guide discovery check runs through the approved browser relay or server guide worker"
     then: "It validates each response, checks every index page unless an ID sort contract has been verified, stages minimal incomplete records for newly found IDs and changed known records, and records last successful check, last seen ID, page coverage, and source provenance for the Catalog tab"
     error_cases:
       - given: "An index page is missing, challenged, malformed, or unexpectedly empty"
@@ -458,6 +462,19 @@ acceptance_criteria:
         when: "The 24-hour check is reported"
         then: "The Catalog tab shows partial or overdue coverage and preserves the cursor; it never advances last_successful_check_at or claims no new IDs"
 
+  - id: AC-CAT-016
+    description: "The server can continue scheduled guide discovery after owner browser verification from its network."
+    given: "The owner has enabled a guide_discovery job and CatalogSync, and saved a VPS-network-issued cf_clearance value with its matching browser User-Agent as authenticated settings"
+    when: "CatalogSync receives its scheduled tick"
+    then: "The in-process worker obtains at most one code-owned guide lease, reads its allowlisted pages serially within the existing guide request budget, validates and stages its results, and advances only verified checkpoints; the clearance is a write-only encrypted secret and is never included in results, logs, or catalog observations"
+    error_cases:
+      - given: "The clearance is missing or malformed"
+        when: "CatalogSync runs"
+        then: "The worker makes no guide request and reports an unconfigured or invalid configuration status without exposing the value"
+      - given: "The guide challenges the server or a result submission fails"
+        when: "The worker handles that lease"
+        then: "A challenge stops the lease without declaring a successful sweep; a transient submission failure retains the read results for retry rather than reading the same pages again"
+
 security:
   constitutions:
     - SEC-OWASP-A01-2025
@@ -469,7 +486,7 @@ security:
     - SEC-OWASP-A10-2025
 
   project_specific:
-    - rule: "Catalog code must reuse session.mjs authenticated fetch capability without exposing, serializing, returning, logging, or copying cookies, credentials, CSRF values, raw account pages, or debug snapshots."
+    - rule: "Game collection must reuse session.mjs authenticated fetch capability. The separate guide worker may use only an owner-supplied, VPS-network-issued cf_clearance through the encrypted, write-only setting and the matching User-Agent on fixed guide URLs. Neither path may return or log cookies, credentials, CSRF values, raw account pages, or debug snapshots."
       severity: CRITICAL
       cwe: 200
       scope: "catalog/**, session.mjs, control-plane/**"
@@ -522,7 +539,7 @@ constraints:
   - "The supplied reconciliation/scrappers scripts define the known guide URLs and parsing fields, but their hard-coded page ceilings, 500 ms delays, ten-request item batches, and error handling are not reused unchanged for scheduled collection. The guide relay is serial, bounded, and challenge-aware."
   - "The guide userscript changes from @grant none to GM_xmlhttpRequest, GM_getValue, and GM_setValue with @connect 127.0.0.1. It sends validated normalized batches only to a code-owned loopback relay endpoint through the owner's SSH tunnel, using a stage-only token issued by the authenticated Catalog tab. The token lives only in userscript extension storage, expires within seven days, is owner-revocable, and is never placed in page JavaScript, a URL, logs, or catalog data. The relay endpoint is the sole exception to normal Catalog same-origin/CSRF/session mutation checks; all other mutations retain them."
   - "Relay batches can be auto-projected only by the server's previously owner-enabled guide job after staging validation, within the approved guide budget and source allowlist. The token cannot request promotion, deletion, job creation, or job settings; arbitrary owner seed imports still require plan-preview-confirm."
-  - "A Cloudflare challenge is handled through the approved browser's normal user validation. The relay never scripts challenge completion, exports challenge tokens or cookies, or treats a challenge page as catalog data; a challenge pauses the scan and preserves its checkpoint. A daily check is due after 24 hours, but may wait for an available validated browser session."
+  - "A Cloudflare challenge is handled through the approved browser's normal user validation. The browser relay never scripts challenge completion, exports challenge tokens or cookies, or treats a challenge page as catalog data. The server guide worker receives only a clearance value saved by the owner through an authenticated write-only secret setting after verification from the VPS network. Either worker pauses on challenge and preserves its checkpoint; automatic interactive renewal remains unproven."
   - "Creature and item completeness is stored on catalog_entities as complete or incomplete with a reason and verification timestamp. Complete means the required guide fields and all currently known relations were checked; it never asserts that unobserved drops do not exist."
   - "Every observation is canonicalized and hash-deduplicated per source/entity before projection; the first_seen, last_seen, source, run ID, and observed timestamp remain queryable."
   - "Guide-derived data is a dated baseline, not current truth. Game-session observations outrank guide baseline only for fields they actually provide; unknown relationships and set bonuses remain explicitly unknown. Field precedence is game_session > manual_import > guide_baseline; within one source the later observation wins, and a lower-ranked source only fills fields no higher-ranked observation supplied."
@@ -685,7 +702,7 @@ tasks:
     description: |
       Adapt the supplied browser userscripts into one serial guide discovery relay. Check item,
       creature, realm, and master-realm indexes every 24 hours when a validated owner browser is
-      available (the server cannot run the check without the relay). Use the owner-attested newest-first
+      available (before the server worker in CAT-TASK-011). Use the owner-attested newest-first
       order (DEC-CAT-017) for an overlap stop, re-check descending IDs on every page, and fall back
       to full sweeps on a violation. Use separate guide request budgets and older-detail refresh.
       Change the userscript to GM_xmlhttpRequest, GM_getValue, and GM_setValue with scoped
@@ -702,3 +719,18 @@ tasks:
     source: "AC-CAT-006, AC-CAT-007, AC-CAT-011, AC-CAT-012, AC-CAT-013, AC-CAT-014, AC-CAT-015"
     status: DONE
     progress: "2026-09-28: relay server, client, userscript, and token UI; tested end to end against a simulated guide (no network). The supplied scrapers are unchanged and remain manual. Live browser acceptance (Tampermonkey, SSH tunnel, a real guide page and a real challenge) is part of CAT-TASK-008. Audit fixes (1.3.1): unparseable detail pages are invalid, not missing; atomic lease issue and claim; one staged run per lease across retries, checkpointed only with the results it was built from and only while applied; guide-run rollback leaves details unverified (DEC-CAT-021); the relay resends saved results instead of re-reading, and a handed-back lease is reserved again; submissions stay under the body limit and report their request count; daily-cap reservation on each UTC day a lease spans; the relay stops at lease expiry; userscript 1.0.1."
+
+  - id: CAT-TASK-011
+    description: |
+      Run scheduled guide discovery on the server with the existing guide lease planner and parser.
+      Accept only an owner-supplied cf_clearance value and matching User-Agent through authenticated
+      hot settings after the owner verifies Firefox through the VPS network. Keep the clearance
+      encrypted at rest and absent from API responses, logs, and catalog observations. Use the
+      fixed guide URLs, serial budget, and current checkpoint semantics; pause on challenge.
+      Preserve the optional browser relay. Verify the worker against fixtures and perform a live
+      server check after deployment; interactive challenge renewal requires separate evidence.
+    affects: "catalog/guideWorker.js, catalog/guideRelay.js, catalog/catalogTask.js, catalog/requestPolicy.js, config/registry.mjs, control-plane/index.mjs, control-plane/public/app.js, docs/deployment.md, tests/catalog-sync/guide-worker.test.mjs, tests/catalog-sync/guide-relay.test.mjs, tests/task-engine/catalog-sync.test.mjs, tests/control-plane/registry.test.mjs"
+    depends_on: ["CAT-TASK-001", "CAT-TASK-009", "CAT-TASK-010"]
+    source: "AC-CAT-011, AC-CAT-016"
+    status: IN_PROGRESS
+    progress: "2026-09-29: local worker, encrypted setting, scheduler integration, fixture tests, and VPS-network HTTP access proof. Node 22 repository gate: 308 pass, 2 real-MySQL-only skips, 0 fail. Open: live deployed worker acceptance and proof of interactive clearance renewal (if pursued)."

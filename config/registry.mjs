@@ -46,6 +46,7 @@ export const VALIDATORS = {
         return null;
     },
     'non-empty-secret': v => (v.length > 0 && v.length <= 512 ? null : 'Must be 1-512 characters.'),
+    'guide-clearance': v => (/^[A-Za-z0-9._-]{1,4096}$/.test(v) ? null : 'Must be a Cloudflare clearance value of at most 4096 safe characters.'),
     'https-url': v => {
         try { const u = new URL(v); return u.protocol === 'https:' ? null : 'Must be an https:// URL.'; } catch { return 'Must be an https:// URL.'; }
     },
@@ -108,6 +109,15 @@ export const CONFIG_DEFINITIONS = Object.freeze([
     def('GG_SSO_URL', { label: 'SSO entry URL', section: 'session', type: 'string', sensitivity: 'public',
         reloadMode: 'bootstrap', validator: 'https-url', default: 'https://account.huntedcow.com/auth?game=6', owners: ['session'],
         aliases: ['GG_SSO_URL', 'SWS_SSO_URL'], description: 'HuntedCow SSO entry point.' }),
+
+    // --- Guide catalog (server-owned reads after one verified browser session) ---
+    def('GG_GUIDE_CLEARANCE', { label: 'Guide clearance', section: 'catalog', type: 'secret', sensitivity: 'secret',
+        reloadMode: 'hot', validator: 'guide-clearance', owners: ['CatalogSync'],
+        description: 'cf_clearance value issued through this server network; enter only the value, without the cookie name.' }),
+    def('GG_GUIDE_USER_AGENT', { label: 'Guide User-Agent', section: 'catalog', type: 'string', sensitivity: 'public',
+        reloadMode: 'hot', validator: 'user-agent',
+        default: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0',
+        owners: ['CatalogSync'], description: 'User-Agent of the browser that obtained guide clearance.' }),
 
     // --- Discord bot (discord-integration-v1) ---
     def('GG_DISCORD_TOKEN', { label: 'Discord bot token', section: 'discord', type: 'secret', sensitivity: 'secret',
@@ -202,7 +212,7 @@ export const CONFIG_DEFINITIONS = Object.freeze([
 export const CONFIG_BY_KEY = new Map(CONFIG_DEFINITIONS.map(d => [d.key, d]));
 
 export const SECTIONS = Object.freeze({
-    account: 'Game account', session: 'Game session', discord: 'Discord bot', webhooks: 'Webhooks',
+    account: 'Game account', session: 'Game session', catalog: 'Guide catalog', discord: 'Discord bot', webhooks: 'Webhooks',
     notifications: 'Notifications', gear: 'Gear swap', debug: 'Logging and debugging', storage: 'Storage', control: 'Control plane',
 });
 

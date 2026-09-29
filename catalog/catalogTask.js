@@ -6,7 +6,7 @@
 // withCatalogLock() is shared with foreground catalog commands (control plane), so a scheduled run
 // and an owner-triggered one never overlap: the second one is told the catalog is busy.
 
-let service = null;        // { store, collector } - built lazily, or injected by configureCatalogTask()
+let service = null;        // { store, collector, guideWorker? } - built lazily or injected
 let recovered = false;     // jobs left 'running' by a crash are handed back once per process
 let locked = false;
 
@@ -43,7 +43,7 @@ async function ensureService() {
     return service;
 }
 
-/** Game job kinds this task runs; guide_discovery belongs to the browser relay. */
+/** Game job kinds run through the authenticated game session; guide work has its own worker. */
 const GAME_JOB_KINDS = new Set(['observe_realm', 'item_frontier']);
 
 /**
@@ -68,7 +68,8 @@ export async function runCatalogSync({ signal } = {}) {
             const r = await collector.runJob(job, { signal });
             results.push({ jobId: job.id, kind: job.kind, outcome: r.outcome, reason: r.reason ?? null, requests: r.requests ?? 0 });
         }
-        return results;
+        const guide = !signal?.aborted && service.guideWorker ? await service.guideWorker.run({ signal }) : null;
+        return { results, guide };
     });
-    return held ? { ran: held.value } : { skipped: 'busy' };
+    return held ? { ran: held.value.results, ...(held.value.guide ? { guide: held.value.guide } : {}) } : { skipped: 'busy' };
 }

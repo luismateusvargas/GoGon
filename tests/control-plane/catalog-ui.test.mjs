@@ -26,7 +26,7 @@ const STATE = {
             { entityKind: 'item', display: 'waiting_for_browser', status: 'idle', statusReason: null, overdue: true, lastSuccessfulCheckAt: null, lastSeenId: 0, sweepMode: null, nextPage: 0, sweepPagesChecked: 0, orderState: 'attested' },
             { entityKind: 'creature', display: 'challenged', status: 'challenged', statusReason: 'cloudflare challenge', overdue: false, lastSuccessfulCheckAt: '2026-09-27T12:00:00.000Z', lastSeenId: 7002, sweepMode: 'incremental', nextPage: 3, sweepPagesChecked: 3, orderState: 'verified' },
         ],
-        available: { observe_realm: 'contract_unverified', item_frontier: 'contract_unverified', guide_discovery: 'browser_relay' },
+        available: { observe_realm: 'contract_unverified', item_frontier: 'contract_unverified', guide_discovery: null },
     },
 };
 const SUMMARY = {

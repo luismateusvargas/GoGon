@@ -79,6 +79,20 @@ test('AC-CAT-002: a run executes queued game jobs one at a time; guide and pause
     assert.deepEqual(r.ran.map(x => x.jobId), ['a', 'd']);
 });
 
+test('CatalogSync runs the configured server guide worker under the catalog lock', async () => {
+    const service = fakeService([{ id: 'guide', kind: 'guide_discovery', state: 'queued' }]);
+    service.guideWorker = {
+        async run() {
+            assert.equal(isCatalogBusy(), true);
+            return { status: 'sent', kind: 'item', requests: 1, results: 1 };
+        },
+    };
+    configureCatalogTask(service);
+    const result = await runCatalogSync({});
+    assert.deepEqual(result.ran, []);
+    assert.deepEqual(result.guide, { status: 'sent', kind: 'item', requests: 1, results: 1 });
+});
+
 test('CAT-TASK-004: jobs a crash left running are handed back once, then run', async () => {
     const jobs = [{ id: 'x', kind: 'observe_realm', state: 'running' }];
     const svc = fakeService(jobs);
