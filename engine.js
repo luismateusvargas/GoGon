@@ -21,6 +21,7 @@ import { checkRelics } from './app_modules/Relics.js';
 import { checkGuildConflicts } from './app_modules/GuildConflicts.js';
 import { autoJoinAllGroups, checkAndSwapGear } from './app_modules/QoL.js';
 import { checkGuildMessages } from './app_modules/GuildMessages.js';
+import { runCatalogSync } from './catalog/catalogTask.js';
 
 // --- Task Configuration ---
 // Using a Map allows for easy lookup by task name.
@@ -94,9 +95,17 @@ const tasks = new Map([
 		timerId: null,
 	}],
     [ 'GuildMessages', {
-		handler: checkGuildMessages, 
+		handler: checkGuildMessages,
 		interval: 5 * 60 * 1000,
 		activeOnStart: true,
+		timerId: null,
+	}],
+	// CAT-TASK-004 / AC-CAT-002: passive catalog collection. Disabled by default; the owner enables it
+	// from the dashboard (persisted like every module). It runs the queued game catalog jobs serially.
+	[ 'CatalogSync', {
+		handler: runCatalogSync,
+		interval: 60 * 1000,
+		activeOnStart: false,
 		timerId: null,
 	}],
 ]);

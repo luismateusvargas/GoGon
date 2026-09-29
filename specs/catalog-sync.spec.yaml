@@ -19,6 +19,7 @@ spec:
         - "CAT-TASK-001: source contracts in catalog/contracts (policy, guide, gameLocation, classify), guide parsers ported from the supplied userscripts (catalog/guideParsers.js), and synthetic fixtures. Owner decisions DEC-CAT-017 (guide index 0 is newest; order re-checked every run), DEC-CAT-018 (guide policy numbers), DEC-CAT-019 (fetchLocation uncaptured: observe_realm stays refused; item_frontier unavailable). [AC-CAT-003, AC-CAT-011, AC-CAT-012, AC-CAT-015]"
         - "CAT-TASK-009: migrations 006 (catalog_guide_state, catalog_guide_ids, catalog_guide_usage) and 007 (catalog_entities completeness/incomplete_reason/verified_at; guide_discovery run mode and job kind, replacing the 003 CHECKs on upgraded databases). _gg_data/handler/guideDiscoveryStore.js persists checkpoints, per-ID refresh with backoff, and the guide daily counter. Projection and rollback recompute completeness for touched items/creatures and for entities whose known drops changed. Reasons: guide_detail_missing, guide_detail_failed, required_field_missing, known_drop_unresolved. [AC-CAT-011, AC-CAT-012, AC-CAT-013, AC-CAT-015]"
         - "CAT-TASK-003: catalog/requestPolicy.js (read allow-list, passive fetchdata URL assertion, process-wide serial queue), catalog/normalizers.js (contract-mapped fields only), catalog/collector.js (observe_realm and item_frontier executions; login/unauthenticated back off without a login, a challenge pauses, malformed/too-large/404 record a redacted failed run, validated data is stored before its cursor, an owner pause during an execution wins). Store: recordFailedRun and the running -> queued hand-back. With the committed contracts both game kinds are refused without a request (DEC-CAT-019). [AC-CAT-001..AC-CAT-005]"
+        - "CAT-TASK-004: engine.js registers CatalogSync (60 s, disabled by default, preference persisted in module_preferences like every module). catalog/catalogTask.js runs queued game jobs serially, hands back jobs a crash left running, and shares a process-wide catalog lock with foreground commands; pauseAll (account switch) aborts a run in flight. No runtime setting was needed beyond enable/interval. [AC-CAT-001, AC-CAT-002, AC-CAT-008]"
     - version: "1.2.1"
       date: "2026-09-28"
       changes:
@@ -597,10 +598,11 @@ tasks:
       foreground synchronization command. Add runtime configuration only for bounded safe settings
       such as enabled state and interval; request URLs, operation kinds, and source allowlists stay
       code-owned.
-    affects: "engine.js, config/registry.mjs, config/runtime.mjs, app.mjs, tests/task-engine/catalog-sync.test.mjs"
+    affects: "engine.js, catalog/catalogTask.js, tests/task-engine/catalog-sync.test.mjs, tests/task-engine/controller.test.mjs, tests/task-engine/scheduling.test.mjs"
     depends_on: ["CAT-TASK-003"]
     source: "AC-CAT-001, AC-CAT-002, AC-CAT-008"
-    status: TODO
+    status: DONE
+    progress: "2026-09-28: CatalogSync engine task and catalog lock. The existing module enable/interval preferences cover the only runtime settings; config/registry.mjs, config/runtime.mjs, and app.mjs are unchanged."
 
   - id: CAT-TASK-005
     description: |

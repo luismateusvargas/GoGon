@@ -66,7 +66,7 @@ beforeEach(() => {
 // --- AC-ENG-001 --------------------------------------------------------------------------------------
 
 test('AC-ENG-001: every registered task has an interval (constraint)', () => {
-    assert.equal(ALL_TASKS.length, 12);
+    assert.equal(ALL_TASKS.length, 13);   // 12 monitors + CatalogSync (CAT-TASK-004, disabled by default)
     for (const s of engine.getTasksStatus()) assert.ok(Number.isInteger(s.interval) && s.interval > 0, s.name);
 });
 

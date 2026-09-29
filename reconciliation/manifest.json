@@ -9,12 +9,12 @@
     "reviewer": "Claude Code (pending owner confirmation)"
   },
   "summary": {
-    "paths": 83,
+    "paths": 84,
     "identical": 1,
     "byDisposition": {
       "import-data": 1,
       "port": 7,
-      "retain-root": 72,
+      "retain-root": 73,
       "retire-legacy": 3
     },
     "failures": 0
@@ -482,6 +482,17 @@
       "rationale": "Root is a superset: GG_DEBUG names plus formatGameTime, formatRemainingTime, and formatDuration helpers. Re-reviewed 2026-09-24 after CTRL-TASK-001: GG_DEBUG is a hot registry setting ('0' now really silences LOG); debug dir via registry."
     },
     {
+      "path": "catalog/catalogTask.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "1915bf7912309f509d2af6606da4b64776b014e38023cf4093049c6711450d29",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-004: CatalogSync engine task and the process-wide catalog lock."
+    },
+    {
       "path": "catalog/collector.js",
       "status": "root-only",
       "backupHash": null,
@@ -873,14 +884,14 @@
       "path": "engine.js",
       "status": "differing",
       "backupHash": "887431b7c2c11eb8f6c6f397f73b756c2423705525871664ced2109a3b3f2a08",
-      "rootHash": "72119642d8bfa307790a4198996453072b203f17d2cd71612e43f7ec66f05e17",
+      "rootHash": "a35afd730f69591b8a89c654b5a4c36d2c7fe400e83433e09ff05a22f225c7bd",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "task-engine-v1:ENG-TASK-001"
       ],
-      "rationale": "Backup has no lines that root lacks apart from a closing brace; root adds scheduling and shutdown changes. Re-reviewed 2026-09-24 (ENG-TASK-001): pure ESM confirmed; shutdown cancels pending staggered starts and is idempotent across repeated signals. Re-reviewed 2026-09-24 (ENG-TASK-003): stop kills the task (run generation + AbortSignal) and start refuses while a run is in flight; still no backup behavior to port. Re-reviewed 2026-09-24 after ENG-TASK-002 (unknown-task ERR message) and CTRL-TASK-003 (preferences, serialized transitions, pause/resume, per-run results)."
+      "rationale": "Backup has no lines that root lacks apart from a closing brace; root adds scheduling and shutdown changes. Re-reviewed 2026-09-24 (ENG-TASK-001): pure ESM confirmed; shutdown cancels pending staggered starts and is idempotent across repeated signals. Re-reviewed 2026-09-24 (ENG-TASK-003): stop kills the task (run generation + AbortSignal) and start refuses while a run is in flight; still no backup behavior to port. Re-reviewed 2026-09-24 after ENG-TASK-002 (unknown-task ERR message) and CTRL-TASK-003 (preferences, serialized transitions, pause/resume, per-run results). Re-reviewed 2026-09-28 after CAT-TASK-004 (CatalogSync engine task, disabled by default)."
     },
     {
       "path": "game_modules/API.js",

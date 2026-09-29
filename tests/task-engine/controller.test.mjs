@@ -34,7 +34,7 @@ beforeEach(async () => {
 });
 
 test('CTRL-TASK-003: stable module identifiers, in registry order', () => {
-    assert.deepEqual(engine.listModuleIds(), ['SuperElites', 'BountyBoard', 'Crates', 'Titans', 'Ladder', 'Shoutbox', 'GameUpdates', 'Relics', 'GuildConflicts', 'Groups', 'AutoGearSwap', 'GuildMessages']);
+    assert.deepEqual(engine.listModuleIds(), ['SuperElites', 'BountyBoard', 'Crates', 'Titans', 'Ladder', 'Shoutbox', 'GameUpdates', 'Relics', 'GuildConflicts', 'Groups', 'AutoGearSwap', 'GuildMessages', 'CatalogSync']);
 });
 
 test('CTRL-TASK-003: persisted preferences override enablement and interval at boot; invalid ones are ignored', (t) => {
