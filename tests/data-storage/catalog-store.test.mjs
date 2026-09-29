@@ -12,6 +12,8 @@ import { freshClient, closeClients } from '../helpers/db-client.mjs';
 const { createCatalogStore, CatalogError, canonicalJson, normalizeObservation, PLAN_TTL_MS, MAX_PAYLOAD_BYTES } = await import('../../_gg_data/handler/catalogStore.js');
 const { runMigrations, splitStatements } = await import('../../_gg_data/handler/migrationRunner.js');
 const { up: migration004 } = await import('../../_gg_data/migrations/004_serving_relations.mjs');
+const { up: migration012 } = await import('../../_gg_data/migrations/012_media_host.mjs');
+const { canonicalImageUrl } = await import('../../_gg_data/handler/mediaUrl.js');
 const { idsFrom, namesFrom } = await import('../../_gg_data/handler/servingRelations.js');
 const ggdb = await import('../../_gg_data/handler/gg_database.js');
 const REAL_MYSQL = globalThis.__GG_TEST_DATABASE__ === 'mysql';
@@ -74,6 +76,30 @@ test('a guide cursor reset and startup migration check preserve the last complet
         last_successful_check_at: completedAt, last_full_sweep_at: completedAt,
         last_page_seen: 14, next_page: 0, status: 'idle',
     });
+});
+
+test('image URLs move off the challenged cdn host; other URLs are untouched', () => {
+    assert.equal(canonicalImageUrl('http://cdn.fallensword.com/items/23.gif'), 'https://cdn2.fallensword.com/items/23.gif');
+    assert.equal(canonicalImageUrl('https://cdn.fallensword.com/creatures/426bc.png'), 'https://cdn2.fallensword.com/creatures/426bc.png');
+    assert.equal(canonicalImageUrl('//CDN.fallensword.com/items/1.gif'), 'https://cdn2.fallensword.com/items/1.gif');
+    assert.equal(canonicalImageUrl('http://cdn2.fallensword.com/items/1.gif'), 'https://cdn2.fallensword.com/items/1.gif');
+    assert.equal(canonicalImageUrl('https://cdn2.fallensword.com/items/1.gif'), 'https://cdn2.fallensword.com/items/1.gif');
+    assert.equal(canonicalImageUrl('https://www.fallensword.com/cdn.fallensword.com/x.gif'), 'https://www.fallensword.com/cdn.fallensword.com/x.gif');
+    assert.equal(canonicalImageUrl('https://cdn.fallensword.com.evil.test/x.gif'), 'https://cdn.fallensword.com.evil.test/x.gif');
+    assert.equal(canonicalImageUrl(null), null);
+    assert.equal(normalizeObservation('item', { id: 23, name: 'Padded Armor', imageUrl: 'http://cdn.fallensword.com/items/23.gif' }).payload.imageUrl,
+        'https://cdn2.fallensword.com/items/23.gif');
+});
+
+test('migration 012 moves stored images to cdn2 and re-runs as a no-op', async () => {
+    const { db } = await setup();
+    await db.query("INSERT INTO items (id, name, imageUrl) VALUES (23, 'Padded Armor', 'http://cdn.fallensword.com/items/23.gif'), (24, 'Kept', 'https://cdn2.fallensword.com/items/24.gif'), (25, 'None', NULL)");
+    await db.query("INSERT INTO creatures (id, name, imageUrl) VALUES (426, 'Baron', 'https://cdn.fallensword.com/creatures/426bc.png')");
+    await quietly(() => migration012(db));
+    await quietly(() => migration012(db));
+    assert.deepEqual((await db.query('SELECT id, imageUrl FROM items ORDER BY id')).map(r => r.imageUrl),
+        ['https://cdn2.fallensword.com/items/23.gif', 'https://cdn2.fallensword.com/items/24.gif', null]);
+    assert.equal((await db.query('SELECT imageUrl FROM creatures WHERE id = 426'))[0].imageUrl, 'https://cdn2.fallensword.com/creatures/426bc.png');
 });
 
 test('CAT-TASK-002: relation tables reject dangling references and cascade with their parents', async () => {
@@ -540,7 +566,7 @@ test('CAT-TASK-002: a database that applied the narrow 003 gets 255-character en
     const db = await quietly(() => freshClient({ migrate: false }));
     await quietly(() => runMigrations(db, dir));
     const applied = await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations')));
-    assert.deepEqual(applied, ['004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql', '011_master_realm_connections.mjs'], '003 is skipped by name; 005 widens it');
+    assert.deepEqual(applied, ['004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql', '011_master_realm_connections.mjs', '012_media_host.mjs'], '003 is skipped by name; 005 widens it');
     if (REAL_MYSQL) {
         const widths = await db.query("SELECT TABLE_NAME AS t, CHARACTER_MAXIMUM_LENGTH AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'entity_key' ORDER BY TABLE_NAME");
         assert.deepEqual(widths.map(w => [w.t, Number(w.n)]), [['catalog_entities', 255], ['catalog_observations', 255]]);
