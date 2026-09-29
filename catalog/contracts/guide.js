@@ -67,3 +67,9 @@ export function isDescendingPage(ids, previousMin) {
     for (let i = 1; i < ids.length; i++) if (!(ids[i] < ids[i - 1])) return false;
     return previousMin === null || ids.length === 0 || ids[0] < previousMin;
 }
+
+/** The guide repeats its final non-empty page for every later index. */
+export function isRepeatedIndexPage(ids, previousIds) {
+    return Array.isArray(previousIds) && ids.length > 0 && ids.length === previousIds.length
+        && ids.every((id, index) => id === previousIds[index]);
+}

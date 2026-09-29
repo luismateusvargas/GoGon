@@ -7,7 +7,7 @@
 // its cursor there. A detail is 'missing' only on HTTP 404. relayCycle() saves the results of a lease
 // until GoGon settles them, so a failed submission is resent, never read again. It never retries past a
 // challenge, never submits a challenge form, and never sees or sends cookies itself.
-import { GUIDE_URLS, guideUrl, isDescendingPage } from './contracts/guide.js';
+import { GUIDE_URLS, guideUrl, isDescendingPage, isRepeatedIndexPage } from './contracts/guide.js';
 import { classifyResponse } from './contracts/classify.js';
 import { isGuidePage, parseIndexPage, DETAIL_PARSERS } from './guideParsers.js';
 
@@ -22,7 +22,7 @@ const utf8Bytes = s => new TextEncoder().encode(s).length;
  * A lease also carries maxBodyBytes, the server's body limit: the relay stops before its results would
  * no longer fit in one submission. A page that does not fit is left for the next lease (its request is
  * still reported); one that cannot fit even alone is sent as 'too_large', so the server stops there.
- * @param {{ kind: string, work: Array<{ type: 'index'|'detail', page?: number, id?: number }>, minDelayMs: number, expiresAt: string, maxBodyBytes?: number, stopAtId?: number|null, overlapPages?: number }} lease
+ * @param {{ kind: string, work: Array<{ type: 'index'|'detail', page?: number, id?: number }>, minDelayMs: number, expiresAt: string, maxBodyBytes?: number, stopAtId?: number|null, overlapPages?: number, previousPageIds?: number[]|null }} lease
  * @param {object} deps
  * @param {(url: string) => Promise<{ status: number, contentType: string, cfMitigated: string|null, body: string }>} deps.fetchPage
  * @param {(html: string) => Document} deps.parseHtml
@@ -40,6 +40,7 @@ export async function runLease(lease, { fetchPage, parseHtml, sleep, stopped = (
     let reachedAt = null;       // incremental: the page that reached stopAtId
     let descending = true;
     let prevMin = null;
+    let previousPageIds = lease.previousPageIds ?? null;
     for (let i = 0; i < lease.work.length; i++) {
         if (stopped()) break;
         if (i > 0) await sleep(lease.minDelayMs);
@@ -58,6 +59,8 @@ export async function runLease(lease, { fetchPage, parseHtml, sleep, stopped = (
         if (stop) break;
         if (result.type === 'index') {
             const ids = result.entries.map(e => e.id);
+            if (isRepeatedIndexPage(ids, previousPageIds)) break;
+            previousPageIds = ids;
             descending = descending && isDescendingPage(ids, prevMin);
             prevMin = Math.min(...ids);
             if (descending && typeof lease.stopAtId === 'number' && reachedAt === null && prevMin <= lease.stopAtId) reachedAt = item.page;

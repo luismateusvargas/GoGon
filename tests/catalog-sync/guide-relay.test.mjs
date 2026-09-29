@@ -25,6 +25,7 @@ function createSite() {
         challengeAt: null,                    // { kind, page } to answer with a Cloudflare challenge
         ascending: false,                     // serve an ascending (order-violating) index
         emptyPage: null,                      // { kind, page } to answer with an empty page
+        repeatFinalPage: false,               // the live guide repeats its final page past the end
         changedLayout: null,                  // { kind, id } whose detail page is a guide page in a layout the parser does not know
         itemName: id => `Item ${id}`,
         requests: [],
@@ -62,6 +63,10 @@ function createSite() {
         if (site.challengeAt && site.challengeAt.kind === kind && site.challengeAt.page === p) return { status: 403, contentType: 'text/html', cfMitigated: 'challenge', body: CHALLENGE };
         if (site.emptyPage && site.emptyPage.kind === kind && site.emptyPage.page === p) return html(page(''));
         let ids = site.ids[kind].slice(p * site.perPage, (p + 1) * site.perPage);
+        if (site.repeatFinalPage && ids.length === 0 && p > 0 && site.ids[kind].length) {
+            const finalPage = Math.ceil(site.ids[kind].length / site.perPage) - 1;
+            ids = site.ids[kind].slice(finalPage * site.perPage);
+        }
         if (site.ascending) ids = [...ids].reverse();
         return html(page(ids.map(id => `<tr><td><a href="index.php?cmd=${cmd[kind]}&subcmd=view&${param[kind]}=${id}">${kind === 'item' ? site.itemName(id) : `Name ${id}`}</a></td></tr>`).join('')));
     };
@@ -170,6 +175,74 @@ test('AC-CAT-011 / AC-CAT-013: the first daily check sweeps every index, stages 
     assert.equal(await guideStore.usage(), site.requests.length, 'every guide request is counted against the daily cap');
     assert.ok(site.requests.every(u => u.startsWith('https://guide.fallensword.com/index.php?cmd=')), 'only code-owned guide URLs');
     assert.equal((await db.query("SELECT DISTINCT mode FROM catalog_runs WHERE mode <> 'baseline_snapshot'")).map(r => r.mode).join(), 'guide_discovery');
+});
+
+test('a repeated final index page completes a sweep without reading the rest of its lease', async () => {
+    const { store, guideStore, site, cycle } = await setup();
+    await enableJob(store);
+    site.repeatFinalPage = true;
+    const first = await cycle();
+    assert.deepEqual(first.results.map(result => result.page), [0, 1]);
+    assert.equal(first.summary.sweepComplete, true);
+    const masterRealm = await state(guideStore, 'master_realm');
+    assert.equal(masterRealm.status, 'idle');
+    assert.equal(masterRealm.lastPageSeen, 0);
+    assert.equal(masterRealm.sweepPrevPageIds, null);
+    assert.equal(site.requests.filter(url => /cmd=masterrealms&index=/.test(url)).length, 2);
+});
+
+test('a repeated final index page is recognized across two one-page leases', async () => {
+    const { store, guideStore, site, cycle } = await setup();
+    await store.createJob({ kind: 'guide_discovery', cursor: {}, requestBudget: 1 });
+    site.repeatFinalPage = true;
+    site.perPage = 1;
+    site.ids.master_realm = [5, 4];
+    await cycle();
+    await cycle();
+    const terminal = await cycle();
+    assert.deepEqual(terminal.lease.previousPageIds, [4]);
+    assert.deepEqual(terminal.results.map(result => result.page), [2]);
+    assert.equal(terminal.summary.sweepComplete, true);
+    const masterRealm = await state(guideStore, 'master_realm');
+    assert.equal(masterRealm.lastPageSeen, 1);
+    assert.equal(masterRealm.lastSeenId, 5);
+    assert.equal(masterRealm.status, 'idle');
+    assert.deepEqual(site.requests.filter(url => /cmd=masterrealms&index=/.test(url))
+        .map(url => Number(new URL(url).searchParams.get('index'))), [0, 1, 2]);
+});
+
+test('an existing sweep with no saved page IDs stops after two repeated pages', async () => {
+    const { store, guideStore, site, cycle } = await setup();
+    await enableJob(store);
+    site.repeatFinalPage = true;
+    await guideStore.updateState('master_realm', {
+        sweepMode: 'full', nextPage: 100, sweepPagesChecked: 100,
+        sweepMaxId: 5, sweepPrevMinId: 5, sweepPrevPageIds: null,
+        orderState: 'violated', status: 'running',
+    });
+
+    const resumed = await cycle();
+    assert.deepEqual(resumed.results.map(result => result.page), [100, 101]);
+    assert.equal(resumed.summary.sweepComplete, true);
+    const masterRealm = await state(guideStore, 'master_realm');
+    assert.equal(masterRealm.status, 'idle');
+    assert.equal(masterRealm.lastPageSeen, 100);
+    assert.equal(masterRealm.orderState, 'violated');
+    assert.equal(site.requests.filter(url => /cmd=masterrealms&index=/.test(url)).length, 2);
+});
+
+test('a later full sweep can restore verified order after a repeated page caused a violation', async () => {
+    const { store, guideStore, site, drain, clock } = await setup();
+    await enableJob(store);
+    site.repeatFinalPage = true;
+    await drain();
+    await guideStore.updateState('master_realm', { orderState: 'violated' });
+    clock.t += GUIDE_POLICY.checkIntervalMs;
+
+    await drain();
+    const masterRealm = await state(guideStore, 'master_realm');
+    assert.equal(masterRealm.orderState, 'verified');
+    assert.equal(masterRealm.lastPageSeen, 0);
 });
 
 test('AC-CAT-012: the next day an incremental sweep stops one overlap page past last_seen_id and finds new IDs', async () => {

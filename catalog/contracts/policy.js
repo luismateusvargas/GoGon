@@ -17,7 +17,7 @@ export const GAME_POLICY = Object.freeze({
  * Guide discovery through the owner's validated browser (AC-CAT-011, AC-CAT-015). Index sizes come
  * from the supplied reconciliation/scrappers userscripts (item index 0..660, creature 0..320,
  * realm 0..281, master realm 0..14); they are estimates for the schedule, never page ceilings: a
- * sweep ends at the first valid empty page past the last known one.
+ * sweep ends when the guide repeats its final page (or returns a valid empty page).
  */
 export const GUIDE_POLICY = Object.freeze({
     source: 'guide_baseline',

@@ -8,7 +8,7 @@
 //
 // Sweeps: page 0 holds the newest records (DEC-CAT-017). An incremental sweep stops one overlap page
 // after the page that reaches last_seen_id; a full sweep (first sweep, weekly, or after an order
-// violation) reads until the first valid empty page. Every page is checked for descending IDs; a
+// violation) reads until an empty page or the guide's repeated final page. Every page is checked for descending IDs; a
 // violation turns the sweep full. Only a sweep that covered every required page moves
 // last_successful_check_at and last_seen_id (AC-CAT-015). A challenge, invalid page, or failed request
 // stops the lease and leaves the cursor at that page.
@@ -16,7 +16,7 @@ import crypto from 'node:crypto';
 import { CatalogError, canonicalJson } from '../_gg_data/handler/catalogStore.js';
 import { GUIDE_KINDS } from '../_gg_data/handler/guideDiscoveryStore.js';
 import { GUIDE_POLICY } from './contracts/policy.js';
-import { isDescendingPage } from './contracts/guide.js';
+import { isDescendingPage, isRepeatedIndexPage } from './contracts/guide.js';
 import { normalizeGuideRecord, indexEntry } from './guideNormalizers.js';
 
 export const TOKEN_PREFIX = 'ggr_';
@@ -66,6 +66,7 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
         return {
             leaseId: row.id, kind: row.entity_kind, work, minDelayMs: policy.minDelayMs, expiresAt: row.expires_at, maxBodyBytes: MAX_RELAY_BODY,
             stopAtId: incremental ? s.lastSeenId : null, overlapPages: policy.overlapPages,
+            previousPageIds: work[0]?.type === 'index' ? s?.sweepPrevPageIds ?? null : null,
         };
     };
 
@@ -148,9 +149,12 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             if (s.sweepMode && s.status === 'partial' && t - Date.parse(s.updatedAt) < policy.partialRetryMs) continue;
             if (!s.sweepMode) {
                 if (!due(s, t)) continue;
+                const sweepMode = sweepModeFor(s, t);
                 await guideStore.updateState(k, {
-                    sweepMode: sweepModeFor(s, t), sweepStartedAt: iso(t), nextPage: 0, sweepPagesChecked: 0,
-                    sweepMaxId: 0, sweepPrevMinId: null, stopAfterPage: null, status: 'running', statusReason: null,
+                    sweepMode, sweepStartedAt: iso(t), nextPage: 0, sweepPagesChecked: 0,
+                    sweepMaxId: 0, sweepPrevMinId: null, sweepPrevPageIds: null,
+                    stopAfterPage: null, status: 'running', statusReason: null,
+                    orderState: sweepMode === 'full' ? 'attested' : s.orderState,
                 }, tx);
                 Object.assign(s, await guideStore.getState(k, tx));
             }
@@ -265,7 +269,8 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             const complete = async lastPage => {
                 const fields = {
                     lastSeenId: Math.max(s.lastSeenId, s.sweepMaxId), lastSuccessfulCheckAt: iso(), status: 'idle', statusReason: null,
-                    sweepMode: null, sweepStartedAt: null, nextPage: 0, sweepPagesChecked: 0, sweepMaxId: 0, sweepPrevMinId: null, stopAfterPage: null,
+                    sweepMode: null, sweepStartedAt: null, nextPage: 0, sweepPagesChecked: 0,
+                    sweepMaxId: 0, sweepPrevMinId: null, sweepPrevPageIds: null, stopAfterPage: null,
                     orderState: s.orderState === 'violated' ? 'violated' : 'verified',
                 };
                 if (s.sweepMode === 'full') Object.assign(fields, { lastFullSweepAt: iso(), lastPageSeen: lastPage });
@@ -276,6 +281,10 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
                 if (r.type !== 'index' || !s.sweepMode) continue;
                 if (r.outcome === 'ok') {
                     const ids = [...new Set(r.entries.map(e => e.id))];
+                    if (isRepeatedIndexPage(ids, s.sweepPrevPageIds)) {
+                        await complete(r.page - 1);
+                        break;
+                    }
                     const fields = {};
                     if (!isDescendingPage(ids, s.sweepPrevMinId) && s.orderState !== 'violated') {
                         fields.orderState = 'violated';
@@ -283,7 +292,9 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
                     }
                     summary.newIds += (await guideStore.recordIndexIds(kind, ids, tx)).length;
                     const minId = Math.min(...ids);
-                    Object.assign(fields, { sweepMaxId: Math.max(s.sweepMaxId, ...ids), sweepPrevMinId: minId, nextPage: r.page + 1, sweepPagesChecked: s.sweepPagesChecked + 1, status: 'running', statusReason: null });
+                    Object.assign(fields, { sweepMaxId: Math.max(s.sweepMaxId, ...ids), sweepPrevMinId: minId,
+                        sweepPrevPageIds: ids, nextPage: r.page + 1, sweepPagesChecked: s.sweepPagesChecked + 1,
+                        status: 'running', statusReason: null });
                     await set(fields);
                     summary.pages++;
                     if (s.sweepMode === 'incremental' && s.stopAfterPage === null && minId <= s.lastSeenId) await set({ stopAfterPage: r.page + policy.overlapPages });
