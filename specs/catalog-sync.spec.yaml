@@ -4,7 +4,7 @@
 spec:
   id: "catalog-sync-v1"
   status: locked
-  version: "1.1.3"
+  version: "1.3.1"
   created: "2026-09-25"
   updated: "2026-09-28"
 
@@ -13,6 +13,33 @@ spec:
     depends_on: ["data-model", "api-surface", "security"]
 
   changelog:
+    - version: "1.3.1"
+      date: "2026-09-28"
+      changes:
+        - "Relay audit fixes: a detail page in a layout the parser does not recognize is invalid (retried with backoff) and stops the lease; only HTTP 404 marks a detail missing; results after a stopping result are rejected. Leases are issued under a lock on the guide state rows (one open lease under concurrent relays), a submission claims its lease atomically (catalog_guide_leases.claimed_at; applied at most once, released on failure), the staged run is linked to its lease (catalog_guide_leases.run_id) in the transaction that records it, so a submission retried after a later failure reuses that run instead of staging the lease again; and a lease reserves its requests against the daily cap of every UTC day between its issue and expiry, giving back unused ones on submit, while the relay stops reading at the lease expiry. A lease that already staged a run is checkpointed only with the same results (catalog_guide_leases.results_hash) and only while that run is applied; a retry with different results or after the run was rolled back or discarded closes the lease without moving checkpoints. Rolling back a guide_discovery run returns its guide details to pending with no hash, next read after the normal refresh interval (DEC-CAT-021). The relay saves what it read for a lease (Tampermonkey storage) until GoGon settles it and resends it after a failed submission instead of reading the lease again; a lease handed back to its relay is reserved against the cap again, since a relay that lost its saved results reads it again. A lease carries the relay body limit (maxBodyBytes, 512 KiB): the relay stops reading before its results would not fit, reports the guide requests it made (requests, so a page read but left out stays counted), cuts a submission refused with HTTP 413 to its first half and resends it (a single result that still does not fit is sent as too_large; the server refuses a batch that reports requests but no results), and reports a page that cannot fit even alone as too_large, which stops the sweep as partial ('page too large to submit'). Migration 007 replaces each CHECK in one ALTER TABLE and restores a missing allow-list on re-run. [AC-CAT-011, AC-CAT-014, AC-CAT-015] [CAT-TASK-009, CAT-TASK-010]"
+        - "Reconciled with DEC-CAT-017: the ordering constraint and CAT-TASK-001/010 text now describe owner-attested newest-first order with a per-page descending check, instead of requiring order confirmation from captured responses first. No live response has confirmed the order yet; order_state stays attested until the first live sweep (CAT-TASK-008). CAT-TASK-008 notes that CI runs on pull requests and pushes to main only. [AC-CAT-012] [CAT-TASK-001, CAT-TASK-008, CAT-TASK-010]"
+    - version: "1.3.0"
+      date: "2026-09-28"
+      changes:
+        - "CAT-TASK-001: source contracts in catalog/contracts (policy, guide, gameLocation, classify), guide parsers ported from the supplied userscripts (catalog/guideParsers.js), and synthetic fixtures. Owner decisions DEC-CAT-017 (guide index 0 is newest; order re-checked every run), DEC-CAT-018 (guide policy numbers), DEC-CAT-019 (fetchLocation uncaptured: observe_realm stays refused; item_frontier unavailable). [AC-CAT-003, AC-CAT-011, AC-CAT-012, AC-CAT-015]"
+        - "CAT-TASK-009: migrations 006 (catalog_guide_state, catalog_guide_ids, catalog_guide_usage) and 007 (catalog_entities completeness/incomplete_reason/verified_at; guide_discovery run mode and job kind, replacing the 003 CHECKs on upgraded databases). _gg_data/handler/guideDiscoveryStore.js persists checkpoints, per-ID refresh with backoff, and the guide daily counter. Projection and rollback recompute completeness for touched items/creatures and for entities whose known drops changed. Reasons: guide_detail_missing, guide_detail_failed, required_field_missing, known_drop_unresolved. [AC-CAT-011, AC-CAT-012, AC-CAT-013, AC-CAT-015]"
+        - "CAT-TASK-003: catalog/requestPolicy.js (read allow-list, passive fetchdata URL assertion, process-wide serial queue), catalog/normalizers.js (contract-mapped fields only), catalog/collector.js (observe_realm and item_frontier executions; login/unauthenticated back off without a login, a challenge pauses, malformed/too-large/404 record a redacted failed run, validated data is stored before its cursor, an owner pause during an execution wins). Store: recordFailedRun and the running -> queued hand-back. With the committed contracts both game kinds are refused without a request (DEC-CAT-019). [AC-CAT-001..AC-CAT-005]"
+        - "CAT-TASK-004: engine.js registers CatalogSync (60 s, disabled by default, preference persisted in module_preferences like every module). catalog/catalogTask.js runs queued game jobs serially, hands back jobs a crash left running, and shares a process-wide catalog lock with foreground commands; pauseAll (account switch) aborts a run in flight. No runtime setting was needed beyond enable/interval. [AC-CAT-001, AC-CAT-002, AC-CAT-008]"
+        - "CAT-TASK-005: Catalog API on the existing control plane. GET /api/catalog/summary, /entities (kind, q, completeness, page, pageSize; unknown or repeated parameters are 400), /entities/:kind/:key (provenance and relations), /runs, /runs/:id. POST /api/catalog/jobs, /jobs/:id/(pause|resume|cancel), /sync-now, /runs/:id/rollback-plan, /plans/:id/execute behind the existing session + CSRF + same-origin gate, each audited (denials too). Dashboard SSE state carries catalog jobs, guide status, and job availability. catalog/catalogService.js reads through code-owned column lists; name search is case-insensitive with a literal '%'. [AC-CAT-002, AC-CAT-007, AC-CAT-008, AC-CAT-009, AC-CAT-010]"
+        - "CAT-TASK-007: staged seeding (DEC-CAT-020). catalog/sourceRegistry.js approves one key, fsdatabase (the snapshot scripts/populate_db.mjs loads). catalog/seedService.js downloads with a 64 MiB per-file cap, rejects non-array files and files with more than 5% unusable records before any write, excludes records whose payload cannot be represented (reported, never guessed), and stages 'seed' runs of at most 2,000 observations in projection order. catalogStore.planPromotion previews a staged part in a rolled-back transaction (exact counts and serving row deltas; parts promote in order); executePlan runs promote and rollback plans; discardStagedRun cancels an unpromoted part. API: GET /api/catalog/seed-sources, POST /api/catalog/seeds, /runs/:id/promote-plan, /runs/:id/discard. [AC-CAT-005, AC-CAT-006, AC-CAT-009]"
+        - "CAT-TASK-006: Catalog tab in the existing dashboard with Browse (kind, name, coverage filters; paged; detail with fields, relations, provenance), Sync (guide status per kind including waiting-for-browser/challenged/overdue, policy and daily usage, jobs with pause/resume/cancel, allowed job kinds only, run-now), Seed (approved sources, staged parts, promotion preview), and History & delete (runs, rollback preview). Every value is rendered with textContent; a plan's action button stays disabled until the exact server phrase is typed. [AC-CAT-007, AC-CAT-008, AC-CAT-009]"
+        - "CAT-TASK-010: guide relay. Migration 008 (catalog_relay_tokens: SHA-256 only, guide_stage scope, at most 7 days, revocable, at most 3 active; catalog_guide_leases). catalog/guideRelay.js plans server-owned leases (one kind; index pages or detail IDs; per-run budget and daily cap; one open lease; smaller indexes first), validates submissions against their lease before any write, stages and projects them under the enabled guide_discovery job, then moves checkpoints: incremental sweeps stop one overlap page past last_seen_id, a descending-ID violation forces a full sweep, a challenge/invalid page/failed request or unexpected empty page stops at that page, and only a complete sweep moves last_successful_check_at and last_seen_id. New index IDs get minimal named records; linked unknown entities are registered for detail reads; relations are staged only when both ends exist. catalog/guideNormalizers.js holds the strict wire schemas; catalog/relayClient.js is the browser loop. /relay/guide/lease and /relay/guide/leases/:id accept only a bearer relay token (no session, CSRF, or Origin), have their own 512 KiB body cap and per-token rate limit, and are audited; the token is refused on every /api route. scripts/catalog/build-relay-userscript.mjs generates reconciliation/scrappers/gogon_guide_relay.user.js (GM_xmlhttpRequest/GM_getValue/GM_setValue/GM_registerMenuCommand, @connect 127.0.0.1; the token is set in Tampermonkey storage, never prompted in the page). Catalog tab: issue/revoke tokens (shown once). [AC-CAT-006, AC-CAT-007, AC-CAT-011..AC-CAT-015]"
+        - "CAT-TASK-008 (automated part): CI runs tests/catalog-sync on the real-MySQL job and checks the relay userscript against its sources; docs/deployment.md section 6 and CHANGELOG. Live evidence remains open. [AC-CAT-001..AC-CAT-015]"
+    - version: "1.2.1"
+      date: "2026-09-28"
+      changes:
+        - "Review fixes: define a scoped GM_xmlhttpRequest guide relay credential and a staging-only loopback endpoint as a narrow exception to normal Catalog session/CSRF/same-origin mutations; ordinary promotion and deletion keep those checks. [AC-CAT-014] [CAT-TASK-010]"
+        - "Unverified guide index order requires a complete, checkpointed index sweep. CAT-TASK-001 must establish page order and a separate guide delay, per-run budget, daily cap, and sweep feasibility before scheduling. A last ID never justifies skipping unverified pages. [AC-CAT-011, AC-CAT-012, AC-CAT-015]"
+    - version: "1.2.0"
+      date: "2026-09-28"
+      changes:
+        - "Use the supplied guide userscripts as the source contract for item, creature, realm, and master-realm discovery. Add a daily guide index check with per-kind last-seen IDs, overlap and older-record refresh, a challenge-aware browser relay, and Catalog freshness/status reporting. [AC-CAT-011, AC-CAT-012] [CAT-TASK-009, CAT-TASK-010]"
+        - "Track complete/incomplete catalog coverage for creatures and items, including unresolved drops, without treating unobserved drops as known absent. Existing API.js location reads are known; separate game detail reads remain conditional on a validated contract. [AC-CAT-003, AC-CAT-013] [CAT-TASK-001, CAT-TASK-009]"
     - version: "1.1.3"
       date: "2026-09-28"
       changes:
@@ -58,7 +85,7 @@ entities:
       - name: mode
         type: string
         constraints: [required]
-        description: "Approved operation: observe_realm, item_frontier, seed, promote, or revert; baseline_snapshot is written only by the store when it first touches an existing serving row."
+        description: "Approved operation: observe_realm, item_frontier, guide_discovery, seed, promote, or revert; baseline_snapshot is written only by the store when it first touches an existing serving row."
         example: "observe_realm"
       - name: status
         type: string
@@ -92,7 +119,7 @@ entities:
       - name: kind
         type: string
         constraints: [required]
-        description: "observe_realm or item_frontier; no game-action job kind is allowed."
+        description: "observe_realm, item_frontier, or guide_discovery; no game-action job kind is allowed."
         example: "item_frontier"
       - name: cursor
         type: json
@@ -206,6 +233,40 @@ entities:
         constraints: [required, indexed]
         description: "Latest observation time (freshness)."
         example: "2026-09-28T12:00:00.000Z"
+      - name: completeness
+        type: string
+        constraints: []
+        description: "complete or incomplete for item/creature only; NULL for other kinds. Added by CAT-TASK-009."
+        example: "incomplete"
+      - name: incomplete_reason
+        type: string
+        constraints: []
+        description: "Bounded code-owned reason such as guide_detail_missing or known_drop_unresolved; NULL when complete."
+        example: "guide_detail_missing"
+      - name: verified_at
+        type: datetime
+        constraints: []
+        description: "Last successful source-coverage check; NULL when detail has never been verified."
+        example: "2026-09-28T12:00:00.000Z"
+
+  - name: CatalogGuideDiscoveryState
+    description: "One durable scan checkpoint per guide entity kind, with page/ID retry metadata in bounded child records. Added by CAT-TASK-009."
+    fields:
+      - name: entity_kind
+        type: string
+        constraints: [required, unique]
+        description: "item, creature, realm, or master_realm."
+        example: "creature"
+      - name: last_seen_id
+        type: integer
+        constraints: [required]
+        description: "Maximum confirmed guide ID, used as a hint only."
+        example: 7000
+      - name: last_successful_check_at
+        type: datetime
+        constraints: []
+        description: "UTC time of the last fully validated index check."
+        example: "2026-09-28T12:00:00.000Z"
 
   - name: CatalogDeletionPlan
     description: "Short-lived, immutable preview for a remote destructive catalog action."
@@ -259,7 +320,7 @@ acceptance_criteria:
 
   - id: AC-CAT-002
     description: "CatalogSync is passive and bounded."
-    given: "A queued observe_realm or item_frontier job with a configured request budget"
+    given: "A queued game-session job with a configured request budget"
     when: "The task executes"
     then: "It performs at most one in-flight request and never calls attack, movement, travel, equip, use-item, form-post, or account-management game endpoints"
     error_cases:
@@ -268,10 +329,10 @@ acceptance_criteria:
         then: "The API rejects it with 400, creates no job, and records a denied audit event"
 
   - id: AC-CAT-003
-    description: "Current-realm observation captures creatures without combat."
+    description: "Current-realm observation captures available creature identity without combat."
     given: "An authenticated game-session response containing a realm and creature actions"
     when: "CatalogSync observes that realm"
-    then: "It records the realm, each newly seen creature, and creature-to-realm association; for a creature detail request it records only the returned game-domain fields and creates no combat action"
+    then: "It records the realm and available creature ID, name, and image plus creature-to-realm association; any separate creature detail request records only fields supported by its validated read contract and creates no combat action"
     error_cases:
       - given: "A detail response is malformed, an HTML login page, Cloudflare mitigation, or an unrecognized schema"
         when: "CatalogSync parses it"
@@ -314,7 +375,7 @@ acceptance_criteria:
     then: "The API applies strict allowlisted filters and bounded pagination, returns only catalog fields, and the UI renders all returned text as textContent rather than HTML"
     error_cases:
       - given: "An unauthenticated, cross-origin, malformed, or out-of-range request"
-        when: "It targets a Catalog endpoint"
+        when: "It targets an ordinary Catalog browse or administration endpoint"
         then: "It receives the existing authenticated control-plane denial with no data disclosure or stack trace"
 
   - id: AC-CAT-008
@@ -347,6 +408,56 @@ acceptance_criteria:
         when: "Rollback is computed"
         then: "The preview identifies it as a removal candidate; execution removes it only as part of the confirmed transaction and never leaves dangling relations"
 
+  - id: AC-CAT-011
+    description: "The guide discovers new catalog IDs daily from its known index pages."
+    given: "The supplied item, creature, realm, and master-realm guide index parsers and durable per-kind discovery state"
+    when: "A 24-hour guide discovery check runs in an approved browser context"
+    then: "It validates each response, checks every index page unless an ID sort contract has been verified, stages minimal incomplete records for newly found IDs and changed known records, and records last successful check, last seen ID, page coverage, and source provenance for the Catalog tab"
+    error_cases:
+      - given: "An index page is missing, challenged, malformed, or unexpectedly empty"
+        when: "The check reaches it"
+        then: "It pauses with a visible status and preserves the last successful checkpoint; it does not mark missing IDs deleted or move a high-water mark past an unverified page"
+
+  - id: AC-CAT-012
+    description: "A guide high-water mark does not hide older edits or gaps."
+    given: "A previously successful guide scan with a last seen ID for each entity kind"
+    when: "The next daily scan checks guide indexes"
+    then: "It scans every index page while ordering is unverified; only a verified ID order may permit a bounded page overlap, while discovered IDs remain independent of the maximum ID and older detail pages are refreshed by due time or content hash"
+    error_cases:
+      - given: "An existing item, creature, or realm changes without receiving a new ID"
+        when: "A later valid index or detail check detects the change"
+        then: "It stages a new guide observation while preserving game-session field precedence and the previous source history"
+
+  - id: AC-CAT-013
+    description: "Catalog completeness is explicit and limited to verified source coverage."
+    given: "A creature or item discovered from a game location, guide index, or guide detail"
+    when: "Its catalog projection or relations change"
+    then: "Its catalog entity has a complete or incomplete value, missing-data reasons, and last verification time; a valid guide detail with all required fields and all currently known drop links resolved may become complete"
+    error_cases:
+      - given: "A detail page failed validation, a known drop relation is unresolved, or only game identity fields are available"
+        when: "Completeness is recalculated"
+        then: "It remains incomplete, is eligible for later guide verification, and the Catalog tab shows the reason without claiming every possible drop is known"
+
+  - id: AC-CAT-014
+    description: "The browser guide relay can stage data without a cross-origin dashboard session."
+    given: "An owner-issued, unexpired, revocable guide-relay token and a userscript restricted to guide.fallensword.com with GM_xmlhttpRequest and @connect 127.0.0.1"
+    when: "The userscript sends a bounded validated batch to the dedicated loopback relay endpoint through the owner's SSH tunnel"
+    then: "The endpoint authenticates the relay token, accepts only allowlisted guide observations and checkpoint data for staging under a previously owner-enabled guide job, enforces byte/rate limits and audit logging, and never accepts cookies, CSRF values, raw HTML, arbitrary URLs, promotion, deletion, or job-control commands; the server may auto-project validated staged observations under that fixed job policy"
+    error_cases:
+      - given: "The token is missing, expired, revoked, wrong-scope, or the request targets a normal Catalog mutation route"
+        when: "The request arrives"
+        then: "The server denies it without staging or projecting data; normal Catalog mutations still require owner session, same-origin, and CSRF"
+
+  - id: AC-CAT-015
+    description: "Guide request budgets reflect the index coverage needed for a complete check."
+    given: "The guide index ordering is not yet verified and item/creature indexes may span hundreds of pages"
+    when: "CAT-TASK-001 defines the guide request policy before the first scheduled run"
+    then: "It records measured ordering, separate guide minimum delay, per-execution request budget, daily request cap, expected full-sweep size and duration, and a checkpointed chunk schedule that can cover every index page within the chosen interval"
+    error_cases:
+      - given: "The full sweep cannot fit the approved cap or a chunk stops before coverage is complete"
+        when: "The 24-hour check is reported"
+        then: "The Catalog tab shows partial or overdue coverage and preserves the cursor; it never advances last_successful_check_at or claims no new IDs"
+
 security:
   constitutions:
     - SEC-OWASP-A01-2025
@@ -366,7 +477,7 @@ security:
       severity: CRITICAL
       cwe: 20
       scope: "catalog/**, control-plane/server.mjs"
-    - rule: "Every Catalog state-changing endpoint requires the existing authenticated session, CSRF token, same-origin check, schema validation, audit event, and server-side ownership check. Destructive execution additionally requires an unexpired one-use plan and exact server-calculated confirmation."
+    - rule: "Every ordinary Catalog state-changing endpoint requires the existing authenticated session, CSRF token, same-origin check, schema validation, audit event, and server-side ownership check. The dedicated guide-relay staging endpoint is the sole exception: it requires a scoped, revocable, expiring bearer token issued through the normal owner session and cannot promote, delete, or control jobs. Destructive execution additionally requires an unexpired one-use plan and exact server-calculated confirmation."
       severity: CRITICAL
       cwe: 352
       scope: "control-plane/server.mjs, catalog/**"
@@ -396,12 +507,23 @@ security:
       impact: "Account restriction, degraded notifications, or policy violation."
       mitigation: "Disabled-by-default task, one in-flight request, request budgets, backoff, pause on mitigation, no CAPTCHA/Cloudflare automation, and existing account-switch pause behavior."
       verification: "Scheduler and collector tests prove concurrency one, bounded request count, abort behavior, and no request after mitigation."
+    - threat: "A relay token is stolen or a guide page injects hostile data into the staging endpoint."
+      impact: "Unapproved catalog observations or repeated imports."
+      mitigation: "Extension-only token storage, seven-day maximum lifetime, owner revocation, stage-only scope, loopback binding, strict schema and byte limits, per-token rate limits, deduplication, audit, and no credential exposure to guide page JavaScript."
+      verification: "Route tests deny missing, expired, revoked, wrong-scope, oversized, cross-route, and raw-HTML submissions; browser acceptance confirms the token is not exposed to the page or logs."
 
 constraints:
   - "CatalogSync is disabled by default and must be enabled deliberately through the authenticated control plane."
   - "No Catalog job may call game attack, move, travel, equip, use-item, join-group, post-form, or account-management endpoints."
   - "At most one Catalog game request is in flight process-wide; the default budget is at most 50 requests per job execution and the minimum delay is 3 seconds between game requests until an owner-approved game-policy/rate-limit decision supersedes it."
   - "A failed, throttled, mitigated, malformed, or unauthenticated response cannot advance a job cursor or highest-confirmed ID."
+  - "Guide discovery becomes due every 24 hours per entity kind by default; each kind has durable last successful check, last seen ID, and per-page coverage. Guide index order is owner-attested newest-first (DEC-CAT-017): an incremental check may stop one overlap page past the page that reaches last seen ID only while every page read so far descends; a violation returns that kind to full sweeps, which visit every index page, and a full sweep still runs every 7 days. A maximum ID is a hint, never proof that older IDs cannot change or that gaps are absent."
+  - "Guide requests have their own minimum delay, per-execution budget, daily cap, and page-coverage checkpoint, established by CAT-TASK-001 before scheduled live collection. The game 3-second/50-request defaults do not silently apply to the guide. A partial or cap-limited sweep is reported as partial/overdue and never advances last_successful_check_at."
+  - "The supplied reconciliation/scrappers scripts define the known guide URLs and parsing fields, but their hard-coded page ceilings, 500 ms delays, ten-request item batches, and error handling are not reused unchanged for scheduled collection. The guide relay is serial, bounded, and challenge-aware."
+  - "The guide userscript changes from @grant none to GM_xmlhttpRequest, GM_getValue, and GM_setValue with @connect 127.0.0.1. It sends validated normalized batches only to a code-owned loopback relay endpoint through the owner's SSH tunnel, using a stage-only token issued by the authenticated Catalog tab. The token lives only in userscript extension storage, expires within seven days, is owner-revocable, and is never placed in page JavaScript, a URL, logs, or catalog data. The relay endpoint is the sole exception to normal Catalog same-origin/CSRF/session mutation checks; all other mutations retain them."
+  - "Relay batches can be auto-projected only by the server's previously owner-enabled guide job after staging validation, within the approved guide budget and source allowlist. The token cannot request promotion, deletion, job creation, or job settings; arbitrary owner seed imports still require plan-preview-confirm."
+  - "A Cloudflare challenge is handled through the approved browser's normal user validation. The relay never scripts challenge completion, exports challenge tokens or cookies, or treats a challenge page as catalog data; a challenge pauses the scan and preserves its checkpoint. A daily check is due after 24 hours, but may wait for an available validated browser session."
+  - "Creature and item completeness is stored on catalog_entities as complete or incomplete with a reason and verification timestamp. Complete means the required guide fields and all currently known relations were checked; it never asserts that unobserved drops do not exist."
   - "Every observation is canonicalized and hash-deduplicated per source/entity before projection; the first_seen, last_seen, source, run ID, and observed timestamp remain queryable."
   - "Guide-derived data is a dated baseline, not current truth. Game-session observations outrank guide baseline only for fields they actually provide; unknown relationships and set bonuses remain explicitly unknown. Field precedence is game_session > manual_import > guide_baseline; within one source the later observation wins, and a lower-ranked source only fills fields no higher-ranked observation supplied."
   - "Existing Discord lookup tables remain available throughout rollout. Catalog refreshes use incremental transactionally consistent projection; scripts/populate_db.mjs is manual-only until explicitly retired or redesigned, and refuses to run while catalog projections exist unless given --discard-catalog-projections (DEC-CAT-009)."
@@ -430,7 +552,7 @@ dependencies:
     criticality: HIGH
 
 git:
-  last_implementation_branch: ""
+  last_implementation_branch: "feat/CAT-TASK-009-guide-discovery-stack"
   last_pr_url: ""
   last_pr_merged: ""
   last_version_tag: ""
@@ -438,17 +560,22 @@ git:
 tasks:
   - id: CAT-TASK-001
     description: |
-      Validate and freeze the live read-response contracts before production collection. Capture one
-      owner-authorized current-realm response and one creature detail response using the existing
-      session, compare them with the FSH-derived request shape, record permitted fields and response
-      classifications, and obtain the owner's written rate/policy decision. Do not automate Cloudflare
-      or CAPTCHA handling. This task blocks live collection but not fixtures or schema work.
-      Also capture one item-detail response: item_frontier has no validated read contract yet, and
-      game_modules/API.js has no creature- or item-detail read endpoint (added 1.1.0).
-    affects: "catalog/contracts/, tests/catalog-sync/fixtures/, game_modules/API.js, docs/catalog-sync-control-plane-plan.md"
+      Document the source-backed read contracts before production collection. game_modules/API.js
+      already defines JSON current-location and world-map reads; the supplied reconciliation/scrappers
+      scripts define guide index/detail URLs and parser fields for items, creatures, realms, and master
+      realms. Record these request/response shapes, allowed fields, and challenge/error classifications
+      as fixtures. Validate a separate game creature-detail or item-detail read only before enabling
+      those optional game-side frontiers; do not make that capture a prerequisite for guide discovery
+      or current-location identity collection. Record the guide index order as owner-attested
+      newest-first (DEC-CAT-017, which replaced confirming it from captured responses before any
+      incremental sweep); the relay re-checks descending IDs on every page. Record separate guide minimum delay, per-execution request
+      budget, daily cap, expected full-sweep page count/duration, and checkpoint schedule before any
+      scheduled guide run. Keep game and guide request policies separate.
+    affects: "catalog/contracts/, tests/catalog-sync/fixtures/, game_modules/API.js, reconciliation/scrappers/, docs/catalog-sync-control-plane-plan.md"
     depends_on: []
     source: "AC-CAT-001, AC-CAT-002, AC-CAT-003, AC-CAT-004"
-    status: TODO
+    status: IN_PROGRESS
+    progress: "2026-09-28: guide URL/order/parser contract, response classification, separate game and guide policies (DEC-CAT-017/018), synthetic fixtures, tests/catalog-sync/contracts.test.mjs. Open: one owner-captured, redacted fetchLocation response and its field mapping (DEC-CAT-019); game creature/item detail reads do not exist. Guide order rests on the owner attestation only: no captured live guide response is in this checkout, and order_state becomes verified only after the first live relay sweep (CAT-TASK-008)."
 
   - id: CAT-TASK-002
     description: |
@@ -465,14 +592,15 @@ tasks:
   - id: CAT-TASK-003
     description: |
       Implement catalog response normalizers and a passive collector service. Define code-owned
-      request builders for the validated realm and creature detail reads, strict response
-      classifications, canonical JSON hashing, a serial rate-limited queue, AbortSignal support,
-      backoff, cursor checkpointing, and redacted errors. No game-mutating request builder may be
-      imported by this subsystem.
-    affects: "catalog/collector.js, catalog/normalizers.js, catalog/requestPolicy.js, game_modules/API.js, tests/catalog-sync/collector.test.mjs"
+      request builders for the known current-location read; add separate creature/item detail reads
+      only after CAT-TASK-001 validates their contracts. Add strict response classifications,
+      canonical JSON hashing, a serial rate-limited queue, AbortSignal support, backoff, cursor
+      checkpointing, and redacted errors. No game-mutating request builder may be imported.
+    affects: "catalog/collector.js, catalog/normalizers.js, catalog/requestPolicy.js, _gg_data/handler/catalogStore.js, tests/catalog-sync/collector.test.mjs, tests/data-storage/catalog-store.test.mjs"
     depends_on: ["CAT-TASK-001", "CAT-TASK-002"]
     source: "AC-CAT-001, AC-CAT-002, AC-CAT-003, AC-CAT-004, AC-CAT-005"
-    status: TODO
+    status: DONE
+    progress: "2026-09-28: collector, normalizers, request policy. Positive paths are tested against a synthetic verified contract; live use waits for the owner-captured fetchLocation contract (CAT-TASK-001, DEC-CAT-019). API.js needed no change."
 
   - id: CAT-TASK-004
     description: |
@@ -481,10 +609,11 @@ tasks:
       foreground synchronization command. Add runtime configuration only for bounded safe settings
       such as enabled state and interval; request URLs, operation kinds, and source allowlists stay
       code-owned.
-    affects: "engine.js, config/registry.mjs, config/runtime.mjs, app.mjs, tests/task-engine/catalog-sync.test.mjs"
+    affects: "engine.js, catalog/catalogTask.js, tests/task-engine/catalog-sync.test.mjs, tests/task-engine/controller.test.mjs, tests/task-engine/scheduling.test.mjs"
     depends_on: ["CAT-TASK-003"]
     source: "AC-CAT-001, AC-CAT-002, AC-CAT-008"
-    status: TODO
+    status: DONE
+    progress: "2026-09-28: CatalogSync engine task and catalog lock. The existing module enable/interval preferences cover the only runtime settings; config/registry.mjs, config/runtime.mjs, and app.mjs are unchanged."
 
   - id: CAT-TASK-005
     description: |
@@ -493,21 +622,24 @@ tasks:
       error, audit, and SSE mechanisms. Implement bounded pagination, strict filter allowlists,
       job conflicts, and plan-preview-confirm execution; never add raw SQL, raw URL, or arbitrary
       source upload endpoints.
-    affects: "control-plane/server.mjs, control-plane/index.mjs, _gg_data/handler/controlStore.js, tests/control-plane/catalog-api.test.mjs"
+    affects: "control-plane/server.mjs, control-plane/index.mjs, catalog/catalogService.js, tests/control-plane/catalog-api.test.mjs"
     depends_on: ["CAT-TASK-002", "CAT-TASK-004"]
     source: "AC-CAT-007, AC-CAT-008, AC-CAT-009, AC-CAT-010"
-    status: TODO
+    status: DONE
+    progress: "2026-09-28: Catalog API and service; the existing audit store needed no change (controlStore.js untouched)."
 
   - id: CAT-TASK-006
     description: |
       Add the Catalog tab and Browse, Sync, Seed, History/Delete subviews to the existing static
-      dashboard. Render remote text only through DOM text nodes, show provenance/freshness and
-      request budgets, and require a server-issued plan plus exact confirmation for promotion,
+      dashboard. Render remote text only through DOM text nodes, show provenance/freshness,
+      complete/incomplete reasons, guide check status, and request budgets. Require a server-issued
+      plan plus exact confirmation for promotion,
       rollback, or deletion. Do not create a separate public web server or database console.
     affects: "control-plane/public/index.html, control-plane/public/app.js, control-plane/public/styles.css, tests/control-plane/catalog-ui.test.mjs"
-    depends_on: ["CAT-TASK-005"]
+    depends_on: ["CAT-TASK-005", "CAT-TASK-009"]
     source: "AC-CAT-007, AC-CAT-008, AC-CAT-009"
-    status: TODO
+    status: DONE
+    progress: "2026-09-28: Catalog tab and tests/control-plane/catalog-ui.test.mjs (the real page and script in linkedom). Browser acceptance through the SSH tunnel is part of CAT-TASK-008."
 
   - id: CAT-TASK-007
     description: |
@@ -515,10 +647,11 @@ tasks:
       with an approved-source-key or validated owner-import staging run, schema validation, diff
       preview, and transactional promotion. Preserve the manual legacy script until the owner
       separately approves its retirement.
-    affects: "catalog/seedService.js, catalog/sourceRegistry.js, control-plane/server.mjs, scripts/populate_db.mjs, tests/catalog-sync/seed.test.mjs"
+    affects: "catalog/seedService.js, catalog/sourceRegistry.js, catalog/catalogService.js, _gg_data/handler/catalogStore.js, control-plane/server.mjs, control-plane/index.mjs, tests/catalog-sync/seed.test.mjs, tests/control-plane/catalog-api.test.mjs"
     depends_on: ["CAT-TASK-002", "CAT-TASK-005"]
     source: "AC-CAT-005, AC-CAT-006, AC-CAT-009"
-    status: TODO
+    status: DONE
+    progress: "2026-09-28: staged seeding and promotion plans. scripts/populate_db.mjs is unchanged (manual, guarded since CAT-TASK-002); its retirement is still the owner's call."
 
   - id: CAT-TASK-008
     description: |
@@ -528,6 +661,44 @@ tasks:
       action request occurred, no cookie or credential reached the UI/logs/database, and rollback
       restores the prior projection.
     affects: "tests/catalog-sync/, tests/control-plane/, .github/workflows/ci.yml, docs/deployment.md, CHANGELOG.md"
-    depends_on: ["CAT-TASK-006", "CAT-TASK-007"]
-    source: "AC-CAT-001..AC-CAT-010"
-    status: TODO
+    depends_on: ["CAT-TASK-006", "CAT-TASK-007", "CAT-TASK-009", "CAT-TASK-010"]
+    source: "AC-CAT-001..AC-CAT-015"
+    status: IN_PROGRESS
+    progress: "2026-09-28: automated gate done: fake-MySQL suite 299 pass (2 real-MySQL-only skips; 1.3.1, Node 22), catalog tests added to the real-MySQL CI job, userscript freshness check in CI, deployment and changelog docs. Open, needing the owner: a green CI run (real MySQL) for this branch, which needs a pull request (ci.yml runs on pull_request and on pushes to main only; pushing the feature branch alone runs nothing), Docker loopback verification, SSH-tunnel browser acceptance of the Catalog tab, one live relay sweep with Tampermonkey (including a real Cloudflare challenge if one appears), and the live passive realm observation after the CAT-TASK-001 capture."
+
+  - id: CAT-TASK-009
+    description: |
+      Add a forward-only migration and repository support for guide_discovery run/job kinds and
+      guide discovery state per entity kind: last successful check, last seen ID, index/page coverage,
+      separate per-run guide budget and daily cap, per-ID retry/refresh metadata, and
+      complete/incomplete status with reason and verification time
+      on catalog_entities for items and creatures. Stage a minimal incomplete record for a new index
+      ID; recalculate completeness when guide detail or known drops change. Test upgrades of databases
+      that already applied migrations 003-005 and keep rollback/provenance behavior intact.
+    affects: "_gg_data/migrations/003_catalog_sync.sql, _gg_data/migrations/006_catalog_discovery.sql, _gg_data/migrations/007_catalog_discovery_columns.mjs, _gg_data/handler/catalogStore.js, _gg_data/handler/guideDiscoveryStore.js, tests/helpers/fake-mysql.mjs, tests/data-storage/catalog-discovery.test.mjs, tests/data-storage/catalog-store.test.mjs"
+    depends_on: ["CAT-TASK-002"]
+    source: "AC-CAT-011, AC-CAT-012, AC-CAT-013"
+    status: DONE
+    progress: "2026-09-28: migrations 006/007, guideDiscoveryStore, completeness in projection and rollback. Fake MySQL tests pass; replacing the 003 CHECKs on an upgraded database is covered by a real-MySQL-only test that runs in CI (no local MySQL). 1.3.1: the replacement is one ALTER TABLE, and a re-run restores a missing allow-list (unit-tested with a stub client; the interrupted-upgrade case is in the real-MySQL test, not yet run)."
+
+  - id: CAT-TASK-010
+    description: |
+      Adapt the supplied browser userscripts into one serial guide discovery relay. Check item,
+      creature, realm, and master-realm indexes every 24 hours when a validated owner browser is
+      available (the server cannot run the check without the relay). Use the owner-attested newest-first
+      order (DEC-CAT-017) for an overlap stop, re-check descending IDs on every page, and fall back
+      to full sweeps on a violation. Use separate guide request budgets and older-detail refresh.
+      Change the userscript to GM_xmlhttpRequest, GM_getValue, and GM_setValue with scoped
+      @connect 127.0.0.1 and an extension-only token issued through the owner Catalog tab.
+      Send validated bounded batches through the owner's
+      SSH tunnel to a dedicated staging-only loopback endpoint; normal Catalog mutation routes keep
+      session, same-origin, and CSRF checks. The server auto-projects validated staged batches only
+      under a previously owner-enabled guide job and its fixed policy; the token cannot promote.
+      Pause on challenge or invalid pages, preserve cursors, and expose partial,
+      overdue, waiting-for-browser, challenged, failed, completeness, and freshness status.
+      Never script challenge completion or export browser credentials.
+    affects: "_gg_data/migrations/008_catalog_relay.sql, _gg_data/handler/catalogStore.js, _gg_data/handler/guideDiscoveryStore.js, catalog/guideRelay.js, catalog/guideNormalizers.js, catalog/relayClient.js, catalog/catalogService.js, control-plane/server.mjs, control-plane/index.mjs, control-plane/public/app.js, scripts/catalog/build-relay-userscript.mjs, reconciliation/scrappers/gogon_guide_relay.user.js, tests/catalog-sync/guide-relay.test.mjs, tests/control-plane/catalog-api.test.mjs, tests/control-plane/catalog-ui.test.mjs"
+    depends_on: ["CAT-TASK-001", "CAT-TASK-006", "CAT-TASK-007", "CAT-TASK-009"]
+    source: "AC-CAT-006, AC-CAT-007, AC-CAT-011, AC-CAT-012, AC-CAT-013, AC-CAT-014, AC-CAT-015"
+    status: DONE
+    progress: "2026-09-28: relay server, client, userscript, and token UI; tested end to end against a simulated guide (no network). The supplied scrapers are unchanged and remain manual. Live browser acceptance (Tampermonkey, SSH tunnel, a real guide page and a real challenge) is part of CAT-TASK-008. Audit fixes (1.3.1): unparseable detail pages are invalid, not missing; atomic lease issue and claim; one staged run per lease across retries, checkpointed only with the results it was built from and only while applied; guide-run rollback leaves details unverified (DEC-CAT-021); the relay resends saved results instead of re-reading, and a handed-back lease is reserved again; submissions stay under the body limit and report their request count; daily-cap reservation on each UTC day a lease spans; the relay stops at lease expiry; userscript 1.0.1."

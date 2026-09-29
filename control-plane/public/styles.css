@@ -75,6 +75,25 @@ button[hidden] { display: none; }
 .validation { margin-top: 12px; padding: 10px 14px; border-radius: 8px; background: var(--warn-bg); }
 .validation pre { white-space: pre-wrap; margin: 6px 0 0; }
 
+.subtabs { display: flex; gap: 4px; margin-top: 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.subtabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); padding: 8px 10px; }
+.subtabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+.subtab[hidden], .card[hidden] { display: none; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.toolbar .field-error { flex-basis: 100%; }
+select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+.stat-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; }
+.pager { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: var(--chip); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.kv pre, .plan pre { margin: 0; white-space: pre-wrap; max-height: 240px; overflow: auto; }
+.plan code { font-weight: 600; }
+.plan input { min-width: 260px; }
+
 .login-page { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
 .login-card { width: 100%; max-width: 360px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
 .login-card h1 { margin: 0 0 4px; font-size: 20px; }

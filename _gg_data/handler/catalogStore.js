@@ -9,14 +9,23 @@
 //                 and marks the run failed; its provenance stays diagnosable.
 //   planRollback() / executePlan()  one-use, 10-minute plans; rollback replays the provenance that
 //                 remains without the run, and removes entities that have none left.
+//   completeness  CAT-TASK-009 / AC-CAT-013: every projection and rollback recomputes complete/
+//                 incomplete for the items and creatures it touched (and for entities waiting on an
+//                 unresolved drop), from the guide detail status and the serving row.
 // Every statement is parameterized; table and column names come only from the schemas below.
 import crypto from 'node:crypto';
 import { clearAllCaches } from './cacheLayer.js';
+import { idsFrom, parseJsonColumn } from './servingRelations.js';
+import { GUIDE_POLICY } from '../../catalog/contracts/policy.js';
 
 export const ENTITY_KINDS = Object.freeze(['item', 'creature', 'realm', 'master_realm', 'relic', 'quest', 'relation']);
 export const SOURCES = Object.freeze(['game_session', 'guide_baseline', 'manual_import']);
-export const RUN_MODES = Object.freeze(['observe_realm', 'item_frontier', 'seed', 'promote', 'revert']);
-export const JOB_KINDS = Object.freeze(['observe_realm', 'item_frontier']);
+export const RUN_MODES = Object.freeze(['observe_realm', 'item_frontier', 'guide_discovery', 'seed', 'promote', 'revert']);
+export const JOB_KINDS = Object.freeze(['observe_realm', 'item_frontier', 'guide_discovery']);
+// AC-CAT-013: bounded, code-owned reasons (joined with ',' in catalog_entities.incomplete_reason).
+export const INCOMPLETE_REASONS = Object.freeze(['guide_detail_missing', 'guide_detail_failed', 'required_field_missing', 'known_drop_unresolved']);
+const COMPLETENESS_KINDS = ['item', 'creature'];
+const DEPENDENT_RECHECK_LIMIT = 500;
 export const RELATION_TYPES = Object.freeze(['realm_creature', 'creature_drop']);
 export const MAX_PAYLOAD_BYTES = 16 * 1024;
 export const MAX_OBSERVATIONS_PER_RUN = 20_000;
@@ -455,6 +464,25 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
     }
 
     /**
+     * After a guide_discovery run is rolled back, its guide details no longer describe what the catalog
+     * serves: they become pending (unverified, so completeness says guide_detail_missing) with no hash,
+     * so the next read stages them again. That read keeps the normal refresh interval (owner decision
+     * 2026-09-28), so the rollback holds until then.
+     */
+    async function unverifyGuideDetails(tx, runId) {
+        const [run] = await tx.query('SELECT mode FROM catalog_runs WHERE id = ?', [runId]);
+        if (run?.mode !== 'guide_discovery') return;
+        const rows = await tx.query(
+            `SELECT DISTINCT o.entity_kind, o.entity_key FROM catalog_run_observations ro JOIN catalog_observations o ON o.id = ro.observation_id
+             WHERE ro.run_id = ? AND o.entity_kind IN ('item', 'creature', 'realm', 'master_realm')`, [runId]);
+        const next = new Date(now() + GUIDE_POLICY.detailRefreshAfterMs).toISOString();
+        for (const r of rows) {
+            await tx.query("UPDATE catalog_guide_ids SET detail_status = 'pending', detail_hash = NULL, detail_attempts = 0, next_detail_at = ? WHERE entity_kind = ? AND entity_id = ?",
+                [next, r.entity_kind, Number(r.entity_key)]);
+        }
+    }
+
+    /**
      * Rolls runId back inside tx. The exact effect on the serving tables is returned as per-table row
      * deltas, so a plan can preview it by running this in a transaction that is then rolled back.
      */
@@ -480,6 +508,8 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             await tx.query('INSERT INTO catalog_entities (entity_kind, entity_key, observation_id, last_run_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
                 [r.kind, r.key, r.observationId, r.runId, state?.first_seen_at ?? r.observedAt, r.observedAt]);
         }
+        await unverifyGuideDetails(tx, runId);
+        await refreshCompleteness(tx, [...computed.restore, ...computed.remove].map(r => [r.kind, r.key]), computed.remove);
         const after = await servingCounts(tx);
         const rows = {};
         for (const table of Object.keys(before)) if (after[table] !== before[table]) rows[table] = after[table] - before[table];
@@ -498,7 +528,159 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         return out;
     }
 
+    // --- completeness (CAT-TASK-009 / AC-CAT-013) ---
+
+    /** A creature name as items list it ("Name (Class LE)") and as creatures store it ("Name"). */
+    const dropNames = name => {
+        const n = String(name).trim();
+        const bare = n.replace(/\s*\([^()]*\)\s*$/, '').trim();
+        return bare && bare !== n ? [n, bare] : [n];
+    };
+
+    /**
+     * Complete means: a validated guide detail, the required serving fields, and every currently
+     * known drop link resolving to an existing row. It never claims that no other drop exists.
+     */
+    async function completenessOf(q, kind, id) {
+        const reasons = [];
+        const [g] = await q.query('SELECT detail_status, detail_checked_at FROM catalog_guide_ids WHERE entity_kind = ? AND entity_id = ?', [kind, id]);
+        if (!g || g.detail_status === 'pending' || g.detail_status === 'missing') reasons.push('guide_detail_missing');
+        else if (g.detail_status === 'failed') reasons.push('guide_detail_failed');
+        const [row] = kind === 'item'
+            ? await q.query('SELECT name, droppedBy AS drops FROM items WHERE id = ?', [id])
+            : await q.query('SELECT name, stats, droppedItems AS drops FROM creatures WHERE id = ?', [id]);
+        if (!row || !row.name || (kind === 'creature' && row.stats == null)) reasons.push('required_field_missing');
+        const drops = parseJsonColumn(row?.drops);
+        let unresolved = false;
+        if (kind === 'creature') {
+            for (const itemId of idsFrom(drops)) {
+                if (!(await q.query('SELECT 1 AS present FROM items WHERE id = ?', [itemId])).length) { unresolved = true; break; }
+            }
+        } else if (Array.isArray(drops)) {
+            for (const d of drops) {
+                const name = typeof d === 'string' ? d : (d?.creatureName ?? d?.name);
+                if (typeof name !== 'string' || !name.trim()) continue;
+                const candidates = dropNames(name);
+                const found = await q.query(`SELECT 1 AS present FROM creatures WHERE name IN (${candidates.map(() => '?').join(', ')}) LIMIT 1`, candidates);
+                if (!found.length) { unresolved = true; break; }
+            }
+        }
+        if (unresolved) reasons.push('known_drop_unresolved');
+        return {
+            completeness: reasons.length ? 'incomplete' : 'complete',
+            reason: reasons.length ? reasons.join(',') : null,
+            verifiedAt: g?.detail_status === 'ok' ? g.detail_checked_at : null,
+        };
+    }
+
+    /**
+     * Recomputes completeness for the given item/creature entities (keys are game IDs), plus up to
+     * DEPENDENT_RECHECK_LIMIT entities of the other kind still waiting on an unresolved drop.
+     * @param {Array<[string, string]>} entities - [kind, key] pairs; other kinds are ignored
+     * @param {Array<{ kind: string, payload: object }>} [removed] - items/creatures just removed: the
+     *   entities whose drop lists name them may have lost a resolved drop, so they are rechecked too
+     */
+    async function refreshCompleteness(q, entities, removed = []) {
+        const targets = new Map();
+        for (const [kind, key] of entities) if (COMPLETENESS_KINDS.includes(kind)) targets.set(`${kind}|${key}`, [kind, key]);
+        const like = v => `%${String(v).replace(/[!%_]/g, m => `!${m}`)}%`;   // with ESCAPE '!' (same on MySQL and SQLite)
+        for (const r of removed) {
+            // A coarse LIKE finds candidates; completenessOf() then checks each one exactly.
+            const found = r.kind === 'item' && r.payload?.id != null
+                ? await q.query(`SELECT id FROM creatures WHERE droppedItems LIKE ? ESCAPE '!' LIMIT ${DEPENDENT_RECHECK_LIMIT}`, [like(r.payload.id)])
+                : r.kind === 'creature' && typeof r.payload?.name === 'string'
+                    ? await q.query(`SELECT id FROM items WHERE droppedBy LIKE ? ESCAPE '!' LIMIT ${DEPENDENT_RECHECK_LIMIT}`, [like(r.payload.name)])
+                    : [];
+            const other = r.kind === 'item' ? 'creature' : 'item';
+            for (const f of found) targets.set(`${other}|${f.id}`, [other, String(f.id)]);
+        }
+        const touchedKinds = new Set([...targets.values()].map(([k]) => k));
+        for (const other of COMPLETENESS_KINDS) {
+            if (!touchedKinds.has(other === 'item' ? 'creature' : 'item')) continue;
+            const waiting = await q.query(`SELECT entity_key FROM catalog_entities WHERE entity_kind = ? AND incomplete_reason LIKE ? ORDER BY entity_key LIMIT ${DEPENDENT_RECHECK_LIMIT}`,
+                [other, '%known_drop_unresolved%']);
+            for (const w of waiting) targets.set(`${other}|${w.entity_key}`, [other, w.entity_key]);
+        }
+        let updated = 0;
+        for (const [kind, key] of targets.values()) {
+            const [state] = await q.query('SELECT 1 AS present FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [kind, key]);
+            if (!state) continue;
+            const c = await completenessOf(q, kind, Number(key));
+            await q.query('UPDATE catalog_entities SET completeness = ?, incomplete_reason = ?, verified_at = ? WHERE entity_kind = ? AND entity_key = ?',
+                [c.completeness, c.reason, c.verifiedAt, kind, key]);
+            updated++;
+        }
+        return updated;
+    }
+
+    /**
+     * Applies a recorded ('running') run to the serving tables inside tx (the caller holds the
+     * revision lock and bumps the revision). Marks the run succeeded; its summary keeps any fields
+     * recorded with it (a seed's batch/part) and gains the projection counts.
+     */
+    async function performProjection(tx, runId) {
+        // Recheck under the lock: a reload may have discarded the run since any earlier check.
+        const [current] = await tx.query('SELECT status, summary FROM catalog_runs WHERE id = ? FOR UPDATE', [runId]);
+        if (!current) throw new CatalogError('not_found', 'Unknown catalog run.');
+        if (current.status !== 'running') throw new CatalogError('conflict', `A ${current.status} run cannot be projected.`);
+        const rows = await tx.query(
+            `SELECT o.id, o.entity_kind, o.entity_key, o.payload, ro.observed_at FROM catalog_run_observations ro
+             JOIN catalog_observations o ON o.id = ro.observation_id WHERE ro.run_id = ? ORDER BY ro.seq`, [runId]);
+        rows.sort((a, b) => PROJECTION_ORDER.indexOf(a.entity_kind) - PROJECTION_ORDER.indexOf(b.entity_kind));
+        const counts = { projected: 0, unchanged: 0, baselines: 0 };
+        let baselineRunId = null;
+        const at = iso();
+        for (const row of rows) {
+            const kind = row.entity_kind;
+            const payload = parse(row.payload);
+            const [state] = await tx.query('SELECT observation_id, first_seen_at FROM catalog_entities WHERE entity_kind = ? AND entity_key = ? FOR UPDATE', [kind, row.entity_key]);
+            let firstSeen = state?.first_seen_at ?? row.observed_at;
+            if (!state) {
+                const baseline = await snapshotServing(tx, kind, payload);
+                if (baseline) {
+                    if (!baselineRunId) {
+                        baselineRunId = uuid();
+                        await tx.query('INSERT INTO catalog_runs (id, mode, source, status, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
+                            [baselineRunId, BASELINE_MODE, 'guide_baseline', 'succeeded', at, at]);
+                    }
+                    const json = canonicalJson(baseline);
+                    const obs = await upsertObservation(tx, 'guide_baseline', { kind, key: row.entity_key, externalId: baseline.id != null ? String(baseline.id) : null, json, hash: sha256(json) }, at);
+                    await linkObservation(tx, baselineRunId, obs.id, at);
+                    counts.baselines++;
+                    firstSeen = at;
+                }
+            } else if (state.observation_id === row.id) {
+                counts.unchanged++;
+                await tx.query('UPDATE catalog_entities SET last_run_id = ?, last_seen_at = ? WHERE entity_kind = ? AND entity_key = ?', [runId, row.observed_at, kind, row.entity_key]);
+                continue;
+            }
+            // Rebuild from all provenance (baseline, earlier runs, this run) under source
+            // precedence, so a lower-ranked source never overwrites a higher-ranked field.
+            const rebuilt = await resolveParents(tx, kind, replayRows(kind, await provenanceOf(tx, kind, row.entity_key, { includeRun: runId })));
+            await applyEntity(tx, kind, rebuilt ?? payload, { merge: false }); // no state: let the foreign key reject it
+            await tx.query('DELETE FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [kind, row.entity_key]);
+            await tx.query('INSERT INTO catalog_entities (entity_kind, entity_key, observation_id, last_run_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
+                [kind, row.entity_key, row.id, runId, firstSeen, row.observed_at]);
+            counts.projected++;
+        }
+        await refreshCompleteness(tx, rows.map(r => [r.entity_kind, r.entity_key]));
+        const summary = { ...(current.summary ? JSON.parse(current.summary) : {}), observations: rows.length, ...counts };
+        await tx.query('UPDATE catalog_runs SET status = ?, finished_at = ?, summary = ? WHERE id = ?', ['succeeded', iso(), JSON.stringify(summary), runId]);
+        return summary;
+    }
+
+    /** Projects runId inside tx and measures it: projection counts plus exact serving row deltas. */
+    async function measuredProjection(tx, runId) {
+        const before = await servingCounts(tx);
+        const summary = await performProjection(tx, runId);
+        const after = await servingCounts(tx);
+        const rows = {};
+        for (const table of Object.keys(before)) if (after[table] !== before[table]) rows[table] = after[table] - before[table];
+        return { counts: { observations: summary.observations, projected: summary.projected, unchanged: summary.unchanged, baselines: summary.baselines, rows }, before, after };
+    }
+
     const confirmationFor = (runId, counts) => `ROLLBACK ${runId.slice(0, 8)} ${counts.entities}`;
+    const promotionConfirmationFor = (runId, counts) => `PROMOTE ${runId.slice(0, 8)} ${counts.observations}`;
 
     const jobRow = r => r && ({
         id: r.id, kind: r.kind, cursor: JSON.parse(r.cursor_json), state: r.state,
@@ -516,9 +698,10 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         return json;
     }
 
+    // running -> queued: an execution ended with work left (CAT-TASK-003 collector, the next run resumes).
     const JOB_TRANSITIONS = {
         queued: ['running', 'paused', 'cancelled'],
-        running: ['paused', 'completed', 'failed', 'cancelled'],
+        running: ['queued', 'paused', 'completed', 'failed', 'cancelled'],
         paused: ['queued', 'running', 'cancelled'],
     };
 
@@ -527,10 +710,18 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
          * Transaction 1 (AC-CAT-005, AC-CAT-006): validates everything first, so an invalid batch
          * writes nothing; then stores the run and its provenance with status 'running'.
          * @param {{ mode: string, source: string, observations: Array<{ kind: string, payload: object, observedAt?: string }> }} input
+         * @param {{ onRecorded?: (tx: object, runId: string) => Promise<void> }} [opts] - runs inside the
+         *   same transaction, so a caller can link the run to its own record atomically (a throw records nothing)
          */
-        async recordRun({ mode, source, observations }) {
+        async recordRun({ mode, source, observations, summary = null }, { onRecorded } = {}) {
             if (!RUN_MODES.includes(mode)) throw invalid('Unknown run mode.', 'mode');
             if (!SOURCES.includes(source)) throw invalid('Unknown source.', 'source');
+            let summaryJson = null;
+            if (summary !== null) {
+                if (typeof summary !== 'object' || Array.isArray(summary)) throw invalid('Run summary must be an object.', 'summary');
+                summaryJson = canonicalJson(summary);
+                if (Buffer.byteLength(summaryJson) > 2048) throw invalid('Run summary is too large.', 'summary');
+            }
             if (!Array.isArray(observations) || observations.length === 0) throw invalid('A run needs at least one observation.', 'observations');
             if (observations.length > MAX_OBSERVATIONS_PER_RUN) throw invalid(`A run holds at most ${MAX_OBSERVATIONS_PER_RUN} observations.`, 'observations');
             const at = iso();
@@ -548,12 +739,13 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             let created = 0;
             await db.transaction(async tx => {
                 await lockRevision(tx);   // ordered against discardProjections(): a run is recorded before or after a reload
-                await tx.query('INSERT INTO catalog_runs (id, mode, source, status, started_at) VALUES (?, ?, ?, ?, ?)', [runId, mode, source, 'running', at]);
+                await tx.query('INSERT INTO catalog_runs (id, mode, source, status, started_at, summary) VALUES (?, ?, ?, ?, ?, ?)', [runId, mode, source, 'running', at, summaryJson]);
                 for (const o of normalized) {
                     const obs = await upsertObservation(tx, source, o, o.observedAt);
                     if (obs.created) created++;
                     await linkObservation(tx, runId, obs.id, o.observedAt);
                 }
+                if (onRecorded) await onRecorded(tx, runId);
             });
             return { runId, observations: normalized.length, newObservations: created };
         },
@@ -569,53 +761,9 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             try {
                 const summary = await db.transaction(async tx => {
                     await lockRevision(tx);
-                    // Recheck under the lock: a reload may have discarded the run since the check above.
-                    const [current] = await tx.query('SELECT status FROM catalog_runs WHERE id = ? FOR UPDATE', [runId]);
-                    if (current.status !== 'running') throw new CatalogError('conflict', `A ${current.status} run cannot be projected.`);
-                    const rows = await tx.query(
-                        `SELECT o.id, o.entity_kind, o.entity_key, o.payload, ro.observed_at FROM catalog_run_observations ro
-                         JOIN catalog_observations o ON o.id = ro.observation_id WHERE ro.run_id = ? ORDER BY ro.seq`, [runId]);
-                    rows.sort((a, b) => PROJECTION_ORDER.indexOf(a.entity_kind) - PROJECTION_ORDER.indexOf(b.entity_kind));
-                    const counts = { projected: 0, unchanged: 0, baselines: 0 };
-                    let baselineRunId = null;
-                    const at = iso();
-                    for (const row of rows) {
-                        const kind = row.entity_kind;
-                        const payload = parse(row.payload);
-                        const [state] = await tx.query('SELECT observation_id, first_seen_at FROM catalog_entities WHERE entity_kind = ? AND entity_key = ? FOR UPDATE', [kind, row.entity_key]);
-                        let firstSeen = state?.first_seen_at ?? row.observed_at;
-                        if (!state) {
-                            const baseline = await snapshotServing(tx, kind, payload);
-                            if (baseline) {
-                                if (!baselineRunId) {
-                                    baselineRunId = uuid();
-                                    await tx.query('INSERT INTO catalog_runs (id, mode, source, status, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
-                                        [baselineRunId, BASELINE_MODE, 'guide_baseline', 'succeeded', at, at]);
-                                }
-                                const json = canonicalJson(baseline);
-                                const obs = await upsertObservation(tx, 'guide_baseline', { kind, key: row.entity_key, externalId: baseline.id != null ? String(baseline.id) : null, json, hash: sha256(json) }, at);
-                                await linkObservation(tx, baselineRunId, obs.id, at);
-                                counts.baselines++;
-                                firstSeen = at;
-                            }
-                        } else if (state.observation_id === row.id) {
-                            counts.unchanged++;
-                            await tx.query('UPDATE catalog_entities SET last_run_id = ?, last_seen_at = ? WHERE entity_kind = ? AND entity_key = ?', [runId, row.observed_at, kind, row.entity_key]);
-                            continue;
-                        }
-                        // Rebuild from all provenance (baseline, earlier runs, this run) under source
-                        // precedence, so a lower-ranked source never overwrites a higher-ranked field.
-                        const rebuilt = await resolveParents(tx, kind, replayRows(kind, await provenanceOf(tx, kind, row.entity_key, { includeRun: runId })));
-                        await applyEntity(tx, kind, rebuilt ?? payload, { merge: false }); // no state: let the foreign key reject it
-                        await tx.query('DELETE FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [kind, row.entity_key]);
-                        await tx.query('INSERT INTO catalog_entities (entity_kind, entity_key, observation_id, last_run_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
-                            [kind, row.entity_key, row.id, runId, firstSeen, row.observed_at]);
-                        counts.projected++;
-                    }
-                    const summary = { observations: rows.length, ...counts };
-                    await tx.query('UPDATE catalog_runs SET status = ?, finished_at = ?, summary = ? WHERE id = ?', ['succeeded', iso(), JSON.stringify(summary), runId]);
+                    const s = await performProjection(tx, runId);
                     await bumpRevision(tx);
-                    return summary;
+                    return s;
                 });
                 invalidateCaches();
                 return summary;
@@ -627,9 +775,24 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             }
         },
 
+        /**
+         * AC-CAT-003 error case: a run that read nothing usable. It has no observations and only a
+         * redacted reason code (a response class or schema reason, never text from the response).
+         */
+        async recordFailedRun({ mode, source, stage, reason }) {
+            if (!RUN_MODES.includes(mode)) throw invalid('Unknown run mode.', 'mode');
+            if (!SOURCES.includes(source)) throw invalid('Unknown source.', 'source');
+            const code = typeof reason === 'string' && /^[a-z][a-z0-9_ ]{0,39}$/.test(reason) ? reason : 'error';
+            const runId = uuid();
+            const at = iso();
+            await db.query('INSERT INTO catalog_runs (id, mode, source, status, started_at, finished_at, summary) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                [runId, mode, source, 'failed', at, at, JSON.stringify({ error: { stage: String(stage).slice(0, 32), code } })]);
+            return runId;
+        },
+
         /** recordRun then projectRun. */
-        async ingest(input) {
-            const recorded = await this.recordRun(input);
+        async ingest(input, opts) {
+            const recorded = await this.recordRun(input, opts);
             return { ...recorded, ...(await this.projectRun(recorded.runId)) };
         },
 
@@ -673,6 +836,54 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         },
 
         /**
+         * CAT-TASK-007 / AC-CAT-006, AC-CAT-009: a promotion preview for a staged seed run. The
+         * projection runs in a transaction that is rolled back; the plan records its exact counts.
+         * Parts of one seed batch are promoted in order, so relations never precede their parents.
+         */
+        async planPromotion(runId) {
+            const [run] = await db.query('SELECT id, mode, status, summary FROM catalog_runs WHERE id = ?', [runId]);
+            if (!run) throw new CatalogError('not_found', 'Unknown catalog run.');
+            if (run.mode !== 'seed' || run.status !== 'running') throw new CatalogError('conflict', 'Only a staged seed run can be promoted.');
+            const seed = run.summary ? JSON.parse(run.summary).seed : null;
+            if (seed?.batchId && seed.part > 1) {
+                const earlier = await db.query("SELECT summary, status FROM catalog_runs WHERE mode = 'seed' AND summary LIKE ? ESCAPE '!'", [`%${seed.batchId.replace(/[!%_]/g, m => `!${m}`)}%`]);
+                const pending = earlier.filter(r => { const s = JSON.parse(r.summary ?? 'null')?.seed; return s?.batchId === seed.batchId && s.part < seed.part && r.status !== 'succeeded'; });
+                if (pending.length) throw new CatalogError('conflict', 'Promote the earlier parts of this seed first.');
+            }
+            const preview = new Error('preview');
+            let simulated;
+            try {
+                await db.transaction(async tx => {
+                    simulated = { revision: await lockRevision(tx), ...(await measuredProjection(tx, runId)) };
+                    throw preview;
+                });
+            } catch (e) {
+                if (e !== preview) throw e instanceof CatalogError ? e : new CatalogError('projection_failed', 'The staged run cannot be projected.', { cause: e });
+            }
+            return db.transaction(async tx => {
+                const revision = await lockRevision(tx);
+                if (revision !== simulated.revision) throw new CatalogError('conflict', 'The catalog changed while the preview was built; try again.');
+                const { counts } = simulated;
+                const id = uuid();
+                const expiresAt = new Date(now() + PLAN_TTL_MS).toISOString();
+                const confirmation = promotionConfirmationFor(runId, counts);
+                await tx.query('INSERT INTO catalog_deletion_plans (id, action, target_run_id, revision, expected_counts, confirmation, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    [id, 'promote', runId, revision, JSON.stringify(counts), confirmation, iso(), expiresAt]);
+                return { id, action: 'promote', targetRunId: runId, expectedCounts: counts, confirmation, expiresAt };
+            });
+        },
+
+        /** Retires a staged seed run that was never promoted; its observations stay as provenance. */
+        async discardStagedRun(runId) {
+            const { affectedRows } = await db.query("UPDATE catalog_runs SET status = 'cancelled', finished_at = ? WHERE id = ? AND mode = 'seed' AND status = 'running'", [iso(), runId]);
+            if (!affectedRows) {
+                const [run] = await db.query('SELECT status FROM catalog_runs WHERE id = ?', [runId]);
+                if (!run) throw new CatalogError('not_found', 'Unknown catalog run.');
+                throw new CatalogError('conflict', 'Only a staged seed run can be discarded.');
+            }
+        },
+
+        /**
          * AC-CAT-009, AC-CAT-010: executes an unexpired, unused plan whose revision is current and whose
          * confirmation matches exactly. Denials throw CatalogError (plan_*) and change nothing.
          */
@@ -687,19 +898,41 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
                 if (typeof confirmation !== 'string' || confirmation !== plan.confirmation) throw new CatalogError('plan_confirmation', 'The confirmation does not match the preview.');
 
                 const runId = plan.target_run_id;
+                if (plan.action === 'promote') {
+                    let measured;
+                    try {
+                        measured = await measuredProjection(tx, runId);
+                    } catch (e) {
+                        throw e instanceof CatalogError ? e : new CatalogError('projection_failed', 'Catalog projection failed; nothing was applied.', { cause: e });
+                    }
+                    if (canonicalJson(measured.counts) !== canonicalJson(JSON.parse(plan.expected_counts))) {
+                        throw new CatalogError('plan_stale', 'The affected counts changed since this preview; build a new one.');
+                    }
+                    await tx.query('UPDATE catalog_deletion_plans SET used_at = ? WHERE id = ?', [iso(), planId]);
+                    await bumpRevision(tx);
+                    return { runId, action: 'promote', status: 'succeeded', counts: measured.counts, before: measured.before, after: measured.after };
+                }
                 const { counts, before, after } = await performRollback(tx, runId, planId);
                 if (canonicalJson(counts) !== canonicalJson(JSON.parse(plan.expected_counts))) {
                     throw new CatalogError('plan_stale', 'The affected counts changed since this preview; build a new one.');
                 }
                 await tx.query('UPDATE catalog_deletion_plans SET used_at = ? WHERE id = ?', [iso(), planId]);
                 await bumpRevision(tx);
-                return { runId, status: 'reverted', counts, before, after };
+                return { runId, action: 'rollback', status: 'reverted', counts, before, after };
             });
             invalidateCaches();
             return result;
         },
 
-        /** True once any serving row is under catalog provenance (scripts/populate_db.mjs guard). */
+        /**
+         * AC-CAT-013: recomputes completeness of [kind, key] item/creature entities (and entities
+         * waiting on an unresolved drop), inside the caller's transaction when q is given.
+         */
+        async refreshCompleteness(entities, q) {
+            if (q) return refreshCompleteness(q, entities);
+            return db.transaction(tx => refreshCompleteness(tx, entities));
+        },
+
         /**
          * True when a legacy reload would discard catalog work: projected serving rows, or a recorded
          * run that has not projected yet. scripts/populate_db.mjs then requires the discard flag.

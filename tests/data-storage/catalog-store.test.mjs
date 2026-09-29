@@ -333,7 +333,10 @@ test('AC-CAT-008: one active job per kind; transitions and checkpoints are valid
     assert.equal((await store.transitionJob(id, 'running')).state, 'running');
     await store.checkpointJob(id, { nextItemId: 17050, highestConfirmedItemId: 17048 });
     assert.deepEqual((await store.getJob(id)).cursor, { highestConfirmedItemId: 17048, nextItemId: 17050 });
-    await rejectsWith(store.transitionJob(id, 'queued'), 'conflict');
+    await rejectsWith(store.transitionJob(id, 'running'), 'conflict');   // not a transition
+    // running -> queued is the collector's hand-back after an execution (CAT-TASK-003).
+    assert.equal((await store.transitionJob(id, 'queued')).state, 'queued');
+    await store.transitionJob(id, 'running');
     await store.transitionJob(id, 'completed');
     await rejectsWith(store.transitionJob(id, 'running'), 'conflict');
     await store.createJob({ kind: 'item_frontier', cursor: { nextItemId: 17050 }, requestBudget: 10 }); // the kind is free again
@@ -522,7 +525,7 @@ test('CAT-TASK-002: a database that applied the narrow 003 gets 255-character en
     const db = await quietly(() => freshClient({ migrate: false }));
     await quietly(() => runMigrations(db, dir));
     const applied = await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations')));
-    assert.deepEqual(applied, ['004_serving_relations.mjs', '005_catalog_key_width.sql'], '003 is skipped by name; 005 widens it');
+    assert.deepEqual(applied, ['004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql'], '003 is skipped by name; 005 widens it');
     if (REAL_MYSQL) {
         const widths = await db.query("SELECT TABLE_NAME AS t, CHARACTER_MAXIMUM_LENGTH AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'entity_key' ORDER BY TABLE_NAME");
         assert.deepEqual(widths.map(w => [w.t, Number(w.n)]), [['catalog_entities', 255], ['catalog_observations', 255]]);

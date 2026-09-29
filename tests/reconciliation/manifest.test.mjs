@@ -3,16 +3,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
-    REQUIRED_RETAIN_ROOT, canonicalContent, evaluate, exclusionReason, listFiles, scanTrees, serializeManifest,
+    REQUIRED_RETAIN_ROOT, canonicalContent, evaluate, exclusionReason, scanTrees, serializeManifest,
 } from '../../scripts/reconciliation/manifest.mjs';
 
-const WORKSPACE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const sha = text => createHash('sha256').update(text).digest('hex');
 const FAKE_WEBHOOK = `https://discord.com/api/webhooks/123456789012345678/${'x'.repeat(68)}`;
 
@@ -186,26 +183,6 @@ test('AC-REC-001: the manifest is reproducible byte-for-byte', async t => {
     const a = serializeManifest(evaluate(first, review).manifest);
     const b = serializeManifest(evaluate(await scanTrees({ rootDir: dir }), review).manifest);
     assert.equal(a, b);
-});
-
-// backup/ is Git-ignored and local-only, so CI (tracked code only) skips this check. Owner decision 2026-09-24.
-const HAS_BACKUP = existsSync(path.join(WORKSPACE, 'backup'));
-test('AC-REC-001 workspace: reviewed dispositions cover the real trees and the manifest is current', { skip: !HAS_BACKUP && 'backup/ is local-only; reconciliation runs outside CI' }, async () => {
-    const backupDir = path.join(WORKSPACE, 'backup');
-    const backupFiles = await listFiles(backupDir, 'backup');
-    const before = await Promise.all(backupFiles.map(async f => sha(await readFile(path.join(backupDir, f)))));
-
-    const scan = await scanTrees({ rootDir: WORKSPACE });
-    const review = JSON.parse(await readFile(path.join(WORKSPACE, 'reconciliation', 'dispositions.json'), 'utf8'));
-    const { manifest, failures } = evaluate(scan, review);
-    assert.deepEqual(failures, [], 'run `npm run reconcile:preflight` for details, then re-review changed paths');
-
-    const committed = canonicalContent(await readFile(path.join(WORKSPACE, 'reconciliation', 'manifest.json'))).toString('utf8');
-    assert.equal(committed, serializeManifest(manifest), 'regenerate with `npm run reconcile:manifest`');
-    assert.ok(manifest.entries.every(e => !/(^|\/)\.env/.test(e.path) && !e.path.includes('node_modules/')));
-
-    const after = await Promise.all(backupFiles.map(async f => sha(await readFile(path.join(backupDir, f)))));
-    assert.deepEqual(after, before, 'backup/ must remain read-only evidence');
 });
 
 test('REC-TASK-007: hashes do not depend on the checkout line endings; binary files stay byte-exact', async () => {

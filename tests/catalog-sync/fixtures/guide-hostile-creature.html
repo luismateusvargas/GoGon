@@ -1,0 +1,10 @@
+<!-- synthetic fixture (CAT-TASK-001): hostile markup in scraped text must come out as inert text -->
+<html><body>
+<div id="menu"><a href="index.php?cmd=creatures">Creatures</a></div>
+<table>
+<tr><td class="creatureImg"><img src="javascript:alert(1)"></td></tr>
+<tr><td class="tHeader" colspan="10"><b>&lt;img src=x onerror=alert(1)&gt;Evil</b></td></tr>
+<tr><td colspan="10">&lt;script&gt;steal()&lt;/script&gt; description</td></tr>
+<tr><td><a href="index.php?cmd=items&subcmd=view&item_id=abc">bad id</a></td></tr>
+</table>
+</body></html>

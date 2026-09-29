@@ -25,6 +25,7 @@
     <button type="button" data-tab="notifications">Notifications</button>
     <button type="button" data-tab="settings">Settings</button>
     <button type="button" data-tab="accounts">Accounts</button>
+    <button type="button" data-tab="catalog">Catalog</button>
     <button type="button" data-tab="activity">Activity</button>
   </nav>
 
@@ -73,6 +74,95 @@
         <button type="submit">Add profile</button>
         <p class="error field-error" data-for="profile-form" hidden></p>
       </form>
+    </section>
+
+    <section id="tab-catalog" class="tab" hidden>
+      <h2>Catalog</h2>
+      <p class="muted">Items, creatures, realms, and master realms with their source, freshness, and completeness.
+        "Complete" means the guide detail and every currently known drop were checked; it never means no other drop exists.</p>
+      <nav class="subtabs" aria-label="Catalog views">
+        <button type="button" data-subtab="browse" class="active">Browse</button>
+        <button type="button" data-subtab="sync">Sync</button>
+        <button type="button" data-subtab="seed">Seed</button>
+        <button type="button" data-subtab="history">History &amp; delete</button>
+      </nav>
+
+      <div id="catalog-browse" class="subtab">
+        <form id="catalog-filter" class="toolbar" autocomplete="off">
+          <label for="cf-kind">Kind</label>
+          <select id="cf-kind" name="kind">
+            <option value="item">Items</option><option value="creature">Creatures</option><option value="realm">Realms</option>
+            <option value="master_realm">Master realms</option><option value="relic">Relics</option><option value="quest">Quests</option>
+          </select>
+          <label for="cf-q">Name</label><input id="cf-q" name="q" maxlength="64" placeholder="search">
+          <label for="cf-completeness">Coverage</label>
+          <select id="cf-completeness" name="completeness">
+            <option value="">any</option><option value="complete">complete</option><option value="incomplete">incomplete</option>
+          </select>
+          <button type="submit">Search</button>
+        </form>
+        <div id="catalog-kinds" class="stat-row"></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Coverage</th><th>Last seen</th></tr></thead>
+            <tbody id="catalog-entities"></tbody>
+          </table>
+        </div>
+        <div class="pager"><button type="button" class="ghost" id="cf-prev">Previous</button><span id="cf-page" class="muted"></span><button type="button" class="ghost" id="cf-next">Next</button></div>
+        <div id="catalog-detail" class="card" hidden></div>
+      </div>
+
+      <div id="catalog-sync" class="subtab" hidden>
+        <h3>Guide discovery</h3>
+        <p class="muted" id="guide-policy"></p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Kind</th><th>Status</th><th>Last complete check</th><th>Last seen ID</th><th>Sweep</th><th>Order</th><th>Details</th></tr></thead>
+            <tbody id="guide-status"></tbody>
+          </table>
+        </div>
+        <div id="relay-tokens"></div>
+        <h3>Jobs</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Kind</th><th>State</th><th>Budget</th><th>Cursor</th><th>Last result</th><th></th></tr></thead>
+            <tbody id="catalog-jobs"></tbody>
+          </table>
+        </div>
+        <form id="job-form" class="card toolbar" autocomplete="off">
+          <label for="jf-kind">New job</label>
+          <select id="jf-kind" name="kind"></select>
+          <label for="jf-budget">Requests per run</label><input id="jf-budget" name="requestBudget" type="number" min="1" max="50" value="50" class="interval">
+          <button type="submit">Create</button>
+          <button type="button" class="ghost" id="sync-now">Run game jobs now</button>
+          <p class="error field-error" hidden></p>
+        </form>
+      </div>
+
+      <div id="catalog-seed" class="subtab" hidden>
+        <p class="muted">Staging downloads an approved source and records it without touching the serving tables. Each part is then promoted
+          through a preview and an exact confirmation, in order.</p>
+        <div id="seed-sources"></div>
+        <h3>Staged parts</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Part</th><th>Kinds</th><th>Staged</th><th></th></tr></thead>
+            <tbody id="seed-runs"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="catalog-history" class="subtab" hidden>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Started</th><th>Mode</th><th>Source</th><th>Status</th><th>Summary</th><th></th></tr></thead>
+            <tbody id="catalog-runs"></tbody>
+          </table>
+        </div>
+        <div class="pager"><button type="button" class="ghost" id="runs-prev">Previous</button><span id="runs-page" class="muted"></span><button type="button" class="ghost" id="runs-next">Next</button></div>
+      </div>
+
+      <div id="plan-panel" class="card plan" hidden></div>
     </section>
 
     <section id="tab-activity" class="tab" hidden>

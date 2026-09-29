@@ -12,6 +12,8 @@ import { fileURLToPath } from 'node:url';
 import { hmac, randomToken, safeEqual, verifyPassword } from './crypto.mjs';
 import { VALIDATORS, CONFIG_BY_KEY, SECTIONS, MODULE_INTERVAL_BOUNDS, validateSetting } from '../config/registry.mjs';
 import { describeSettings, applyOverride, getSetting } from '../config/runtime.mjs';
+import { CatalogError } from '../_gg_data/handler/catalogStore.js';
+import { MAX_RELAY_BODY } from '../catalog/guideRelay.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const STATIC_FILES = {
@@ -104,8 +106,9 @@ class HttpError extends Error {
  * @param {() => object|Promise<object>} [opts.healthReport] - { status, ... } for /api/health
  * @param {() => object} [opts.metrics] - telemetry for /api/metrics
  * @param {() => object} [opts.validation] - configValidator summary
+ * @param {object} [opts.catalog] - CAT-TASK-005: { service (catalog/catalogService.js), runNow(), relay (catalog/guideRelay.js) }
  */
-export function createControlPlane({ config, store, engine, switcher, rebind = async () => {}, healthReport = () => ({ status: 'ok' }), metrics = () => ({}), validation = () => null, now = Date.now, sessionIdleMs = 30 * 60_000, sessionMaxMs = 8 * 3600_000 }) {
+export function createControlPlane({ config, store, engine, switcher, rebind = async () => {}, healthReport = () => ({ status: 'ok' }), metrics = () => ({}), validation = () => null, catalog = null, now = Date.now, sessionIdleMs = 30 * 60_000, sessionMaxMs = 8 * 3600_000 }) {
     const sessions = new Map();     // id -> { csrf, createdAt, lastSeen }
     const loginFailures = createLimiter({ max: 5, windowMs: 15 * 60_000, now });
     const globalLoginFailures = createLimiter({ max: 30, windowMs: 15 * 60_000, now });
@@ -199,6 +202,248 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
         return { email, password: text(body, 'password', { max: 256 }) };
     }
 
+    // --- catalog (CAT-TASK-005 / AC-CAT-007..AC-CAT-010) -----------------------------------------
+    const CATALOG_PLAN_DENIALS = new Set(['plan_used', 'plan_expired', 'plan_stale', 'plan_confirmation']);
+
+    /** Maps a catalog error to an HTTP error; anything else is a 500 with no detail. */
+    function catalogHttp(e) {
+        if (!(e instanceof CatalogError)) throw e;
+        if (e.code === 'invalid') return new HttpError(400, 'Invalid input.', { fields: { [String(e.field ?? 'input').slice(0, 40)]: e.message } });
+        if (e.code === 'not_found') return new HttpError(404, e.message);
+        if (e.code === 'conflict' || CATALOG_PLAN_DENIALS.has(e.code)) return new HttpError(409, e.message, { code: e.code });
+        return new HttpError(500, 'Catalog operation failed.');
+    }
+
+    function queryOnly(url, allowed) {
+        const extra = [...url.searchParams.keys()].filter(k => !allowed.includes(k));
+        if (extra.length) throw new HttpError(400, 'Unexpected query parameters.', { fields: Object.fromEntries(extra.slice(0, 5).map(k => [k.slice(0, 40), 'Not allowed.'])) });
+        for (const k of allowed) if (url.searchParams.getAll(k).length > 1) throw new HttpError(400, 'Invalid input.', { fields: { [k]: 'Give it once.' } });
+    }
+
+    function intParam(url, name, fallback) {
+        const v = url.searchParams.get(name);
+        if (v === null) return fallback;
+        if (!/^\d{1,6}$/.test(v)) throw new HttpError(400, 'Invalid input.', { fields: { [name]: 'Must be a whole number.' } });
+        return Number(v);
+    }
+
+    function textParam(url, name) {
+        const v = url.searchParams.get(name);
+        if (v === null) return null;
+        if (!v.length || v.length > 64 || !PRINTABLE.test(v)) throw new HttpError(400, 'Invalid input.', { fields: { [name]: 'Must be 1-64 printable characters.' } });
+        return v;
+    }
+
+    async function catalogGet(res, url, p) {
+        const svc = catalog.service;
+        let match;
+        try {
+            if (p === '/api/catalog/summary') { queryOnly(url, []); return send(res, 200, await svc.summary()); }
+            if (p === '/api/catalog/entities') {
+                queryOnly(url, ['kind', 'q', 'completeness', 'page', 'pageSize']);
+                return send(res, 200, await svc.listEntities({
+                    kind: url.searchParams.get('kind'), q: textParam(url, 'q'), completeness: textParam(url, 'completeness'),
+                    page: intParam(url, 'page', 1), pageSize: intParam(url, 'pageSize', 25),
+                }));
+            }
+            if ((match = p.match(/^\/api\/catalog\/entities\/([a-z_]{1,16})\/([^/]{1,600})$/))) {
+                queryOnly(url, []);
+                let key;
+                try { key = decodeURIComponent(match[2]); } catch { throw new HttpError(400, 'Invalid input.', { fields: { key: 'Malformed key.' } }); }
+                return send(res, 200, await svc.getEntity(match[1], key));
+            }
+            if (p === '/api/catalog/seed-sources') { queryOnly(url, []); return send(res, 200, { sources: svc.seedSources() }); }
+            if (p === '/api/catalog/runs') { queryOnly(url, ['page', 'pageSize']); return send(res, 200, await svc.listRuns({ page: intParam(url, 'page', 1), pageSize: intParam(url, 'pageSize', 25) })); }
+            if ((match = p.match(/^\/api\/catalog\/runs\/([0-9a-f-]{36})$/)) && UUID.test(match[1])) { queryOnly(url, []); return send(res, 200, await svc.getRun(match[1])); }
+        } catch (e) {
+            throw e instanceof HttpError ? e : catalogHttp(e);
+        }
+        throw new HttpError(404, 'Not found.');
+    }
+
+    async function catalogPost(req, res, p, actor) {
+        const svc = catalog.service;
+        let match;
+        const audit = (action, subject, outcome = 'success', detail = null) => store.audit({ actor, action, subject: String(subject).slice(0, 100), outcome, detail });
+        try {
+            if (p === '/api/catalog/jobs') {
+                const body = await readJson(req);
+                allowOnly(body, ['kind', 'requestBudget', 'nextItemId']);
+                if (typeof body.kind !== 'string' || !['observe_realm', 'item_frontier', 'guide_discovery'].includes(body.kind)) {
+                    await audit('catalog.job.create', typeof body.kind === 'string' ? body.kind.slice(0, 32) : 'invalid', 'denied', { reason: 'operation not allowed' });
+                    throw new HttpError(400, 'Invalid input.', { fields: { kind: 'Not an allowed catalog operation.' } });
+                }
+                try {
+                    const job = await svc.createJob({ kind: body.kind, requestBudget: body.requestBudget, nextItemId: body.nextItemId });
+                    await audit('catalog.job.create', body.kind, 'success', { jobId: job.id, requestBudget: job.requestBudget });
+                    broadcastSoon();
+                    return send(res, 201, { ok: true, job });
+                } catch (e) {
+                    if (e instanceof CatalogError) await audit('catalog.job.create', body.kind, 'denied', { reason: e.code });
+                    throw e;
+                }
+            }
+            if ((match = p.match(/^\/api\/catalog\/jobs\/([0-9a-f-]{36})\/(pause|resume|cancel)$/)) && UUID.test(match[1])) {
+                try {
+                    const job = await svc.jobAction(match[1], match[2]);
+                    await audit(`catalog.job.${match[2]}`, match[1]);
+                    broadcastSoon();
+                    return send(res, 200, { ok: true, job });
+                } catch (e) {
+                    if (e instanceof CatalogError) await audit(`catalog.job.${match[2]}`, match[1], 'denied', { reason: e.code });
+                    throw e;
+                }
+            }
+            if (p === '/api/catalog/sync-now') {
+                if (engine.isPaused()) throw new HttpError(409, 'The engine is paused (account switch); try again when it resumes.');
+                const result = await catalog.runNow();
+                if (result?.skipped === 'busy') {
+                    await audit('catalog.sync-now', 'catalog', 'denied', { reason: 'busy' });
+                    throw new HttpError(409, 'A catalog run is already in progress.');
+                }
+                await audit('catalog.sync-now', 'catalog', 'success', { jobs: result?.ran?.length ?? 0 });
+                broadcastSoon();
+                return send(res, 200, { ok: true, ran: result?.ran ?? [] });
+            }
+            if ((match = p.match(/^\/api\/catalog\/runs\/([0-9a-f-]{36})\/rollback-plan$/)) && UUID.test(match[1])) {
+                try {
+                    const plan = await svc.planRollback(match[1]);
+                    await audit('catalog.plan.create', match[1], 'success', { planId: plan.id, entities: plan.expectedCounts.entities });
+                    return send(res, 201, { ok: true, plan });
+                } catch (e) {
+                    if (e instanceof CatalogError) await audit('catalog.plan.create', match[1], 'denied', { reason: e.code });
+                    throw e;
+                }
+            }
+            if (p === '/api/catalog/relay-tokens') {
+                const body = await readJson(req);
+                allowOnly(body, ['label', 'ttlDays']);
+                try {
+                    const issued = await svc.issueRelayToken({ label: body.label, ttlDays: body.ttlDays });
+                    await audit('catalog.relay-token.issue', issued.id, 'success', { label: issued.label, days: body.ttlDays });
+                    broadcastSoon();
+                    // The token is returned this once and never again; only its hash is stored.
+                    return send(res, 201, { ok: true, ...issued });
+                } catch (e) {
+                    if (e instanceof CatalogError) await audit('catalog.relay-token.issue', 'relay', 'denied', { reason: e.code });
+                    throw e;
+                }
+            }
+            if ((match = p.match(/^\/api\/catalog\/relay-tokens\/([0-9a-f-]{36})\/revoke$/)) && UUID.test(match[1])) {
+                await svc.revokeRelayToken(match[1]);
+                await audit('catalog.relay-token.revoke', match[1]);
+                broadcastSoon();
+                return send(res, 200, { ok: true });
+            }
+            if (p === '/api/catalog/seeds') {
+                const body = await readJson(req);
+                allowOnly(body, ['sourceKey']);
+                const sourceKey = text(body, 'sourceKey', { max: 64 });
+                try {
+                    const staged = await svc.stageSeed(sourceKey);
+                    await audit('catalog.seed.stage', sourceKey, 'success', { batchId: staged.batchId, parts: staged.parts, observations: staged.observations });
+                    broadcastSoon();
+                    return send(res, 201, { ok: true, staged });
+                } catch (e) {
+                    if (e instanceof CatalogError) await audit('catalog.seed.stage', sourceKey, 'denied', { reason: e.code });
+                    throw e;
+                }
+            }
+            if ((match = p.match(/^\/api\/catalog\/runs\/([0-9a-f-]{36})\/(promote-plan|discard)$/)) && UUID.test(match[1])) {
+                const action = match[2] === 'discard' ? 'catalog.seed.discard' : 'catalog.plan.create';
+                try {
+                    if (match[2] === 'discard') {
+                        await svc.discardStagedRun(match[1]);
+                        await audit(action, match[1]);
+                        broadcastSoon();
+                        return send(res, 200, { ok: true });
+                    }
+                    const plan = await svc.planPromotion(match[1]);
+                    await audit(action, match[1], 'success', { planId: plan.id, action: 'promote', observations: plan.expectedCounts.observations });
+                    return send(res, 201, { ok: true, plan });
+                } catch (e) {
+                    if (e instanceof CatalogError) await audit(action, match[1], 'denied', { reason: e.code });
+                    throw e;
+                }
+            }
+            if ((match = p.match(/^\/api\/catalog\/plans\/([0-9a-f-]{36})\/execute$/)) && UUID.test(match[1])) {
+                const body = await readJson(req);
+                allowOnly(body, ['confirmation']);
+                const confirmation = text(body, 'confirmation', { max: 128 });
+                try {
+                    const result = await svc.executePlan(match[1], confirmation);
+                    await audit('catalog.plan.execute', match[1], 'success', { runId: result.runId, action: result.action });
+                    broadcastSoon();
+                    return send(res, 200, { ok: true, result });
+                } catch (e) {
+                    if (e instanceof CatalogError) await audit('catalog.plan.execute', match[1], 'denied', { reason: e.code });
+                    throw e;
+                }
+            }
+        } catch (e) {
+            throw e instanceof HttpError ? e : catalogHttp(e);
+        }
+        throw new HttpError(404, 'Not found.');
+    }
+
+    // --- guide relay (CAT-TASK-010 / AC-CAT-014) -----------------------------------------------
+    // The only routes that accept a bearer token instead of the dashboard session. A token is
+    // stage-only: it can ask for a lease and return that lease's results, nothing else. No cookie,
+    // CSRF value, URL, or HTML is ever read from these requests.
+    const relayLimiter = createLimiter({ max: 120, windowMs: 60_000, now });
+
+    async function readRelayJson(req) {
+        const type = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+        if (type !== 'application/json') throw new HttpError(415, 'Content-Type must be application/json.');
+        if (Number(req.headers['content-length'] || 0) > MAX_RELAY_BODY) throw new HttpError(413, 'Request body too large.');
+        let size = 0;
+        const chunks = [];
+        for await (const chunk of req) {
+            size += chunk.length;
+            if (size > MAX_RELAY_BODY) throw new HttpError(413, 'Request body too large.');
+            chunks.push(chunk);
+        }
+        try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null'); } catch { throw new HttpError(400, 'Malformed JSON.'); }
+    }
+
+    async function handleRelay(req, res, url) {
+        const relay = catalog?.relay;
+        if (!relay) throw new HttpError(404, 'Not found.');
+        const auth = String(req.headers.authorization || '');
+        const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+        const holder = await relay.authenticate(token);
+        if (!holder) {
+            deny(req, 'catalog.relay', token ? 'invalid, expired, or revoked token' : 'missing token');
+            throw new HttpError(401, 'Relay token required.');
+        }
+        const rate = relayLimiter.hit(holder.id);
+        if (rate.limited) throw new HttpError(429, 'Too many relay requests.', { retryAfterS: rate.retryAfterS });
+        const actor = `relay:${holder.id.slice(0, 8)}`;
+        let match;
+        try {
+            if (req.method === 'GET' && url.pathname === '/relay/guide/lease') {
+                queryOnly(url, []);
+                return send(res, 200, await relay.nextLease(holder.id));
+            }
+            if (req.method === 'POST' && (match = url.pathname.match(/^\/relay\/guide\/leases\/([0-9a-f-]{36})$/)) && UUID.test(match[1])) {
+                const body = await readRelayJson(req);
+                try {
+                    const summary = await relay.submit(holder.id, match[1], body);
+                    await store.audit({ actor, action: 'catalog.relay.submit', subject: match[1], detail: { requests: summary.requests, observations: summary.observations, pages: summary.pages, details: summary.details, sweepComplete: summary.sweepComplete } });
+                    broadcastSoon();
+                    return send(res, 200, { ok: true, ...summary });
+                } catch (e) {
+                    if (e instanceof CatalogError) await store.audit({ actor, action: 'catalog.relay.submit', subject: match[1], outcome: 'denied', detail: { reason: e.code } });
+                    throw e;
+                }
+            }
+        } catch (e) {
+            throw e instanceof HttpError ? e : catalogHttp(e);
+        }
+        deny(req, 'catalog.relay', 'route not allowed for a relay token');
+        throw new HttpError(404, 'Not found.');
+    }
+
     // --- state ---------------------------------------------------------------------------------
     async function buildState() {
         const account = switcher.status();
@@ -218,6 +463,7 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
             validation: validation(),
             health: await healthReport(),
             audit: await store.listAudit(25),
+            ...(catalog ? { catalog: await catalog.service.stateSummary().catch(() => null) } : {}),
         };
     }
 
@@ -288,6 +534,7 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
         if (m === 'GET' && p === '/api/metrics') {
             try { return send(res, 200, metrics()); } catch { return send(res, 500, { status: 'error', message: 'Metrics unavailable.' }); }
         }
+        if (m === 'GET' && catalog && p.startsWith('/api/catalog/')) return catalogGet(res, url, p);
         if (m === 'GET' && p === '/api/events') {
             const initial = JSON.stringify(await buildState());
             res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', Connection: 'keep-alive' });
@@ -306,6 +553,8 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
             deny(req, 'request.csrf', 'missing or invalid CSRF token');
             throw new HttpError(403, 'Missing or invalid CSRF token.');
         }
+
+        if (m === 'POST' && catalog && p.startsWith('/api/catalog/')) return catalogPost(req, res, p, actor);
 
         if (m === 'POST' && p === '/api/logout') {
             sessions.delete(session.id);
@@ -422,6 +671,8 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
                 if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed.');
                 return await handleLogin(req, res);
             }
+            // CAT-TASK-010: the guide relay's token-authenticated routes. Never a session route.
+            if (url.pathname.startsWith('/relay/')) return await handleRelay(req, res, url);
             const session = readSession(req);
             const asset = STATIC_FILES[url.pathname];
             if (asset && req.method === 'GET') {
