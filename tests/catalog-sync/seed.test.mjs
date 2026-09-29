@@ -14,7 +14,10 @@ after(() => closeClients());
 const FILES = SEED_SOURCES.fsdatabase.files;
 function sourceData() {
     return {
-        master_realm: [{ id: 5, name: 'Elya Desert' }],
+        master_realm: [{ id: 5, name: 'Elya Desert', connectedRealms: [
+            { realmId: 18, realmName: 'Elya Plains North', minLevel: 4 },
+            { realmId: 20, realmName: 'Otha Caves (Level 1)', minLevel: 10 },
+        ] }],
         realm: [
             { id: 1200, name: 'Mountain Path', min_level: 1, master_realm_id: 5, creatures: [7001, 7002], relics: ['Stone of Echoes'], quests: [{ name: "The Golem's Heart" }], connections: [{ to: 1201 }] },
             { realm_id: '1201', realm_name: 'Summit', level: '40', master_realm_id: 999 },
@@ -89,6 +92,11 @@ test('AC-CAT-006: a seed is staged as ordered runs with no serving write; unrepr
     }
     for (const t of ['master_realms', 'realms', 'creatures', 'items', 'relics', 'quests', 'realm_creatures', 'creature_drops']) assert.equal(await count(db, t), 0, t);
     const mapped = mapSeed(sourceData());
+    const masterRealm = mapped.observations.find(o => o.kind === 'master_realm').payload;
+    assert.deepEqual(masterRealm.connected_realms, [
+        { realmId: 18, realmName: 'Elya Plains North', minLevel: 4 },
+        { realmId: 20, realmName: 'Otha Caves (Level 1)', minLevel: 10 },
+    ]);
     const wisp = mapped.observations.find(o => o.kind === 'creature' && o.payload.id === 7002).payload;
     assert.equal(wisp.name, '<b>Wisp</b>', 'kept as text; the UI renders it with textContent');
     assert.equal(wisp.description.length, 8192);
@@ -110,6 +118,10 @@ test('AC-CAT-009: parts are promoted in order through previewed, confirmed plans
     assert.deepEqual([done.action, done.status], ['promote', 'succeeded']);
     await rejects(store.executePlan(plan.id, { confirmation: plan.confirmation }), 'plan_used');
     for (const r of staged.runs.slice(1)) await promote(store, r.runId);
+    assert.deepEqual(JSON.parse((await db.query('SELECT connected_realms FROM master_realms WHERE id = 5'))[0].connected_realms), [
+        { realmId: 18, realmName: 'Elya Plains North', minLevel: 4 },
+        { realmId: 20, realmName: 'Otha Caves (Level 1)', minLevel: 10 },
+    ]);
     assert.equal(await count(db, 'realms'), 2);
     assert.equal((await db.query('SELECT master_realm_id FROM realms WHERE id = 1201'))[0].master_realm_id, null, 'an unknown master realm becomes NULL');
     assert.deepEqual((await db.query('SELECT name FROM relics')).map(r => r.name), ['Stone of Echoes']);

@@ -10,6 +10,7 @@ import { freshClient, closeClients } from '../helpers/db-client.mjs';
 import { createCatalogStore, CatalogError } from '../../_gg_data/handler/catalogStore.js';
 import { createGuideDiscoveryStore } from '../../_gg_data/handler/guideDiscoveryStore.js';
 import { createGuideRelay, hashToken, TOKEN_PREFIX, MAX_RELAY_BODY, SERVER_WORKER_ID } from '../../catalog/guideRelay.js';
+import { createCatalogService } from '../../catalog/catalogService.js';
 import { runLease, relayCycle } from '../../catalog/relayClient.js';
 import { GUIDE_POLICY } from '../../catalog/contracts/policy.js';
 import { buildRelayUserscript, OUTPUT } from '../../scripts/catalog/build-relay-userscript.mjs';
@@ -172,6 +173,9 @@ test('AC-CAT-011 / AC-CAT-013: the first daily check sweeps every index, stages 
     assert.equal(await count(db, 'realm_creatures'), 2, 'both creatures link realm 1200');
     assert.equal(await count(db, 'creature_drops'), 2);
     assert.deepEqual((await db.query('SELECT name FROM relics')).map(r => r.name), ['Stone of Echoes']);
+    const masterRealm = await createCatalogService({ db, store, guideStore }).getEntity('master_realm', '5');
+    assert.deepEqual(masterRealm.fields.connected_realms, [{ realmId: 1200, realmName: 'Mountain Path', minLevel: 1 }]);
+    assert.deepEqual(masterRealm.relations.connectedRealms, [{ id: 1200, name: 'Mountain Path', minLevel: 1 }]);
     assert.equal(await guideStore.usage(), site.requests.length, 'every guide request is counted');
     assert.ok(site.requests.every(u => u.startsWith('https://guide.fallensword.com/index.php?cmd=')), 'only code-owned guide URLs');
     assert.equal((await db.query("SELECT DISTINCT mode FROM catalog_runs WHERE mode <> 'baseline_snapshot'")).map(r => r.mode).join(), 'guide_discovery');

@@ -64,9 +64,21 @@ test('CAT-TASK-013: migration 010 restarts an old incremental cursor without los
 
     const checkpoint = await guide.getState('realm');
     assert.deepEqual([checkpoint.sweepMode, checkpoint.nextPage, checkpoint.lastSuccessfulCheckAt,
-        checkpoint.lastPageSeen, checkpoint.orderState], [null, 0, null, null, 'attested']);
+        checkpoint.lastPageSeen, checkpoint.orderState], [null, 0, '2026-09-28T12:00:00.000Z', 288, 'attested']);
+    assert.equal(checkpoint.lastFullSweepAt, '2026-09-28T12:00:00.000Z');
     assert.equal(checkpoint.lastSeenId, 1200);
     assert.ok(await guide.getIdState('realm', 1200));
+});
+
+test('migration 011 queues old master-realm details for the new connection projection', async () => {
+    const { db, guide } = await setup();
+    await guide.registerIds('master_realm', [5]);
+    await db.query("UPDATE catalog_guide_ids SET detail_status = 'ok', detail_hash = ?, next_detail_at = ? WHERE entity_kind = 'master_realm' AND entity_id = 5", ['a'.repeat(64), '2026-10-28T12:00:00.000Z']);
+    await db.query('DELETE FROM schema_migrations WHERE version = ?', ['011_master_realm_connections.mjs']);
+    assert.deepEqual(await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations'))), ['011_master_realm_connections.mjs']);
+    const [detail] = await db.query("SELECT detail_hash, next_detail_at FROM catalog_guide_ids WHERE entity_kind = 'master_realm' AND entity_id = 5");
+    assert.deepEqual(detail, { detail_hash: null, next_detail_at: '1970-01-01T00:00:00.000Z' });
+    assert.deepEqual(await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations'))), []);
 });
 
 test('CAT-TASK-009 (real MySQL): 007 replaces the 003 CHECKs and re-adds columns on an upgraded database', { skip: !REAL_MYSQL && 'CHECK replacement runs on MySQL only' }, async () => {

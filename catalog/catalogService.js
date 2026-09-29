@@ -19,7 +19,7 @@ const SERVING = {
     item: { table: 'items', list: ['id', 'name', 'rarity', 'imageUrl'], detail: ['id', 'name', 'rarity', 'imageUrl', 'stats', 'enhancements', 'droppedBy', 'setBonuses', 'setId', 'setName'], json: ['stats', 'enhancements', 'droppedBy', 'setBonuses'] },
     creature: { table: 'creatures', list: ['id', 'name', 'imageUrl'], detail: ['id', 'name', 'imageUrl', 'description', 'stats', 'enhancements', 'droppedItems'], json: ['stats', 'enhancements', 'droppedItems'] },
     realm: { table: 'realms', list: ['id', 'name', 'min_level', 'master_realm_id'], detail: ['id', 'name', 'min_level', 'master_realm_id', 'shops', 'connections', 'map_objects'], json: ['shops', 'connections', 'map_objects'] },
-    master_realm: { table: 'master_realms', list: ['id', 'name'], detail: ['id', 'name'], json: [] },
+    master_realm: { table: 'master_realms', list: ['id', 'name'], detail: ['id', 'name', 'connected_realms'], json: ['connected_realms'] },
     relic: { table: 'relics', list: ['id', 'name', 'realm_id'], detail: ['id', 'name', 'realm_id'], json: [], natural: true },
     quest: { table: 'quests', list: ['id', 'name', 'realm_id', 'min_level'], detail: ['id', 'name', 'realm_id', 'min_level', 'details'], json: ['details'], natural: true },
 };
@@ -179,7 +179,10 @@ export function createCatalogService({ db, store, guideStore, collector = null, 
                 .map(p => ({ source: p.source, hash: String(p.payload_hash).slice(0, 12), runId: p.run_id, observedAt: p.observed_at, mode: p.mode, runStatus: p.status }));
             const relations = {};
             const id = Number(row.id);
-            if (kind === 'realm') {
+            if (kind === 'master_realm') {
+                relations.connectedRealms = Array.isArray(fields.connected_realms)
+                    ? fields.connected_realms.map(realm => ({ id: realm.realmId, name: realm.realmName, minLevel: realm.minLevel })) : [];
+            } else if (kind === 'realm') {
                 relations.creatures = (await db.query('SELECT c.id, c.name FROM realm_creatures rc JOIN creatures c ON c.id = rc.creature_id WHERE rc.realm_id = ? ORDER BY c.id LIMIT 200', [id])).map(r => ({ id: Number(r.id), name: r.name }));
                 relations.relics = (await db.query('SELECT name FROM relics WHERE realm_id = ? ORDER BY name LIMIT 200', [id])).map(r => r.name);
                 relations.quests = (await db.query('SELECT name, min_level FROM quests WHERE realm_id = ? ORDER BY name LIMIT 200', [id])).map(r => ({ name: r.name, minLevel: r.min_level === null ? null : Number(r.min_level) }));

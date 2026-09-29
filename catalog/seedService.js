@@ -70,7 +70,13 @@ export function mapSeed(data, { existingCreatureIds = new Set(), existingItemIds
         const id = toId(mr.id ?? mr.realm_group_id ?? mr.group_id ?? mr.masterRealmId);
         const name = text(mr.name ?? mr.group_name, 256);
         if (!id || !name) { unusable.master_realm++; continue; }
-        push('master_realm', { id, name });
+        const connectedRealms = Array.isArray(mr.connectedRealms) ? mr.connectedRealms.slice(0, 200)
+            .map(realm => ({
+                realmId: toId(realm?.realmId ?? realm?.realm_id ?? realm?.id),
+                realmName: text(realm?.realmName ?? realm?.name, 191),
+                minLevel: toInt(realm?.minLevel ?? realm?.min_level),
+            })).filter(realm => realm.realmId && realm.realmName) : null;
+        push('master_realm', { id, name, connected_realms: connectedRealms });
     }
     const realms = [];
     for (const r of data.realm) {

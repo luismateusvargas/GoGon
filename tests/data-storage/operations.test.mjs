@@ -101,7 +101,7 @@ test('AC-DATA-001: the project migrations create the expected tables, once per p
         'catalog_guide_state', 'catalog_guide_ids', 'catalog_guide_usage', 'catalog_relay_tokens', 'catalog_guide_leases']) {
         assert.ok(await tableExists(client, t), `missing table ${t}`);
     }
-    assert.deepEqual(await versions(client), ['001_initial_schema.sql', '002_control_plane.sql', '003_catalog_sync.sql', '004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql']);
+    assert.deepEqual(await versions(client), ['001_initial_schema.sql', '002_control_plane.sql', '003_catalog_sync.sql', '004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql', '011_master_realm_connections.mjs']);
 });
 
 // --- AC-DATA-002: FIFO lists -----------------------------------------------------------------------
@@ -122,6 +122,24 @@ test('AC-DATA-002: concurrent setContent calls on one key lose no item', async (
     await Promise.all(Array.from({ length: 20 }, (_, i) => db.setContent('fifo_concurrent', i, 100)));
     const list = JSON.parse(await db.getContent('fifo_concurrent'));
     assert.deepEqual([...list].sort((a, b) => a - b), Array.from({ length: 20 }, (_, i) => i));
+});
+
+test('AC-DATA-002: setContent retries a rolled-back deadlock without duplicating an item', async () => {
+    const client = await db.getConnection();
+    const transaction = client.transaction;
+    let attempts = 0;
+    client.transaction = operation => transaction(async lockedClient => {
+        const result = await operation(lockedClient);
+        if (attempts++ === 0) throw Object.assign(new Error('simulated deadlock'), { code: 'ER_LOCK_DEADLOCK' });
+        return result;
+    });
+    try {
+        await db.setContent('fifo_deadlock_retry', 'kept');
+    } finally {
+        client.transaction = transaction;
+    }
+    assert.equal(attempts, 2);
+    assert.deepEqual(JSON.parse(await db.getContent('fifo_deadlock_retry')), ['kept']);
 });
 
 test('AC-DATA-002: corrupted or non-array stored JSON is reset with a warning', async () => {
