@@ -296,9 +296,9 @@ async function loadCatalogSummary() {
         el('span', { class: 'stat' }, `${kind}: ${k.rows} rows, ${k.tracked} tracked${kind === 'item' || kind === 'creature' ? `, ${k.incomplete} incomplete` : ''}`)));
     const g = s.policy.guide;
     document.getElementById('guide-policy').textContent =
-        `Checked every ${Math.round(g.checkIntervalMs / 3600_000)} h in your validated browser; ${g.minDelayMs / 1000} s between requests, ` +
-        `${g.maxRequestsPerExecution} per run, ${s.guideRequestsToday} of ${g.dailyRequestCap} used today. Index order: ${s.policy.ordering.order} ` +
-        `from page ${s.policy.ordering.firstIndex}, checked every run. A full sweep is about ${s.policy.fullSweep.indexPages} pages.`;
+        `Checked every ${Math.round(g.checkIntervalMs / 3600_000)} h; ${g.minDelayMs / 1000} s between requests, ` +
+        `${g.maxRequestsPerExecution} per batch, ${s.guideRequestsToday} requests today; no daily limit. ` +
+        `Every guide kind scans all index pages; details are fetched for new IDs and scheduled refreshes.`;
     renderRelayTokens(s.relayTokens ?? []);
     renderCatalogState();
 }

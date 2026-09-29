@@ -140,8 +140,9 @@ came from, and every change it makes to the tables Discord reads can be rolled b
      CatalogSync run, without a container restart. Do not paste a full HAR into the dashboard.
 
   The server uses the existing guide lease planner and parsers: one page at a time, 3 s apart, at most
-  50 per lease and 2,000 per day. Index page 0 is checked for new IDs, older details are refreshed,
-  and a full sweep runs weekly. Existing snapshot item and creature IDs are tracked as pending with
+  50 per lease, with no daily request cap. Each due check scans every index page until the guide
+  repeats its final page. The worker compares IDs with its tracking table and requests details only
+  for new IDs or scheduled refreshes. Existing snapshot item and creature IDs are tracked as pending with
   their first detail checks spread across 30 days; new IDs are due at once. Realm details are read
   promptly so their relic and quest names can be added. A Cloudflare challenge stops that lease
   without moving the successful checkpoint; the kind remains incomplete until a valid clearance is

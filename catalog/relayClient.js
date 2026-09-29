@@ -7,7 +7,7 @@
 // its cursor there. A detail is 'missing' only on HTTP 404. relayCycle() saves the results of a lease
 // until GoGon settles them, so a failed submission is resent, never read again. It never retries past a
 // challenge, never submits a challenge form, and never sees or sends cookies itself.
-import { GUIDE_URLS, guideUrl, isDescendingPage, isRepeatedIndexPage } from './contracts/guide.js';
+import { GUIDE_URLS, guideUrl, isRepeatedIndexPage } from './contracts/guide.js';
 import { classifyResponse } from './contracts/classify.js';
 import { isGuidePage, parseIndexPage, DETAIL_PARSERS } from './guideParsers.js';
 
@@ -16,20 +16,18 @@ const ENVELOPE_BYTES = 1024;
 const utf8Bytes = s => new TextEncoder().encode(s).length;
 
 /**
- * An incremental lease carries stopAtId (the kind's last_seen_id) and overlapPages: once a page
- * reaches stopAtId the relay reads overlapPages more and stops, as long as the pages it saw were in
- * descending order. The server applies the same rule and stays authoritative; this only saves requests.
+ * An index lease stops when the guide repeats its final page. The previous page's IDs are carried
+ * across leases so the repeat is recognized even at a lease boundary.
  * A lease also carries maxBodyBytes, the server's body limit: the relay stops before its results would
  * no longer fit in one submission. A page that does not fit is left for the next lease (its request is
  * still reported); one that cannot fit even alone is sent as 'too_large', so the server stops there.
- * @param {{ kind: string, work: Array<{ type: 'index'|'detail', page?: number, id?: number }>, minDelayMs: number, expiresAt: string, maxBodyBytes?: number, stopAtId?: number|null, overlapPages?: number, previousPageIds?: number[]|null }} lease
+ * @param {{ kind: string, work: Array<{ type: 'index'|'detail', page?: number, id?: number }>, minDelayMs: number, expiresAt: string, maxBodyBytes?: number, previousPageIds?: number[]|null }} lease
  * @param {object} deps
  * @param {(url: string) => Promise<{ status: number, contentType: string, cfMitigated: string|null, body: string }>} deps.fetchPage
  * @param {(html: string) => Document} deps.parseHtml
  * @param {(ms: number) => Promise<void>} deps.sleep
  * @param {() => boolean} [deps.stopped] - the owner pressed stop
- * @param {() => number} [deps.now] - the relay stops at the lease's expiresAt; the server reserved its
- *   requests against the daily cap only for the days up to then
+ * @param {() => number} [deps.now] - the relay stops at the lease's expiresAt
  * @param {() => void} [deps.onRequest] - called once per guide request
  * @returns {Promise<Array<object>>} results in lease order (possibly fewer than the work items)
  */
@@ -37,9 +35,6 @@ export async function runLease(lease, { fetchPage, parseHtml, sleep, stopped = (
     const results = [];
     const budget = (lease.maxBodyBytes ?? Infinity) - ENVELOPE_BYTES;
     let size = 0;
-    let reachedAt = null;       // incremental: the page that reached stopAtId
-    let descending = true;
-    let prevMin = null;
     let previousPageIds = lease.previousPageIds ?? null;
     for (let i = 0; i < lease.work.length; i++) {
         if (stopped()) break;
@@ -61,10 +56,6 @@ export async function runLease(lease, { fetchPage, parseHtml, sleep, stopped = (
             const ids = result.entries.map(e => e.id);
             if (isRepeatedIndexPage(ids, previousPageIds)) break;
             previousPageIds = ids;
-            descending = descending && isDescendingPage(ids, prevMin);
-            prevMin = Math.min(...ids);
-            if (descending && typeof lease.stopAtId === 'number' && reachedAt === null && prevMin <= lease.stopAtId) reachedAt = item.page;
-            if (descending && reachedAt !== null && item.page >= reachedAt + (lease.overlapPages ?? 1)) break;
         }
     }
     return results;
@@ -86,7 +77,7 @@ async function readItem(lease, item, key, fetchPage, parseHtml) {
     if (!isGuidePage(doc)) return { result: { ...key, outcome: 'invalid' }, stop: true };
     if (item.type === 'index') {
         const { entries } = parseIndexPage(doc, GUIDE_URLS[lease.kind].idParam);
-        if (!entries.length) return { result: { ...key, outcome: 'empty' }, stop: true };   // past the last page
+        if (!entries.length) return { result: { ...key, outcome: 'empty' }, stop: true };   // unexpected: the guide repeats its last page
         return { result: { ...key, outcome: 'ok', entries }, stop: false };
     }
     // Only an HTTP 404 means the record is gone; a guide page whose detail layout the parser
@@ -102,8 +93,8 @@ async function readItem(lease, item, key, fetchPage, parseHtml) {
  * is resent exactly as read on the next cycle, before any new lease is asked for. The same pages are
  * never read twice for one lease, so every guide request is one the server reserved. Any other answer
  * settles the saved results: accepted, or refused for good (the lease closed, expired, or invalid).
- * Each submission reports how many guide requests the relay made, so a page read but not sent is not
- * given back to the daily cap. A submission the server finds too large (HTTP 413) is cut to its first
+ * Each submission reports how many guide requests the relay made, so a page read but not sent remains
+ * in the usage counter. A submission the server finds too large (HTTP 413) is cut to its first
  * half and sent again; the pages cut off are read under a later lease. A single result that still does
  * not fit is sent as too_large, so the relay never submits an empty batch for a page it read.
  * @param {object} deps - runLease's deps, plus:

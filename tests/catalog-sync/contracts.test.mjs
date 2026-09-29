@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DOMParser } from 'linkedom';
 import { classifyResponse } from '../../catalog/contracts/classify.js';
-import { GUIDE_URLS, GUIDE_ORDERING, guideUrl, isDescendingPage } from '../../catalog/contracts/guide.js';
+import { GUIDE_URLS, GUIDE_ORDERING, guideUrl } from '../../catalog/contracts/guide.js';
 import { GAME_LOCATION_CONTRACT, GAME_DETAIL_CONTRACTS, isContractUsable, pick } from '../../catalog/contracts/gameLocation.js';
 import { GAME_POLICY, GUIDE_POLICY, fullSweepEstimate } from '../../catalog/contracts/policy.js';
 import { isGuidePage, parseIndexPage, parseItemDetail, parseCreatureDetail, parseRealmDetail, parseMasterRealmDetail } from '../../catalog/guideParsers.js';
@@ -34,25 +34,20 @@ test('CAT-TASK-001: guide URLs match the supplied scrapers and accept only bound
     assert.throws(() => guideUrl('item', 'search', 0));
 });
 
-test('CAT-TASK-001 / AC-CAT-012: owner-attested newest-first order starts at index 0 and is checked per page', () => {
-    assert.equal(GUIDE_ORDERING.order, 'newest_first');
+test('CAT-TASK-013 / AC-CAT-012: every kind needs complete index coverage', () => {
+    assert.equal(GUIDE_ORDERING.indexCoverage, 'all_pages');
     assert.equal(GUIDE_ORDERING.firstIndex, 0);
-    assert.equal(isDescendingPage([30, 20, 10], null), true);
-    assert.equal(isDescendingPage([9, 8], 10), true);
-    assert.equal(isDescendingPage([10, 20], null), false, 'ascending within a page');
-    assert.equal(isDescendingPage([12, 8], 10), false, 'overlaps the previous page');
-    assert.equal(isDescendingPage([], 10), true);
 });
 
-test('CAT-TASK-001 / AC-CAT-015: guide and game policies are separate and a full sweep fits the daily cap', () => {
+test('CAT-TASK-013 / AC-CAT-015: guide and game policies are separate and guide usage is uncapped', () => {
     assert.notEqual(GUIDE_POLICY, GAME_POLICY);
     assert.equal(GAME_POLICY.minDelayMs, 3000);
     assert.equal(GAME_POLICY.maxRequestsPerExecution, 50);
     assert.equal(GAME_POLICY.maxInFlight, 1);
     assert.equal(GUIDE_POLICY.maxInFlight, 1);
     const est = fullSweepEstimate();
-    assert.equal(est.indexPages, 661 + 321 + 282 + 15);
-    assert.equal(est.fitsDailyCap, true);
+    assert.equal(est.indexPages, 661 + 330 + 289 + 15);
+    assert.equal(GUIDE_POLICY.dailyRequestCap, null);
     assert.equal(est.leases, Math.ceil(est.indexPages / GUIDE_POLICY.maxRequestsPerExecution));
     assert.ok(est.minDurationMs >= est.indexPages * 3000);
 });
@@ -95,7 +90,6 @@ test('CAT-TASK-001 / AC-CAT-011: index parsers keep document order, drop duplica
     assert.deepEqual(items.entries, [
         { id: 17050, name: 'Shard of Dawn' }, { id: 17049, name: 'Dusk Gauntlets' }, { id: 17048, name: 'Montmarr Helm' },
     ]);
-    assert.equal(isDescendingPage(items.entries.map(e => e.id), null), true);
     const creatures = parseIndexPage(doc('guide-creature-index.html'), GUIDE_URLS.creature.idParam);
     assert.deepEqual(creatures.entries.map(e => e.id), [7002, 7001]);
     const empty = doc('guide-item-index-empty.html');

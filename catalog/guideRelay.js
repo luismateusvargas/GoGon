@@ -2,21 +2,20 @@
 // Guide lease planner (DEC-CAT-015). The optional browser relay authenticates with a stage-only
 // token; the in-process server guide worker uses a private database identity. Both ask for a lease:
 // the server picks one guide kind and
-// the exact index pages or detail IDs to read, within the guide policy and the daily cap. The relay
+// the exact index pages or detail IDs to read, within the serial guide policy. The relay
 // returns results in lease order; the server validates them (catalog/guideNormalizers.js), stages the
 // observations under the owner-enabled guide_discovery job, and only then moves the checkpoints.
 //
-// Sweeps: page 0 holds the newest records (DEC-CAT-017). An incremental sweep stops one overlap page
-// after the page that reaches last_seen_id; a full sweep (first sweep, weekly, or after an order
-// violation) reads until an empty page or the guide's repeated final page. Every page is checked for descending IDs; a
-// violation turns the sweep full. Only a sweep that covered every required page moves
+// Every due sweep starts at page 0 and reads until the repeated final page.
+// Index IDs enter detail tracking only once; detail pages are fetched when newly found or due for
+// refresh. Only a sweep that covered every required index page moves
 // last_successful_check_at and last_seen_id (AC-CAT-015). A challenge, invalid page, or failed request
 // stops the lease and leaves the cursor at that page.
 import crypto from 'node:crypto';
 import { CatalogError, canonicalJson } from '../_gg_data/handler/catalogStore.js';
 import { GUIDE_KINDS } from '../_gg_data/handler/guideDiscoveryStore.js';
 import { GUIDE_POLICY } from './contracts/policy.js';
-import { isDescendingPage, isRepeatedIndexPage } from './contracts/guide.js';
+import { isRepeatedIndexPage } from './contracts/guide.js';
 import { normalizeGuideRecord, indexEntry } from './guideNormalizers.js';
 
 export const TOKEN_PREFIX = 'ggr_';
@@ -53,19 +52,11 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
         return !s.lastSuccessfulCheckAt || t - Date.parse(s.lastSuccessfulCheckAt) >= policy.checkIntervalMs;
     }
 
-    function sweepModeFor(s, t) {
-        const full = !s.lastSuccessfulCheckAt || !s.lastFullSweepAt || s.lastSeenId === 0 || s.orderState === 'violated'
-            || t - Date.parse(s.lastFullSweepAt) >= policy.fullSweepIntervalMs;
-        return full ? 'full' : 'incremental';
-    }
-
-    /** The lease as the relay sees it; an incremental index lease also carries its stop hint. */
+    /** The lease carries the previous page across boundaries for terminal-page detection. */
     const leaseOut = (row, s) => {
         const work = JSON.parse(row.work);
-        const incremental = work[0]?.type === 'index' && s?.sweepMode === 'incremental' && s.stopAfterPage === null && s.orderState !== 'violated';
         return {
             leaseId: row.id, kind: row.entity_kind, work, minDelayMs: policy.minDelayMs, expiresAt: row.expires_at, maxBodyBytes: MAX_RELAY_BODY,
-            stopAtId: incremental ? s.lastSeenId : null, overlapPages: policy.overlapPages,
             previousPageIds: work[0]?.type === 'index' ? s?.sweepPrevPageIds ?? null : null,
         };
     };
@@ -101,8 +92,8 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
                 if (r.outcome === 'ok' && !isPlain(r.record)) throw invalid(`Result ${i} has no record.`, 'results');
             }
         });
-        // requests: guide requests the relay made, at least one per result (a page read but left out
-        // because it did not fit stays counted against the daily cap).
+        // Requests made by the relay, at least one per result. A page that was read but left out
+        // because it did not fit remains in the usage counter.
         const requests = body.requests ?? results.length;
         if (!(Number.isSafeInteger(requests) && requests >= results.length && requests <= work.length)) throw invalid('requests must count the results and stay within the lease.', 'requests');
         // A page that was read is always reported (too_large when it cannot be sent), so the lease moves on.
@@ -128,17 +119,12 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             // again (its saved results were lost): that read is reserved like a new lease.
             const size = JSON.parse(open.work).length;
             const again = leaseDays(t, Date.parse(open.expires_at));
-            for (const day of again) if (policy.dailyRequestCap - (await guideStore.usage(day, tx)) < size) return { status: 'cap_reached' };
             for (const day of again) await guideStore.addUsage(size, tx, day);
             return { status: 'lease', lease: leaseOut(open, await guideStore.getState(open.entity_kind, tx)) };
         }
-        // A lease's requests can fall on any UTC day between its issue and its expiry, so the budget
-        // fits every such day and the reservation is charged to each of them.
+        // Reserve possible requests on each UTC day the lease can span for accurate usage counts.
         const days = leaseDays(t, t + policy.leaseTtlMs);
-        let left = Infinity;
-        for (const day of days) left = Math.min(left, policy.dailyRequestCap - (await guideStore.usage(day, tx)));
-        const budget = Math.min(job.requestBudget, policy.maxRequestsPerExecution, left);
-        if (budget <= 0) return { status: 'cap_reached' };
+        const budget = Math.min(job.requestBudget, policy.maxRequestsPerExecution);
 
         let kind = null;
         let work = [];
@@ -149,17 +135,15 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             if (s.sweepMode && s.status === 'partial' && t - Date.parse(s.updatedAt) < policy.partialRetryMs) continue;
             if (!s.sweepMode) {
                 if (!due(s, t)) continue;
-                const sweepMode = sweepModeFor(s, t);
                 await guideStore.updateState(k, {
-                    sweepMode, sweepStartedAt: iso(t), nextPage: 0, sweepPagesChecked: 0,
+                    sweepMode: 'full', sweepStartedAt: iso(t), nextPage: 0, sweepPagesChecked: 0,
                     sweepMaxId: 0, sweepPrevMinId: null, sweepPrevPageIds: null,
                     stopAfterPage: null, status: 'running', statusReason: null,
-                    orderState: sweepMode === 'full' ? 'attested' : s.orderState,
+                    orderState: 'attested',
                 }, tx);
                 Object.assign(s, await guideStore.getState(k, tx));
             }
-            const last = s.stopAfterPage ?? Infinity;
-            for (let p = s.nextPage; p <= last && work.length < budget; p++) work.push({ type: 'index', page: p });
+            for (let page = s.nextPage; work.length < budget; page++) work.push({ type: 'index', page });
             if (work.length) { kind = k; break; }
         }
         if (!kind) {
@@ -219,9 +203,16 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             if (r.type === 'index') {
                 if (r.outcome !== 'ok') break;
                 // AC-CAT-011: a new ID gets a minimal (incomplete) record until its detail is read.
+                const entriesWithNames = r.entries.filter(entry => entry.name && !named.has(`${kind}|${entry.id}`));
+                if (!entriesWithNames.length) continue;
+                const placeholders = entriesWithNames.map(() => '?').join(', ');
+                const existing = await db.query(
+                    `SELECT id FROM ${SERVING_TABLE[kind]} WHERE id IN (${placeholders})`,
+                    entriesWithNames.map(entry => entry.id));
+                const existingIds = new Set(existing.map(row => Number(row.id)));
                 for (const e of r.entries) {
                     const key = `${kind}|${e.id}`;
-                    if (e.name && !named.has(key) && !(await exists(kind, e.id))) {
+                    if (e.name && !named.has(key) && !existingIds.has(e.id)) {
                         observations.push({ kind, payload: { id: e.id, name: e.name } });
                         staged.add(key);
                         named.add(key);
@@ -271,9 +262,10 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
                     lastSeenId: Math.max(s.lastSeenId, s.sweepMaxId), lastSuccessfulCheckAt: iso(), status: 'idle', statusReason: null,
                     sweepMode: null, sweepStartedAt: null, nextPage: 0, sweepPagesChecked: 0,
                     sweepMaxId: 0, sweepPrevMinId: null, sweepPrevPageIds: null, stopAfterPage: null,
-                    orderState: s.orderState === 'violated' ? 'violated' : 'verified',
+                    orderState: 'attested',
                 };
-                if (s.sweepMode === 'full') Object.assign(fields, { lastFullSweepAt: iso(), lastPageSeen: lastPage });
+                fields.lastFullSweepAt = iso();
+                fields.lastPageSeen = lastPage;
                 await set(fields);
                 summary.sweepComplete = true;
             };
@@ -285,24 +277,14 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
                         await complete(r.page - 1);
                         break;
                     }
-                    const fields = {};
-                    if (!isDescendingPage(ids, s.sweepPrevMinId) && s.orderState !== 'violated') {
-                        fields.orderState = 'violated';
-                        if (s.sweepMode === 'incremental') { fields.sweepMode = 'full'; fields.stopAfterPage = null; }
-                    }
                     summary.newIds += (await guideStore.recordIndexIds(kind, ids, tx)).length;
-                    const minId = Math.min(...ids);
-                    Object.assign(fields, { sweepMaxId: Math.max(s.sweepMaxId, ...ids), sweepPrevMinId: minId,
+                    const fields = { sweepMaxId: Math.max(s.sweepMaxId, ...ids),
                         sweepPrevPageIds: ids, nextPage: r.page + 1, sweepPagesChecked: s.sweepPagesChecked + 1,
-                        status: 'running', statusReason: null });
+                        status: 'running', statusReason: null };
                     await set(fields);
                     summary.pages++;
-                    if (s.sweepMode === 'incremental' && s.stopAfterPage === null && minId <= s.lastSeenId) await set({ stopAfterPage: r.page + policy.overlapPages });
-                    if (s.stopAfterPage !== null && r.page >= s.stopAfterPage) { await complete(r.page); break; }
                 } else if (r.outcome === 'empty') {
-                    const unexpected = r.page === 0 || (s.sweepMode === 'full' && s.lastPageSeen !== null && r.page <= s.lastPageSeen);
-                    if (unexpected) { await set({ status: 'partial', statusReason: 'unexpected empty page' }); break; }
-                    await complete(r.page - 1);
+                    await set({ status: 'partial', statusReason: 'unexpected empty page' });
                     break;
                 } else {
                     await set({ status: r.outcome === 'challenge' ? 'challenged' : 'partial', statusReason: { challenge: 'cloudflare challenge', invalid: 'not a guide page', error: 'request failed', too_large: 'page too large to submit' }[r.outcome] });
@@ -414,7 +396,7 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
         /**
          * The work the relay should do next, or why there is none. Issuing runs under a lock on every
          * guide state row, so concurrent callers see each other's lease and at most one is open. The
-         * lease's requests are reserved against the daily cap when it is issued; submit() gives back
+         * lease's possible requests are recorded when issued; submit() gives back
          * the ones the relay did not make.
          */
         async nextLease(tokenId) {

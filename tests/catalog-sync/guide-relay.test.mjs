@@ -25,7 +25,7 @@ function createSite() {
         challengeAt: null,                    // { kind, page } to answer with a Cloudflare challenge
         ascending: false,                     // serve an ascending (order-violating) index
         emptyPage: null,                      // { kind, page } to answer with an empty page
-        repeatFinalPage: false,               // the live guide repeats its final page past the end
+        repeatFinalPage: true,                // the live guide repeats its final page past the end
         changedLayout: null,                  // { kind, id } whose detail page is a guide page in a layout the parser does not know
         itemName: id => `Item ${id}`,
         requests: [],
@@ -160,7 +160,7 @@ test('AC-CAT-011 / AC-CAT-013: the first daily check sweeps every index, stages 
         assert.ok(s.lastSuccessfulCheckAt, kind);
         assert.ok(s.lastFullSweepAt, `${kind}: the first check is a full sweep`);
         assert.equal(s.lastPageSeen, lastPage, kind);
-        assert.equal(s.orderState, 'verified', kind);
+        assert.equal(s.orderState, 'attested', kind);
         assert.equal(s.status, 'idle', kind);
     }
     assert.equal(await count(db, 'items'), 7);
@@ -172,7 +172,7 @@ test('AC-CAT-011 / AC-CAT-013: the first daily check sweeps every index, stages 
     assert.equal(await count(db, 'realm_creatures'), 2, 'both creatures link realm 1200');
     assert.equal(await count(db, 'creature_drops'), 2);
     assert.deepEqual((await db.query('SELECT name FROM relics')).map(r => r.name), ['Stone of Echoes']);
-    assert.equal(await guideStore.usage(), site.requests.length, 'every guide request is counted against the daily cap');
+    assert.equal(await guideStore.usage(), site.requests.length, 'every guide request is counted');
     assert.ok(site.requests.every(u => u.startsWith('https://guide.fallensword.com/index.php?cmd=')), 'only code-owned guide URLs');
     assert.equal((await db.query("SELECT DISTINCT mode FROM catalog_runs WHERE mode <> 'baseline_snapshot'")).map(r => r.mode).join(), 'guide_discovery');
 });
@@ -196,11 +196,11 @@ test('a repeated final index page is recognized across two one-page leases', asy
     await store.createJob({ kind: 'guide_discovery', cursor: {}, requestBudget: 1 });
     site.repeatFinalPage = true;
     site.perPage = 1;
-    site.ids.master_realm = [5, 4];
+    site.ids.master_realm = [4, 5];
     await cycle();
     await cycle();
     const terminal = await cycle();
-    assert.deepEqual(terminal.lease.previousPageIds, [4]);
+    assert.deepEqual(terminal.lease.previousPageIds, [5]);
     assert.deepEqual(terminal.results.map(result => result.page), [2]);
     assert.equal(terminal.summary.sweepComplete, true);
     const masterRealm = await state(guideStore, 'master_realm');
@@ -227,11 +227,11 @@ test('an existing sweep with no saved page IDs stops after two repeated pages', 
     const masterRealm = await state(guideStore, 'master_realm');
     assert.equal(masterRealm.status, 'idle');
     assert.equal(masterRealm.lastPageSeen, 100);
-    assert.equal(masterRealm.orderState, 'violated');
+    assert.equal(masterRealm.orderState, 'attested');
     assert.equal(site.requests.filter(url => /cmd=masterrealms&index=/.test(url)).length, 2);
 });
 
-test('a later full sweep can restore verified order after a repeated page caused a violation', async () => {
+test('a later full sweep clears an obsolete ordering violation', async () => {
     const { store, guideStore, site, drain, clock } = await setup();
     await enableJob(store);
     site.repeatFinalPage = true;
@@ -241,24 +241,44 @@ test('a later full sweep can restore verified order after a repeated page caused
 
     await drain();
     const masterRealm = await state(guideStore, 'master_realm');
-    assert.equal(masterRealm.orderState, 'verified');
+    assert.equal(masterRealm.orderState, 'attested');
     assert.equal(masterRealm.lastPageSeen, 0);
 });
 
-test('AC-CAT-012: the next day an incremental sweep stops one overlap page past last_seen_id and finds new IDs', async () => {
+test('CAT-TASK-013 / AC-CAT-012: level-sorted items discover a new low-level ID on a later page', async () => {
     const { db, store, guideStore, site, drain, clock } = await setup();
     await enableJob(store);
     await drain();
-    site.ids.item.unshift(17052, 17051);
+    site.ids.item.push(17052, 17051);
     site.requests.length = 0;
     clock.t += GUIDE_POLICY.checkIntervalMs;
     await drain();
     const itemIndexReads = site.requests.filter(u => /cmd=items&index=/.test(u));
-    assert.deepEqual(itemIndexReads.map(u => Number(new URL(u).searchParams.get('index'))), [0, 1], 'page 0 reaches last_seen_id, page 1 is the overlap');
+    assert.deepEqual(itemIndexReads.map(u => Number(new URL(u).searchParams.get('index'))), [0, 1, 2, 3], 'all level-sorted index pages must be covered');
     const s = await state(guideStore, 'item');
     assert.equal(s.lastSeenId, 17052);
     assert.equal((await db.query('SELECT name FROM items WHERE id = 17052'))[0].name, 'Item 17052');
     assert.equal((await guideStore.getIdState('item', 17052)).status, 'ok', 'its detail was read in the same check');
+});
+
+test('CAT-TASK-013 / AC-CAT-012: a daily scan finds low-level creature and realm IDs without rereading known details', async () => {
+    const { store, guideStore, site, drain, clock } = await setup();
+    await enableJob(store);
+    await drain();
+    site.perPage = 1;
+    site.ids.creature.splice(1, 0, 7003);
+    site.ids.realm.unshift(1201);
+    site.requests.length = 0;
+    clock.t += GUIDE_POLICY.checkIntervalMs;
+
+    await drain();
+    const indexPages = kind => site.requests.filter(url => url.includes(`cmd=${kind}&index=`))
+        .map(url => Number(new URL(url).searchParams.get('index')));
+    assert.deepEqual(indexPages('creatures'), [0, 1, 2, 3]);
+    assert.deepEqual(indexPages('realms'), [0, 1, 2]);
+    assert.equal((await guideStore.getIdState('creature', 7003)).status, 'ok');
+    assert.equal((await guideStore.getIdState('realm', 1201)).status, 'ok');
+    assert.equal(site.requests.filter(url => /subcmd=view&creature_id=7001|subcmd=view&realm_id=1200/.test(url)).length, 0);
 });
 
 test('AC-CAT-012 error case: an edited older record is re-read when due and staged as a new observation', async () => {
@@ -297,7 +317,7 @@ test('AC-CAT-015 error case: an unexpected empty page leaves the check partial; 
     await enableJob(store);
     await drain();
     const before = await state(guideStore, 'item');
-    clock.t += GUIDE_POLICY.fullSweepIntervalMs;
+    clock.t += GUIDE_POLICY.checkIntervalMs;
     site.emptyPage = { kind: 'item', page: 1 };
     await drain();
     const s = await state(guideStore, 'item');
@@ -315,7 +335,7 @@ test('AC-CAT-015 error case: an unexpected empty page leaves the check partial; 
     assert.equal((await state(guideStore, 'item')).status, 'idle', 'the retry completes the sweep');
 });
 
-test('AC-CAT-012: IDs that do not descend mark the order violated and force a full sweep', async () => {
+test('CAT-TASK-013 / AC-CAT-012: level-sorted item IDs are not claimed to have verified ID order', async () => {
     const { store, guideStore, site, drain, clock } = await setup();
     await enableJob(store);
     await drain();
@@ -324,12 +344,12 @@ test('AC-CAT-012: IDs that do not descend mark the order violated and force a fu
     clock.t += GUIDE_POLICY.checkIntervalMs;
     await drain();
     const s = await state(guideStore, 'item');
-    assert.equal(s.orderState, 'violated');
+    assert.equal(s.orderState, 'attested');
     assert.equal(s.lastFullSweepAt, s.lastSuccessfulCheckAt, 'the check became a full sweep');
-    assert.equal(site.requests.filter(u => /cmd=items&index=/.test(u)).length, 4, 'every item page plus the empty end page');
+    assert.equal(site.requests.filter(u => /cmd=items&index=/.test(u)).length, 4, 'every item page plus the repeated final page');
 });
 
-test('AC-CAT-015: leases respect the per-run budget and the daily cap', async () => {
+test('CAT-TASK-013 / AC-CAT-015: daily usage above 2000 does not stop bounded leases', async () => {
     const { store, guideStore, relay, tokenId } = await setup();
     const job = await store.createJob({ kind: 'guide_discovery', cursor: {}, requestBudget: 2 });
     const a = await relay.nextLease(tokenId);
@@ -337,8 +357,11 @@ test('AC-CAT-015: leases respect the per-run budget and the daily cap', async ()
     assert.equal(a.lease.minDelayMs, GUIDE_POLICY.minDelayMs);
     assert.deepEqual(await relay.nextLease(tokenId), a, 'the open lease is handed out again, never a second one');
     await relay.submit(tokenId, a.lease.leaseId, { results: [] });
-    await guideStore.addUsage(GUIDE_POLICY.dailyRequestCap);
-    assert.deepEqual(await relay.nextLease(tokenId), { status: 'cap_reached' });
+    await guideStore.addUsage(200_000);
+    const next = await relay.nextLease(tokenId);
+    assert.equal(next.status, 'lease');
+    assert.equal(next.lease.work.length, 2);
+    assert.ok(await guideStore.usage() > 200_000);
     assert.ok(job);
 });
 

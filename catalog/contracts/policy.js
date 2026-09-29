@@ -14,26 +14,23 @@ export const GAME_POLICY = Object.freeze({
 });
 
 /**
- * Guide discovery through the owner's validated browser (AC-CAT-011, AC-CAT-015). Index sizes come
- * from the supplied reconciliation/scrappers userscripts (item index 0..660, creature 0..320,
- * realm 0..281, master realm 0..14); they are estimates for the schedule, never page ceilings: a
- * sweep ends when the guide repeats its final page (or returns a valid empty page).
+ * Guide discovery through the server worker or owner's validated browser (AC-CAT-011, AC-CAT-015).
+ * Page counts are estimates, never ceilings. Every check reads all index pages, stopping at the
+ * guide's repeated final page. An empty page is partial coverage. Details are scheduled independently.
  */
 export const GUIDE_POLICY = Object.freeze({
     source: 'guide_baseline',
     maxInFlight: 1,                       // the relay is serial
     minDelayMs: 3_000,                    // between two guide requests
     maxRequestsPerExecution: 50,          // one relay work lease (catalog_jobs.request_budget <= 50)
-    dailyRequestCap: 2_000,               // all guide requests in one UTC day
+    dailyRequestCap: null,                // owner disabled the daily cap; usage is still counted
     checkIntervalMs: 24 * 3600_000,       // a kind becomes due 24 h after its last successful check
-    overlapPages: 1,                      // extra pages read past the one that reaches last_seen_id
-    fullSweepIntervalMs: 7 * 24 * 3600_000,   // a periodic full sweep still catches gaps and edits
     detailRefreshAfterMs: 30 * 24 * 3600_000, // older details are re-read when this old
     detailRefreshPerExecution: 10,        // at most this many due refreshes per lease
     maxDetailAttempts: 5,                 // then the ID stays incomplete with reason detail_failed
     leaseTtlMs: 10 * 60_000,              // an unanswered work lease expires and is re-issued
     partialRetryMs: 60 * 60_000,          // a sweep stopped by a bad or failed page waits this long before retrying
-    estimatedIndexPages: Object.freeze({ item: 661, creature: 321, realm: 282, master_realm: 15 }),
+    estimatedIndexPages: Object.freeze({ item: 661, creature: 330, realm: 289, master_realm: 15 }),
 });
 
 /** Full-sweep feasibility under GUIDE_POLICY (AC-CAT-015): request count, duration, lease count. */
@@ -43,7 +40,5 @@ export function fullSweepEstimate(policy = GUIDE_POLICY) {
         indexPages: pages,
         minDurationMs: pages * policy.minDelayMs,
         leases: Math.ceil(pages / policy.maxRequestsPerExecution),
-        fitsDailyCap: pages <= policy.dailyRequestCap,
-        detailBudgetLeft: Math.max(0, policy.dailyRequestCap - pages),
     };
 }

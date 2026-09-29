@@ -4,9 +4,8 @@
 // inlined into the relay userscript (scripts/catalog/build-relay-userscript.mjs), so it has no
 // imports and only plain data and pure functions.
 //
-// Ordering: owner-attested 2026-09-28 (DEC-CAT-017). Index page 0 holds the newest records and the
-// last page the oldest. It is still checked on every run (descending IDs within and across pages);
-// a violation turns that kind back to full sweeps (AC-CAT-012).
+// New IDs can appear on any index page when a low-level item, creature, or realm is released.
+// Every active kind scans all its index pages; page counts are never fixed ceilings.
 
 export const GUIDE_ORIGIN = 'https://guide.fallensword.com';
 export const GUIDE_KINDS = Object.freeze(['item', 'creature', 'realm', 'master_realm']);
@@ -36,11 +35,11 @@ export const GUIDE_URLS = Object.freeze({
 });
 
 export const GUIDE_ORDERING = Object.freeze({
-    order: 'newest_first',
+    indexCoverage: 'all_pages',
     firstIndex: 0,
     attestedBy: 'owner',
-    attestedOn: '2026-09-28',
-    runtimeCheck: 'descending_ids',
+    attestedOn: '2026-09-29',
+    runtimeCheck: 'repeated_final_page',
 });
 
 export const MAX_GUIDE_ID = 10_000_000;
@@ -55,17 +54,6 @@ export function guideUrl(kind, phase, value) {
         : Number.isSafeInteger(value) && value > 0 && value <= MAX_GUIDE_ID;
     if (!ok) throw new Error('Guide page or ID out of range.');
     return GUIDE_ORIGIN + spec[phase].replace(phase === 'index' ? '{page}' : '{id}', String(value));
-}
-
-/**
- * The newest-first check for one page of IDs in document order (duplicates already removed).
- * @param {number[]} ids - this page
- * @param {number|null} previousMin - the smallest ID of the previous page, or null for page 0
- * @returns {boolean} true when the page is strictly descending and entirely below previousMin
- */
-export function isDescendingPage(ids, previousMin) {
-    for (let i = 1; i < ids.length; i++) if (!(ids[i] < ids[i - 1])) return false;
-    return previousMin === null || ids.length === 0 || ids[0] < previousMin;
 }
 
 /** The guide repeats its final non-empty page for every later index. */

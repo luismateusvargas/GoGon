@@ -50,6 +50,25 @@ test('CAT-TASK-009: migrations 006/007 add discovery state, completeness columns
     await assert.rejects(db.query("UPDATE catalog_entities SET completeness = 'maybe'"), e => e.code === 'ER_CHECK_CONSTRAINT_VIOLATED');
 });
 
+test('CAT-TASK-013: migration 010 restarts an old incremental cursor without losing known IDs', async () => {
+    const { db, guide } = await setup();
+    await guide.recordIndexIds('realm', [1200]);
+    await guide.updateState('realm', {
+        lastSeenId: 1200, lastSuccessfulCheckAt: '2026-09-28T12:00:00.000Z',
+        lastFullSweepAt: '2026-09-28T12:00:00.000Z', lastPageSeen: 288,
+        sweepMode: 'incremental', nextPage: 287, sweepPagesChecked: 1, status: 'running',
+        sweepPrevPageIds: [1200],
+    });
+    await db.query('DELETE FROM schema_migrations WHERE version = ?', ['010_guide_full_index_scan.sql']);
+    assert.deepEqual(await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations'))), ['010_guide_full_index_scan.sql']);
+
+    const checkpoint = await guide.getState('realm');
+    assert.deepEqual([checkpoint.sweepMode, checkpoint.nextPage, checkpoint.lastSuccessfulCheckAt,
+        checkpoint.lastPageSeen, checkpoint.orderState], [null, 0, null, null, 'attested']);
+    assert.equal(checkpoint.lastSeenId, 1200);
+    assert.ok(await guide.getIdState('realm', 1200));
+});
+
 test('CAT-TASK-009 (real MySQL): 007 replaces the 003 CHECKs and re-adds columns on an upgraded database', { skip: !REAL_MYSQL && 'CHECK replacement runs on MySQL only' }, async () => {
     const { db } = await setup();
     // Put the database back in its pre-007 shape: the original 003 CHECKs and no new columns.
