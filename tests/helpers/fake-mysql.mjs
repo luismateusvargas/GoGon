@@ -11,6 +11,9 @@
 // are enforced on the real-MySQL CI run only (CAT-TASK-002).
 // ALTER TABLE ... MODIFY col VARCHAR(n) is a no-op here (SQLite ignores VARCHAR widths); column
 // widths are checked on the real-MySQL run.
+// information_schema.CHECK_CONSTRAINTS is always empty here: fake databases are built from the
+// current migrations, so migration 007 never has a CHECK to replace. Replacing one on an upgraded
+// database is covered on the real-MySQL run (CAT-TASK-009).
 import { DatabaseSync } from 'node:sqlite';
 
 /** Shared state, like one MySQL server per test process: databases survive pool.end(). */
@@ -35,6 +38,7 @@ function database(name) {
         const db = new DatabaseSync(':memory:');
         db.exec(`CREATE TABLE ${FAKE_CONSTRAINTS} (CONSTRAINT_SCHEMA TEXT NOT NULL DEFAULT 'fake', TABLE_NAME TEXT NOT NULL,
             CONSTRAINT_NAME TEXT NOT NULL, CONSTRAINT_TYPE TEXT NOT NULL DEFAULT 'FOREIGN KEY', PRIMARY KEY (TABLE_NAME, CONSTRAINT_NAME))`);
+        db.exec(`CREATE TABLE ${FAKE_CHECKS} (CONSTRAINT_SCHEMA TEXT NOT NULL, CONSTRAINT_NAME TEXT NOT NULL, CHECK_CLAUSE TEXT NOT NULL)`);
         databases.set(name, db);
     }
     return databases.get(name);
@@ -42,6 +46,8 @@ function database(name) {
 
 // Stand-in for information_schema.TABLE_CONSTRAINTS (retrofitted foreign keys only).
 const FAKE_CONSTRAINTS = '__fake_table_constraints';
+// Stand-in for information_schema.CHECK_CONSTRAINTS: always empty (see the header).
+const FAKE_CHECKS = '__fake_check_constraints';
 
 class FakeMysqlError extends Error {
     constructor(message, code, errno) {
@@ -77,9 +83,12 @@ export function translate(sql) {
     if (/^ALTER\s+TABLE\s+`?\w+`?\s+MODIFY\s+(?:COLUMN\s+)?`?\w+`?\s+VARCHAR\(\d+\)(?:\s+NOT\s+NULL)?$/i.test(s)) return [];
     const fk = s.match(/^ALTER\s+TABLE\s+`?(\w+)`?\s+ADD\s+CONSTRAINT\s+`?(\w+)`?\s+FOREIGN\s+KEY\b/i);
     if (fk) return [`INSERT INTO ${FAKE_CONSTRAINTS} (TABLE_NAME, CONSTRAINT_NAME) VALUES ('${fk[1]}', '${fk[2]}')`];
-    if (/\binformation_schema\.TABLE_CONSTRAINTS\b/i.test(s)) {
-        s = s.replace(/\binformation_schema\.TABLE_CONSTRAINTS\b/gi, FAKE_CONSTRAINTS).replace(/\bDATABASE\(\)/gi, "'fake'");
-    } else if (/\binformation_schema\b/i.test(s)) {
+    if (/\binformation_schema\.(TABLE|CHECK)_CONSTRAINTS\b/i.test(s)) {
+        s = s.replace(/\binformation_schema\.TABLE_CONSTRAINTS\b/gi, FAKE_CONSTRAINTS)
+            .replace(/\binformation_schema\.CHECK_CONSTRAINTS\b/gi, FAKE_CHECKS)
+            .replace(/\bDATABASE\(\)/gi, "'fake'");
+    }
+    if (/\binformation_schema\b/i.test(s)) {
         throw untranslatable(sql, 'information_schema (only TABLE_CONSTRAINTS is emulated)');
     }
 
@@ -112,6 +121,7 @@ function mapError(error, sql) {
     const m = error.message ?? '';
     const as = (code, errno) => Object.assign(new FakeMysqlError(`${m} [${sql.replace(/\s+/g, ' ').slice(0, 120)}]`, code, errno), { cause: error });
     if (/UNIQUE constraint failed/.test(m)) return as('ER_DUP_ENTRY', 1062);
+    if (/duplicate column name/.test(m)) return as('ER_DUP_FIELDNAME', 1060);
     if (/FOREIGN KEY constraint failed/.test(m)) return as('ER_NO_REFERENCED_ROW_2', 1452);
     if (/CHECK constraint failed/.test(m)) return as('ER_CHECK_CONSTRAINT_VIOLATED', 3819);
     if (/NOT NULL constraint failed/.test(m)) return as('ER_BAD_NULL_ERROR', 1048);

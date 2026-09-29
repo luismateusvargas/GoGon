@@ -9,14 +9,22 @@
 //                 and marks the run failed; its provenance stays diagnosable.
 //   planRollback() / executePlan()  one-use, 10-minute plans; rollback replays the provenance that
 //                 remains without the run, and removes entities that have none left.
+//   completeness  CAT-TASK-009 / AC-CAT-013: every projection and rollback recomputes complete/
+//                 incomplete for the items and creatures it touched (and for entities waiting on an
+//                 unresolved drop), from the guide detail status and the serving row.
 // Every statement is parameterized; table and column names come only from the schemas below.
 import crypto from 'node:crypto';
 import { clearAllCaches } from './cacheLayer.js';
+import { idsFrom, parseJsonColumn } from './servingRelations.js';
 
 export const ENTITY_KINDS = Object.freeze(['item', 'creature', 'realm', 'master_realm', 'relic', 'quest', 'relation']);
 export const SOURCES = Object.freeze(['game_session', 'guide_baseline', 'manual_import']);
-export const RUN_MODES = Object.freeze(['observe_realm', 'item_frontier', 'seed', 'promote', 'revert']);
-export const JOB_KINDS = Object.freeze(['observe_realm', 'item_frontier']);
+export const RUN_MODES = Object.freeze(['observe_realm', 'item_frontier', 'guide_discovery', 'seed', 'promote', 'revert']);
+export const JOB_KINDS = Object.freeze(['observe_realm', 'item_frontier', 'guide_discovery']);
+// AC-CAT-013: bounded, code-owned reasons (joined with ',' in catalog_entities.incomplete_reason).
+export const INCOMPLETE_REASONS = Object.freeze(['guide_detail_missing', 'guide_detail_failed', 'required_field_missing', 'known_drop_unresolved']);
+const COMPLETENESS_KINDS = ['item', 'creature'];
+const DEPENDENT_RECHECK_LIMIT = 500;
 export const RELATION_TYPES = Object.freeze(['realm_creature', 'creature_drop']);
 export const MAX_PAYLOAD_BYTES = 16 * 1024;
 export const MAX_OBSERVATIONS_PER_RUN = 20_000;
@@ -480,6 +488,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             await tx.query('INSERT INTO catalog_entities (entity_kind, entity_key, observation_id, last_run_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
                 [r.kind, r.key, r.observationId, r.runId, state?.first_seen_at ?? r.observedAt, r.observedAt]);
         }
+        await refreshCompleteness(tx, [...computed.restore, ...computed.remove].map(r => [r.kind, r.key]), computed.remove);
         const after = await servingCounts(tx);
         const rows = {};
         for (const table of Object.keys(before)) if (after[table] !== before[table]) rows[table] = after[table] - before[table];
@@ -496,6 +505,91 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             out[table] = Number((await q.query(`SELECT COUNT(*) AS n FROM ${table}`))[0].n);
         }
         return out;
+    }
+
+    // --- completeness (CAT-TASK-009 / AC-CAT-013) ---
+
+    /** A creature name as items list it ("Name (Class LE)") and as creatures store it ("Name"). */
+    const dropNames = name => {
+        const n = String(name).trim();
+        const bare = n.replace(/\s*\([^()]*\)\s*$/, '').trim();
+        return bare && bare !== n ? [n, bare] : [n];
+    };
+
+    /**
+     * Complete means: a validated guide detail, the required serving fields, and every currently
+     * known drop link resolving to an existing row. It never claims that no other drop exists.
+     */
+    async function completenessOf(q, kind, id) {
+        const reasons = [];
+        const [g] = await q.query('SELECT detail_status, detail_checked_at FROM catalog_guide_ids WHERE entity_kind = ? AND entity_id = ?', [kind, id]);
+        if (!g || g.detail_status === 'pending' || g.detail_status === 'missing') reasons.push('guide_detail_missing');
+        else if (g.detail_status === 'failed') reasons.push('guide_detail_failed');
+        const [row] = kind === 'item'
+            ? await q.query('SELECT name, droppedBy AS drops FROM items WHERE id = ?', [id])
+            : await q.query('SELECT name, stats, droppedItems AS drops FROM creatures WHERE id = ?', [id]);
+        if (!row || !row.name || (kind === 'creature' && row.stats == null)) reasons.push('required_field_missing');
+        const drops = parseJsonColumn(row?.drops);
+        let unresolved = false;
+        if (kind === 'creature') {
+            for (const itemId of idsFrom(drops)) {
+                if (!(await q.query('SELECT 1 AS present FROM items WHERE id = ?', [itemId])).length) { unresolved = true; break; }
+            }
+        } else if (Array.isArray(drops)) {
+            for (const d of drops) {
+                const name = typeof d === 'string' ? d : (d?.creatureName ?? d?.name);
+                if (typeof name !== 'string' || !name.trim()) continue;
+                const candidates = dropNames(name);
+                const found = await q.query(`SELECT 1 AS present FROM creatures WHERE name IN (${candidates.map(() => '?').join(', ')}) LIMIT 1`, candidates);
+                if (!found.length) { unresolved = true; break; }
+            }
+        }
+        if (unresolved) reasons.push('known_drop_unresolved');
+        return {
+            completeness: reasons.length ? 'incomplete' : 'complete',
+            reason: reasons.length ? reasons.join(',') : null,
+            verifiedAt: g?.detail_status === 'ok' ? g.detail_checked_at : null,
+        };
+    }
+
+    /**
+     * Recomputes completeness for the given item/creature entities (keys are game IDs), plus up to
+     * DEPENDENT_RECHECK_LIMIT entities of the other kind still waiting on an unresolved drop.
+     * @param {Array<[string, string]>} entities - [kind, key] pairs; other kinds are ignored
+     * @param {Array<{ kind: string, payload: object }>} [removed] - items/creatures just removed: the
+     *   entities whose drop lists name them may have lost a resolved drop, so they are rechecked too
+     */
+    async function refreshCompleteness(q, entities, removed = []) {
+        const targets = new Map();
+        for (const [kind, key] of entities) if (COMPLETENESS_KINDS.includes(kind)) targets.set(`${kind}|${key}`, [kind, key]);
+        const like = v => `%${String(v).replace(/[!%_]/g, m => `!${m}`)}%`;   // with ESCAPE '!' (same on MySQL and SQLite)
+        for (const r of removed) {
+            // A coarse LIKE finds candidates; completenessOf() then checks each one exactly.
+            const found = r.kind === 'item' && r.payload?.id != null
+                ? await q.query(`SELECT id FROM creatures WHERE droppedItems LIKE ? ESCAPE '!' LIMIT ${DEPENDENT_RECHECK_LIMIT}`, [like(r.payload.id)])
+                : r.kind === 'creature' && typeof r.payload?.name === 'string'
+                    ? await q.query(`SELECT id FROM items WHERE droppedBy LIKE ? ESCAPE '!' LIMIT ${DEPENDENT_RECHECK_LIMIT}`, [like(r.payload.name)])
+                    : [];
+            const other = r.kind === 'item' ? 'creature' : 'item';
+            for (const f of found) targets.set(`${other}|${f.id}`, [other, String(f.id)]);
+        }
+        const touchedKinds = new Set([...targets.values()].map(([k]) => k));
+        for (const other of COMPLETENESS_KINDS) {
+            if (!touchedKinds.has(other === 'item' ? 'creature' : 'item')) continue;
+            const waiting = await q.query(`SELECT entity_key FROM catalog_entities WHERE entity_kind = ? AND incomplete_reason LIKE ? ORDER BY entity_key LIMIT ${DEPENDENT_RECHECK_LIMIT}`,
+                [other, '%known_drop_unresolved%']);
+            for (const w of waiting) targets.set(`${other}|${w.entity_key}`, [other, w.entity_key]);
+        }
+        let updated = 0;
+        for (const [kind, key] of targets.values()) {
+            const [state] = await q.query('SELECT 1 AS present FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [kind, key]);
+            if (!state) continue;
+            const c = await completenessOf(q, kind, Number(key));
+            await q.query('UPDATE catalog_entities SET completeness = ?, incomplete_reason = ?, verified_at = ? WHERE entity_kind = ? AND entity_key = ?',
+                [c.completeness, c.reason, c.verifiedAt, kind, key]);
+            updated++;
+        }
+        return updated;
     }
 
     const confirmationFor = (runId, counts) => `ROLLBACK ${runId.slice(0, 8)} ${counts.entities}`;
@@ -612,6 +706,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
                             [kind, row.entity_key, row.id, runId, firstSeen, row.observed_at]);
                         counts.projected++;
                     }
+                    await refreshCompleteness(tx, rows.map(r => [r.entity_kind, r.entity_key]));
                     const summary = { observations: rows.length, ...counts };
                     await tx.query('UPDATE catalog_runs SET status = ?, finished_at = ?, summary = ? WHERE id = ?', ['succeeded', iso(), JSON.stringify(summary), runId]);
                     await bumpRevision(tx);
@@ -699,7 +794,15 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             return result;
         },
 
-        /** True once any serving row is under catalog provenance (scripts/populate_db.mjs guard). */
+        /**
+         * AC-CAT-013: recomputes completeness of [kind, key] item/creature entities (and entities
+         * waiting on an unresolved drop), inside the caller's transaction when q is given.
+         */
+        async refreshCompleteness(entities, q) {
+            if (q) return refreshCompleteness(q, entities);
+            return db.transaction(tx => refreshCompleteness(tx, entities));
+        },
+
         /**
          * True when a legacy reload would discard catalog work: projected serving rows, or a recorded
          * run that has not projected yet. scripts/populate_db.mjs then requires the discard flag.

@@ -17,6 +17,7 @@ spec:
       date: "2026-09-28"
       changes:
         - "CAT-TASK-001: source contracts in catalog/contracts (policy, guide, gameLocation, classify), guide parsers ported from the supplied userscripts (catalog/guideParsers.js), and synthetic fixtures. Owner decisions DEC-CAT-017 (guide index 0 is newest; order re-checked every run), DEC-CAT-018 (guide policy numbers), DEC-CAT-019 (fetchLocation uncaptured: observe_realm stays refused; item_frontier unavailable). [AC-CAT-003, AC-CAT-011, AC-CAT-012, AC-CAT-015]"
+        - "CAT-TASK-009: migrations 006 (catalog_guide_state, catalog_guide_ids, catalog_guide_usage) and 007 (catalog_entities completeness/incomplete_reason/verified_at; guide_discovery run mode and job kind, replacing the 003 CHECKs on upgraded databases). _gg_data/handler/guideDiscoveryStore.js persists checkpoints, per-ID refresh with backoff, and the guide daily counter. Projection and rollback recompute completeness for touched items/creatures and for entities whose known drops changed. Reasons: guide_detail_missing, guide_detail_failed, required_field_missing, known_drop_unresolved. [AC-CAT-011, AC-CAT-012, AC-CAT-013, AC-CAT-015]"
     - version: "1.2.1"
       date: "2026-09-28"
       changes:
@@ -655,10 +656,11 @@ tasks:
       on catalog_entities for items and creatures. Stage a minimal incomplete record for a new index
       ID; recalculate completeness when guide detail or known drops change. Test upgrades of databases
       that already applied migrations 003-005 and keep rollback/provenance behavior intact.
-    affects: "_gg_data/migrations/006_catalog_discovery.sql, _gg_data/handler/catalogStore.js, tests/data-storage/catalog-store.test.mjs"
+    affects: "_gg_data/migrations/003_catalog_sync.sql, _gg_data/migrations/006_catalog_discovery.sql, _gg_data/migrations/007_catalog_discovery_columns.mjs, _gg_data/handler/catalogStore.js, _gg_data/handler/guideDiscoveryStore.js, tests/helpers/fake-mysql.mjs, tests/data-storage/catalog-discovery.test.mjs, tests/data-storage/catalog-store.test.mjs"
     depends_on: ["CAT-TASK-002"]
     source: "AC-CAT-011, AC-CAT-012, AC-CAT-013"
-    status: TODO
+    status: DONE
+    progress: "2026-09-28: migrations 006/007, guideDiscoveryStore, completeness in projection and rollback. Fake MySQL tests pass; replacing the 003 CHECKs on an upgraded database is covered by a real-MySQL-only test that runs in CI (no local MySQL)."
 
   - id: CAT-TASK-010
     description: |

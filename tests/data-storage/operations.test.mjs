@@ -97,10 +97,11 @@ test('AC-DATA-001: the project migrations create the expected tables, once per p
     const client = await db.getConnection();
     for (const t of ['key_value_store', 'items', 'creatures', 'master_realms', 'realms', 'relics', 'schema_migrations',
         'config_overrides', 'module_preferences', 'account_profiles', 'audit_events',
-        'quests', 'realm_creatures', 'creature_drops', 'catalog_runs', 'catalog_observations', 'catalog_entities']) {
+        'quests', 'realm_creatures', 'creature_drops', 'catalog_runs', 'catalog_observations', 'catalog_entities',
+        'catalog_guide_state', 'catalog_guide_ids', 'catalog_guide_usage']) {
         assert.ok(await tableExists(client, t), `missing table ${t}`);
     }
-    assert.deepEqual(await versions(client), ['001_initial_schema.sql', '002_control_plane.sql', '003_catalog_sync.sql', '004_serving_relations.mjs', '005_catalog_key_width.sql']);
+    assert.deepEqual(await versions(client), ['001_initial_schema.sql', '002_control_plane.sql', '003_catalog_sync.sql', '004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs']);
 });
 
 // --- AC-DATA-002: FIFO lists -----------------------------------------------------------------------

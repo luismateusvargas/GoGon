@@ -7,6 +7,7 @@
 -- provenance cannot silently disappear. Writers must upsert serving rows with
 -- INSERT ... ON DUPLICATE KEY UPDATE, never REPLACE INTO (REPLACE deletes the parent row first).
 -- Existing serving columns get their foreign keys in 004_serving_relations.mjs.
+-- 'guide_discovery' (CAT-TASK-009) is in the mode/kind lists for new databases; 007 adds it to existing ones.
 
 -- --- Normalized serving relations -----------------------------------------------------------
 
@@ -51,7 +52,7 @@ INSERT IGNORE INTO catalog_state (id, revision) VALUES (1, 0);
 
 CREATE TABLE IF NOT EXISTS catalog_runs (
     id CHAR(36) NOT NULL PRIMARY KEY,
-    mode VARCHAR(32) NOT NULL CHECK (mode IN ('observe_realm', 'item_frontier', 'seed', 'promote', 'revert', 'baseline_snapshot')),
+    mode VARCHAR(32) NOT NULL CHECK (mode IN ('observe_realm', 'item_frontier', 'guide_discovery', 'seed', 'promote', 'revert', 'baseline_snapshot')),
     source VARCHAR(32) NOT NULL CHECK (source IN ('game_session', 'guide_baseline', 'manual_import')),
     status VARCHAR(16) NOT NULL CHECK (status IN ('queued', 'running', 'paused', 'succeeded', 'failed', 'cancelled', 'reverted', 'discarded')),
     started_at VARCHAR(30) NOT NULL,
@@ -65,7 +66,7 @@ CREATE TABLE IF NOT EXISTS catalog_runs (
 -- one active job per kind (per cursor): a second one fails with ER_DUP_ENTRY (AC-CAT-008 -> 409).
 CREATE TABLE IF NOT EXISTS catalog_jobs (
     id CHAR(36) NOT NULL PRIMARY KEY,
-    kind VARCHAR(32) NOT NULL CHECK (kind IN ('observe_realm', 'item_frontier')),
+    kind VARCHAR(32) NOT NULL CHECK (kind IN ('observe_realm', 'item_frontier', 'guide_discovery')),
     cursor_json TEXT NOT NULL CHECK (JSON_VALID(cursor_json)),
     state VARCHAR(16) NOT NULL CHECK (state IN ('queued', 'running', 'paused', 'completed', 'failed', 'cancelled')),
     request_budget INT NOT NULL CHECK (request_budget BETWEEN 1 AND 50),

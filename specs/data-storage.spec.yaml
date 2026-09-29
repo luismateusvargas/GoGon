@@ -4,7 +4,7 @@
 spec:
   id: "data-storage-v1"
   status: locked
-  version: "2.1.0"
+  version: "2.1.1"
   created: "2026-09-22"
   updated: "2026-09-28"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: []
 
   changelog:
+    - version: "2.1.1"
+      date: "2026-09-28"
+      changes:
+        - "catalog-sync CAT-TASK-009: migrations 006_catalog_discovery.sql and 007_catalog_discovery_columns.mjs (guarded ADD COLUMN via ER_DUP_FIELDNAME and CHECK replacement through information_schema, both safe to re-run, AC-DATA-001). The MySQL fake emulates information_schema.CHECK_CONSTRAINTS as empty and maps duplicate columns to ER_DUP_FIELDNAME; CHECK replacement is verified on the real-MySQL CI run."
     - version: "2.1.0"
       date: "2026-09-28"
       changes:

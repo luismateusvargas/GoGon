@@ -522,7 +522,7 @@ test('CAT-TASK-002: a database that applied the narrow 003 gets 255-character en
     const db = await quietly(() => freshClient({ migrate: false }));
     await quietly(() => runMigrations(db, dir));
     const applied = await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations')));
-    assert.deepEqual(applied, ['004_serving_relations.mjs', '005_catalog_key_width.sql'], '003 is skipped by name; 005 widens it');
+    assert.deepEqual(applied, ['004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs'], '003 is skipped by name; 005 widens it');
     if (REAL_MYSQL) {
         const widths = await db.query("SELECT TABLE_NAME AS t, CHARACTER_MAXIMUM_LENGTH AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'entity_key' ORDER BY TABLE_NAME");
         assert.deepEqual(widths.map(w => [w.t, Number(w.n)]), [['catalog_entities', 255], ['catalog_observations', 255]]);
