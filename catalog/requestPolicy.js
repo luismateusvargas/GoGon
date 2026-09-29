@@ -58,9 +58,9 @@ export function readOperations(contracts = { location: GAME_LOCATION_CONTRACT, i
     };
 }
 
-/** Why a game job kind cannot run, or null. guide_discovery is run by the browser relay. */
+/** Why a catalog job kind cannot run, or null. Guide work uses the server worker or legacy relay. */
 export function unavailableReason(kind, ops = readOperations()) {
-    if (kind === 'guide_discovery') return 'browser_relay';
+    if (kind === 'guide_discovery') return null;
     const op = ops[kind];
     if (!op) return 'unknown_kind';
     return op.available ? null : 'contract_unverified';

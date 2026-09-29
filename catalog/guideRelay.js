@@ -1,6 +1,7 @@
 // catalog/guideRelay.js - CAT-TASK-010 / AC-CAT-011, AC-CAT-012, AC-CAT-013, AC-CAT-014, AC-CAT-015
-// The server half of the guide relay (DEC-CAT-015). The relay userscript in the owner's browser
-// authenticates with a stage-only token and asks for a lease: the server picks one guide kind and
+// Guide lease planner (DEC-CAT-015). The optional browser relay authenticates with a stage-only
+// token; the in-process server guide worker uses a private database identity. Both ask for a lease:
+// the server picks one guide kind and
 // the exact index pages or detail IDs to read, within the guide policy and the daily cap. The relay
 // returns results in lease order; the server validates them (catalog/guideNormalizers.js), stages the
 // observations under the owner-enabled guide_discovery job, and only then moves the checkpoints.
@@ -19,6 +20,7 @@ import { isDescendingPage } from './contracts/guide.js';
 import { normalizeGuideRecord, indexEntry } from './guideNormalizers.js';
 
 export const TOKEN_PREFIX = 'ggr_';
+export const SERVER_WORKER_ID = '00000000-0000-4000-8000-000000000001';
 export const MAX_TOKEN_TTL_DAYS = 7;
 export const MAX_ACTIVE_TOKENS = 3;
 export const MAX_RELAY_BODY = 512 * 1024;
@@ -346,7 +348,7 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             if (typeof label !== 'string' || !/^[\w .-]{1,64}$/.test(label)) throw invalid('label: 1-64 letters, digits, spaces, dot, dash, underscore.', 'label');
             if (!(Number.isInteger(ttlDays) && ttlDays >= 1 && ttlDays <= MAX_TOKEN_TTL_DAYS)) throw invalid(`ttlDays must be 1-${MAX_TOKEN_TTL_DAYS}.`, 'ttlDays');
             const t = now();
-            const [{ n }] = await db.query('SELECT COUNT(*) AS n FROM catalog_relay_tokens WHERE revoked_at IS NULL AND expires_at > ?', [iso(t)]);
+            const [{ n }] = await db.query('SELECT COUNT(*) AS n FROM catalog_relay_tokens WHERE id <> ? AND revoked_at IS NULL AND expires_at > ?', [SERVER_WORKER_ID, iso(t)]);
             if (Number(n) >= MAX_ACTIVE_TOKENS) throw new CatalogError('conflict', `At most ${MAX_ACTIVE_TOKENS} relay tokens can be active; revoke one first.`);
             const token = TOKEN_PREFIX + crypto.randomBytes(32).toString('base64url');
             const id = crypto.randomUUID();
@@ -357,13 +359,26 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
         },
 
         async listTokens() {
-            return (await db.query('SELECT id, label, scope, created_at, expires_at, revoked_at, last_used_at FROM catalog_relay_tokens ORDER BY created_at DESC LIMIT 20'))
+            return (await db.query('SELECT id, label, scope, created_at, expires_at, revoked_at, last_used_at FROM catalog_relay_tokens WHERE id <> ? ORDER BY created_at DESC LIMIT 20', [SERVER_WORKER_ID]))
                 .map(r => ({ id: r.id, label: r.label, scope: r.scope, createdAt: r.created_at, expiresAt: r.expires_at, revokedAt: r.revoked_at, lastUsedAt: r.last_used_at, active: !r.revoked_at && Date.parse(r.expires_at) > now() }));
         },
 
         async revokeToken(id) {
+            if (id === SERVER_WORKER_ID) throw invalid('The server guide worker is managed internally.', 'id');
             const { affectedRows } = await db.query('UPDATE catalog_relay_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL', [iso(), id]);
             if (!affectedRows) throw new CatalogError('not_found', 'Unknown or already revoked token.');
+        },
+
+        /** A database identity for in-process guide work, with no bearer value to expose. */
+        async ensureServerWorker() {
+            const t = now();
+            const tokenHash = crypto.createHash('sha256').update(crypto.randomBytes(32)).digest('hex');
+            await db.query(
+                `INSERT INTO catalog_relay_tokens (id, token_hash, label, scope, created_at, expires_at, last_used_at)
+                 VALUES (?, ?, ?, 'guide_stage', ?, ?, ?) AS new
+                 ON DUPLICATE KEY UPDATE expires_at = new.expires_at, last_used_at = new.last_used_at, revoked_at = NULL`,
+                [SERVER_WORKER_ID, tokenHash, 'Server guide worker', iso(t), iso(t + MAX_TOKEN_TTL_DAYS * DAY), iso(t)]);
+            return SERVER_WORKER_ID;
         },
 
         /** The token row for a bearer value, or null (unknown, revoked, expired, or wrong scope). */

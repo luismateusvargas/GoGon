@@ -9,7 +9,7 @@ import { DOMParser } from 'linkedom';
 import { freshClient, closeClients } from '../helpers/db-client.mjs';
 import { createCatalogStore, CatalogError } from '../../_gg_data/handler/catalogStore.js';
 import { createGuideDiscoveryStore } from '../../_gg_data/handler/guideDiscoveryStore.js';
-import { createGuideRelay, hashToken, TOKEN_PREFIX, MAX_RELAY_BODY } from '../../catalog/guideRelay.js';
+import { createGuideRelay, hashToken, TOKEN_PREFIX, MAX_RELAY_BODY, SERVER_WORKER_ID } from '../../catalog/guideRelay.js';
 import { runLease, relayCycle } from '../../catalog/relayClient.js';
 import { GUIDE_POLICY } from '../../catalog/contracts/policy.js';
 import { buildRelayUserscript, OUTPUT } from '../../scripts/catalog/build-relay-userscript.mjs';
@@ -98,6 +98,21 @@ async function setup() {
 const state = async (g, kind) => g.getState(kind);
 const count = async (db, table) => Number((await db.query(`SELECT COUNT(*) AS n FROM ${table}`))[0].n);
 const enableJob = store => store.createJob({ kind: 'guide_discovery', cursor: {}, requestBudget: 50 });
+
+test('server guide worker has a stable lease identity without an external bearer token', async () => {
+    const { db, relay, store } = await setup();
+    assert.equal(await relay.ensureServerWorker(), SERVER_WORKER_ID);
+    assert.equal(await relay.ensureServerWorker(), SERVER_WORKER_ID);
+    const rows = await db.query('SELECT id, token_hash FROM catalog_relay_tokens WHERE id = ?', [SERVER_WORKER_ID]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].token_hash.length, 64);
+    assert.ok((await relay.listTokens()).every(token => token.id !== SERVER_WORKER_ID));
+    await assert.rejects(relay.revokeToken(SERVER_WORKER_ID), error => error.code === 'invalid');
+    await enableJob(store);
+    const issued = await relay.nextLease(SERVER_WORKER_ID);
+    assert.equal(issued.status, 'lease');
+    await relay.submit(SERVER_WORKER_ID, issued.lease.leaseId, { results: [], requests: 0 });
+});
 
 test('AC-CAT-014: without an owner-enabled guide job there is no work; a paused job gives none either', async () => {
     const { relay, tokenId, store } = await setup();

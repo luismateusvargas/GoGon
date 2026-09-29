@@ -272,7 +272,7 @@ const REASON_LABELS = {
     required_field_missing: 'a required field is missing',
     known_drop_unresolved: 'a known drop is not in the catalog',
 };
-const UNAVAILABLE_LABELS = { contract_unverified: 'needs a verified game read contract', browser_relay: 'runs in the guide relay userscript' };
+const UNAVAILABLE_LABELS = { contract_unverified: 'needs a verified game read contract' };
 const GUIDE_STATUS_CLASS = { ok: 'pill-ok', running: 'pill-ok', due: 'pill-warn', partial: 'pill-warn', waiting_for_browser: 'pill-warn', challenged: 'pill-bad', failed: 'pill-bad', idle: '' };
 
 function coverageCell(c) {
@@ -426,7 +426,7 @@ function renderCatalogState() {
     const select = document.getElementById('jf-kind');
     if (select.options.length === 0) {
         for (const [kind, why] of Object.entries(c.available)) {
-            const usable = why === null || why === 'browser_relay';
+            const usable = why === null;
             const option = el('option', { disabled: !usable }, usable ? kind : `${kind} (${UNAVAILABLE_LABELS[why] ?? why})`);
             option.setAttribute('value', kind);
             select.append(option);

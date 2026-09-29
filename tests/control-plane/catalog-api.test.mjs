@@ -291,5 +291,5 @@ test('AC-CAT-008: dashboard state (SSE) carries catalog jobs and guide status', 
     const state = await req('GET', '/api/state', { cookie });
     assert.ok(Array.isArray(state.json.catalog.jobs));
     assert.equal(state.json.catalog.guide.length, 4);
-    assert.equal(state.json.catalog.available.guide_discovery, 'browser_relay');
+    assert.equal(state.json.catalog.available.guide_discovery, null);
 });
