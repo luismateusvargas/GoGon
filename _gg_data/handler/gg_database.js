@@ -164,37 +164,52 @@ export async function getContent(key) {
 * @param {number} [maxSize=100] - The maximum number of items to store in the list.
 */
 export async function setContent(key, newItem, maxSize = 100) {
-    await (await db()).transaction(async tx => {
-        // 1. Fetch the existing data, locking the row until commit
-        const rows = await tx.query('SELECT `value` FROM key_value_store WHERE `key` = ? FOR UPDATE', [key]);
-        const existingJson = rows.length ? rows[0].value : null;
-        let currentList = [];
-
-        // 2. Parse the existing JSON array or initialize a new one
-        if (existingJson) {
+    const client = await db();
+    const maxAttempts = 5;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+            // Materialize the row outside the read transaction. Locking a missing key takes a
+            // gap lock, which can deadlock when several callers append to a new list at once.
             try {
-                const parsedData = JSON.parse(existingJson);
-                if (Array.isArray(parsedData)) {
-                    currentList = parsedData;
-                } else {
-                    console.warn(`[GG_DB] Stored value for key "${key}" is not a list. Starting with a fresh list.`);
-                }
+                await client.query('INSERT INTO key_value_store (`key`, `value`) VALUES (?, ?)', [key, '[]']);
             } catch (error) {
-                console.warn(`[GG_DB] Error parsing JSON for key "${key}". Starting with a fresh list.`, error.message);
+                if (error?.code !== 'ER_DUP_ENTRY') throw error;
             }
+            await client.transaction(async tx => {
+                // Lock the row for the whole read-modify-write.
+                const rows = await tx.query('SELECT `value` FROM key_value_store WHERE `key` = ? FOR UPDATE', [key]);
+                const existingJson = rows.length ? rows[0].value : null;
+                let currentList = [];
+
+                if (existingJson) {
+                    try {
+                        const parsedData = JSON.parse(existingJson);
+                        if (Array.isArray(parsedData)) {
+                            currentList = parsedData;
+                        } else {
+                            console.warn(`[GG_DB] Stored value for key "${key}" is not a list. Starting with a fresh list.`);
+                        }
+                    } catch (error) {
+                        console.warn(`[GG_DB] Error parsing JSON for key "${key}". Starting with a fresh list.`, error.message);
+                    }
+                }
+
+                currentList.push(newItem);
+                while (currentList.length > maxSize) currentList.shift();
+
+                // A concurrent delete can remove the materialized row before this transaction.
+                if (rows.length) {
+                    await tx.query('UPDATE key_value_store SET `value` = ? WHERE `key` = ?', [JSON.stringify(currentList), key]);
+                } else {
+                    await tx.query('REPLACE INTO key_value_store (`key`, `value`) VALUES (?, ?)', [key, JSON.stringify(currentList)]);
+                }
+            });
+            return;
+        } catch (error) {
+            if (error?.code !== 'ER_LOCK_DEADLOCK' || attempt === maxAttempts - 1) throw error;
+            await new Promise(resolve => setTimeout(resolve, 5 * 2 ** attempt));
         }
-
-        // 3. Add the new item to the end of the list
-        currentList.push(newItem);
-
-        // 4. If the list is over the limit, remove the oldest items from the beginning
-        while (currentList.length > maxSize) {
-            currentList.shift();
-        }
-
-        // 5. Save the updated list back to the database
-        await tx.query('REPLACE INTO key_value_store (`key`, `value`) VALUES (?, ?)', [key, JSON.stringify(currentList)]);
-    });
+    }
 }
 
 /**

@@ -124,6 +124,24 @@ test('AC-DATA-002: concurrent setContent calls on one key lose no item', async (
     assert.deepEqual([...list].sort((a, b) => a - b), Array.from({ length: 20 }, (_, i) => i));
 });
 
+test('AC-DATA-002: setContent retries a rolled-back deadlock without duplicating an item', async () => {
+    const client = await db.getConnection();
+    const transaction = client.transaction;
+    let attempts = 0;
+    client.transaction = operation => transaction(async lockedClient => {
+        const result = await operation(lockedClient);
+        if (attempts++ === 0) throw Object.assign(new Error('simulated deadlock'), { code: 'ER_LOCK_DEADLOCK' });
+        return result;
+    });
+    try {
+        await db.setContent('fifo_deadlock_retry', 'kept');
+    } finally {
+        client.transaction = transaction;
+    }
+    assert.equal(attempts, 2);
+    assert.deepEqual(JSON.parse(await db.getContent('fifo_deadlock_retry')), ['kept']);
+});
+
 test('AC-DATA-002: corrupted or non-array stored JSON is reset with a warning', async () => {
     await db.setObject('corrupt', { not: 'a list' });
     let { lines } = await quietly(() => db.setContent('corrupt', 'a'));
