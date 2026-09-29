@@ -313,11 +313,11 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "12dca5c0dc469b89787e3dcc73bfefc93ea028c4dd510a6a6be64f460a152721",
+      "reviewedRootHash": "72131f69eab34accb6a256080556c20fc609d203cafd0cb475a817792d3b9bfb",
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Bootstrap wiring for app.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: GG_CONTROL_ENABLED uses the runtime registry."
+      "rationale": "Root-only, added 2026-09-24. Bootstrap wiring for app.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: GG_CONTROL_ENABLED uses the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API)."
     },
     "control-plane/public/app.js": {
       "disposition": "retain-root",
@@ -373,11 +373,11 @@
       "disposition": "retain-root",
       "status": "root-only",
       "reviewedBackupHash": null,
-      "reviewedRootHash": "9e28c9691d846f4c23bf98dd0c5e79e8b951032c43601af2d0102b2a76737526",
+      "reviewedRootHash": "9dbe402bc39b4ce3ff5d7a23e4a3ff1a98b136b398350e4b8a98da09b2e47c2e",
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Authenticated dashboard/API server. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: bootstrap settings use the runtime registry."
+      "rationale": "Root-only, added 2026-09-24. Authenticated dashboard/API server. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: bootstrap settings use the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API)."
     },
     "discord_modules/buff_data.json": {
       "disposition": "port",
@@ -854,6 +854,14 @@
       "reviewedRootHash": "1915bf7912309f509d2af6606da4b64776b014e38023cf4093049c6711450d29",
       "owners": [],
       "rationale": "Root-only, added 2026-09-28 by CAT-TASK-004: CatalogSync engine task and the process-wide catalog lock."
+    },
+    "catalog/catalogService.js": {
+      "disposition": "retain-root",
+      "status": "root-only",
+      "reviewedBackupHash": null,
+      "reviewedRootHash": "a966573472f98d453196ef9b6094e7657d6123148ca833047e27e133e6f11dd4",
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-005: Catalog API service (browse, detail, jobs, plans) over code-owned column lists."
     }
   }
 }

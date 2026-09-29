@@ -9,12 +9,12 @@
     "reviewer": "Claude Code (pending owner confirmation)"
   },
   "summary": {
-    "paths": 84,
+    "paths": 85,
     "identical": 1,
     "byDisposition": {
       "import-data": 1,
       "port": 7,
-      "retain-root": 73,
+      "retain-root": 74,
       "retire-legacy": 3
     },
     "failures": 0
@@ -482,6 +482,17 @@
       "rationale": "Root is a superset: GG_DEBUG names plus formatGameTime, formatRemainingTime, and formatDuration helpers. Re-reviewed 2026-09-24 after CTRL-TASK-001: GG_DEBUG is a hot registry setting ('0' now really silences LOG); debug dir via registry."
     },
     {
+      "path": "catalog/catalogService.js",
+      "status": "root-only",
+      "backupHash": null,
+      "rootHash": "a966573472f98d453196ef9b6094e7657d6123148ca833047e27e133e6f11dd4",
+      "disposition": "retain-root",
+      "reviewState": "reviewed",
+      "secretBearing": false,
+      "owners": [],
+      "rationale": "Root-only, added 2026-09-28 by CAT-TASK-005: Catalog API service (browse, detail, jobs, plans) over code-owned column lists."
+    },
+    {
       "path": "catalog/catalogTask.js",
       "status": "root-only",
       "backupHash": null,
@@ -660,14 +671,14 @@
       "path": "control-plane/index.mjs",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "12dca5c0dc469b89787e3dcc73bfefc93ea028c4dd510a6a6be64f460a152721",
+      "rootHash": "72131f69eab34accb6a256080556c20fc609d203cafd0cb475a817792d3b9bfb",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Bootstrap wiring for app.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: GG_CONTROL_ENABLED uses the runtime registry."
+      "rationale": "Root-only, added 2026-09-24. Bootstrap wiring for app.mjs. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: GG_CONTROL_ENABLED uses the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API)."
     },
     {
       "path": "control-plane/public/app.js",
@@ -738,14 +749,14 @@
       "path": "control-plane/server.mjs",
       "status": "root-only",
       "backupHash": null,
-      "rootHash": "9e28c9691d846f4c23bf98dd0c5e79e8b951032c43601af2d0102b2a76737526",
+      "rootHash": "9dbe402bc39b4ce3ff5d7a23e4a3ff1a98b136b398350e4b8a98da09b2e47c2e",
       "disposition": "retain-root",
       "reviewState": "reviewed",
       "secretBearing": false,
       "owners": [
         "control-plane-v1:CTRL-TASK-005"
       ],
-      "rationale": "Root-only, added 2026-09-24. Authenticated dashboard/API server. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: bootstrap settings use the runtime registry."
+      "rationale": "Root-only, added 2026-09-24. Authenticated dashboard/API server. Re-reviewed 2026-09-24 after data-storage 2.0.0 (DATA-TASK-004..010): live database moved to MySQL; the data layer is async and every call is awaited. Re-reviewed 2026-09-24: bootstrap settings use the runtime registry. Re-reviewed 2026-09-28 after CAT-TASK-005 (Catalog API)."
     },
     {
       "path": "discordBot.mjs",
