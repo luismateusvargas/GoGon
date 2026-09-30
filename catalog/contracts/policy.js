@@ -24,9 +24,8 @@ export const GUIDE_POLICY = Object.freeze({
     minDelayMs: 3_000,                    // between two guide requests
     maxRequestsPerExecution: 50,          // one relay work lease (catalog_jobs.request_budget <= 50)
     dailyRequestCap: null,                // owner disabled the daily cap; usage is still counted
-    checkIntervalMs: 24 * 3600_000,       // a kind becomes due 24 h after its last successful check
-    detailRefreshAfterMs: 30 * 24 * 3600_000, // older details are re-read when this old
-    detailRefreshPerExecution: 10,        // at most this many due refreshes per lease
+    checkIntervalMs: 7 * 24 * 3600_000,   // a kind becomes due a week after its last successful check (DEC-CAT-023)
+    detailRefreshAfterMs: 7 * 24 * 3600_000, // every detail is re-read weekly; a weekly sweep start also makes all due
     maxDetailAttempts: 5,                 // then the ID stays incomplete with reason detail_failed
     leaseTtlMs: 10 * 60_000,              // an unanswered work lease expires and is re-issued
     partialRetryMs: 60 * 60_000,          // a sweep stopped by a bad or failed page waits this long before retrying

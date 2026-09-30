@@ -102,6 +102,19 @@ test('migration 012 moves stored images to cdn2 and re-runs as a no-op', async (
     assert.equal((await db.query('SELECT imageUrl FROM creatures WHERE id = 426'))[0].imageUrl, 'https://cdn2.fallensword.com/creatures/426bc.png');
 });
 
+test('CAT-TASK-014: migration 013 makes never-read guide details due now and keeps read ones scheduled', async () => {
+    const { db } = await setup();
+    const later = '2026-10-20T00:00:00.000Z';
+    await db.query(`INSERT INTO catalog_guide_ids (entity_kind, entity_id, first_seen_at, next_detail_at, detail_status, detail_checked_at) VALUES
+        ('creature', 1, '2026-09-29T00:00:00.000Z', ?, 'pending', NULL),
+        ('item', 2, '2026-09-29T00:00:00.000Z', ?, 'ok', '2026-09-29T00:00:00.000Z')`, [later, later]);
+    for (const statement of splitStatements(readFileSync(path.resolve('_gg_data/migrations/013_guide_weekly_full_pass.sql'), 'utf8'))) {
+        await db.query(statement);
+    }
+    const rows = await db.query('SELECT entity_id, next_detail_at FROM catalog_guide_ids ORDER BY entity_id');
+    assert.deepEqual(rows.map(r => r.next_detail_at), ['1970-01-01T00:00:00.000Z', later]);
+});
+
 test('CAT-TASK-002: relation tables reject dangling references and cascade with their parents', async () => {
     const { db } = await setup();
     await assert.rejects(db.query('INSERT INTO realm_creatures (realm_id, creature_id) VALUES (1, 2)'), e => e.code === 'ER_NO_REFERENCED_ROW_2');
@@ -566,7 +579,7 @@ test('CAT-TASK-002: a database that applied the narrow 003 gets 255-character en
     const db = await quietly(() => freshClient({ migrate: false }));
     await quietly(() => runMigrations(db, dir));
     const applied = await quietly(() => runMigrations(db, path.resolve('_gg_data/migrations')));
-    assert.deepEqual(applied, ['004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql', '011_master_realm_connections.mjs', '012_media_host.mjs'], '003 is skipped by name; 005 widens it');
+    assert.deepEqual(applied, ['004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql', '011_master_realm_connections.mjs', '012_media_host.mjs', '013_guide_weekly_full_pass.sql'], '003 is skipped by name; 005 widens it');
     if (REAL_MYSQL) {
         const widths = await db.query("SELECT TABLE_NAME AS t, CHARACTER_MAXIMUM_LENGTH AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'entity_key' ORDER BY TABLE_NAME");
         assert.deepEqual(widths.map(w => [w.t, Number(w.n)]), [['catalog_entities', 255], ['catalog_observations', 255]]);

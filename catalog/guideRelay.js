@@ -28,6 +28,7 @@ const INDEX_OUTCOMES = ['ok', 'empty', 'challenge', 'invalid', 'error', 'too_lar
 const DETAIL_OUTCOMES = ['ok', 'missing', 'challenge', 'invalid', 'error', 'too_large'];
 const STOPPING_DETAIL = ['challenge', 'invalid', 'error', 'too_large'];   // 'missing' is a confirmed 404; the relay goes on
 const LEASE_ORDER = ['master_realm', 'realm', 'creature', 'item'];   // small indexes first
+const DETAIL_ORDER = ['creature', 'item', 'master_realm', 'realm'];   // what Discord announcements read first
 const SERVING_TABLE = { item: 'items', creature: 'creatures', realm: 'realms', master_realm: 'master_realms' };
 const DAY = 24 * 3600_000;
 
@@ -135,6 +136,8 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             if (s.sweepMode && s.status === 'partial' && t - Date.parse(s.updatedAt) < policy.partialRetryMs) continue;
             if (!s.sweepMode) {
                 if (!due(s, t)) continue;
+                // DEC-CAT-023: a weekly check reads every known detail of the kind, not a rolling share.
+                await tx.query('UPDATE catalog_guide_ids SET next_detail_at = ? WHERE entity_kind = ? AND next_detail_at > ?', [iso(t), k, iso(t)]);
                 await guideStore.updateState(k, {
                     sweepMode: 'full', sweepStartedAt: iso(t), nextPage: 0, sweepPagesChecked: 0,
                     sweepMaxId: 0, sweepPrevMinId: null, sweepPrevPageIds: null,
@@ -147,12 +150,10 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             if (work.length) { kind = k; break; }
         }
         if (!kind) {
-            for (const k of LEASE_ORDER) {
-                const pending = (await tx.query(
-                    `SELECT entity_id, detail_status FROM catalog_guide_ids WHERE entity_kind = ? AND next_detail_at <= ?
-                     ORDER BY CASE WHEN detail_status = 'pending' THEN 0 ELSE 1 END, next_detail_at, entity_id LIMIT ${budget}`, [k, iso(t)]));
-                let refreshes = 0;
-                work = pending.filter(r => r.detail_status === 'pending' || refreshes++ < policy.detailRefreshPerExecution)
+            for (const k of DETAIL_ORDER) {
+                work = (await tx.query(
+                    `SELECT entity_id FROM catalog_guide_ids WHERE entity_kind = ? AND next_detail_at <= ?
+                     ORDER BY CASE WHEN detail_status = 'pending' THEN 0 ELSE 1 END, next_detail_at, entity_id LIMIT ${budget}`, [k, iso(t)]))
                     .map(r => ({ type: 'detail', id: Number(r.entity_id) }));
                 if (work.length) { kind = k; break; }
             }
