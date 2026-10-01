@@ -138,8 +138,9 @@ came from, and every change it makes to the tables Discord reads can be rolled b
   page until the guide repeats its final page, then reads every known detail of that kind (creatures
   first, then items, master realms and realms). Existing snapshot item and creature IDs are tracked as
   pending and due at once, like new IDs. A full weekly pass is roughly 33,000 requests, about 28 hours
-  at 3 s apart; the worker is then idle until the next week. If browser verification fails, the lease
-  stops without moving the successful checkpoint and the worker retries after the partial retry delay.
+  at 3 s apart; the worker is then idle until the next week. If browser verification fails after a
+  challenged request, the lease stops without moving the successful checkpoint and the worker retries
+  in five minutes. A page that remains challenged after verification retains the one-hour partial retry.
   A successful renewal continues the same leased page, so pending details can advance automatically.
 
   The earlier Tampermonkey relay and its stage-only tokens remain available for manual recovery; the

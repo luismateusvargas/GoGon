@@ -230,3 +230,37 @@ test('guide worker preserves the checkpoint when browser renewal fails', async (
     assert.equal((await worker.run()).challenge, true);
     assert.deepEqual(relay.calls.submissions[0].results, [{ type: 'index', page: 0, outcome: 'challenge' }]);
 });
+
+test('guide worker retries a transient browser failure after five minutes without restarting', async () => {
+    const relay = fakeRelay();
+    let currentTime = Date.now();
+    let renewals = 0;
+    const nextLease = relay.nextLease;
+    relay.nextLease = async workerId => {
+        const next = await nextLease(workerId);
+        next.lease.expiresAt = new Date(currentTime + 60_000).toISOString();
+        return next;
+    };
+    const worker = createGuideWorker({ relay, clearance: 'stale-clearance', now: () => currentTime,
+        renewClearance: async () => {
+            if (++renewals === 1) throw new GuideClearanceError('transient failure');
+            return { clearance: 'fresh-clearance', userAgent: 'Chrome guide test' };
+        },
+        fetchFn: async (url, options) => {
+            const stale = options.headers.cookie.includes('stale');
+            return new Response(stale ? challenge : itemIndex, {
+                status: stale ? 403 : 200,
+                headers: { 'content-type': 'text/html', ...(stale ? { 'cf-mitigated': 'challenge' } : {}) },
+            });
+        } });
+
+    assert.equal((await worker.run()).challenge, true);
+    assert.equal(renewals, 1);
+    currentTime += 5 * 60_000 - 1;
+    assert.deepEqual(await worker.run(), { status: 'challenged' });
+    assert.equal(renewals, 1);
+    currentTime++;
+    assert.equal((await worker.run()).challenge, false);
+    assert.equal(renewals, 2);
+    assert.equal(relay.calls.submissions[1].results[0].outcome, 'ok');
+});
