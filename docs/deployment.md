@@ -126,30 +126,21 @@ came from, and every change it makes to the tables Discord reads can be rolled b
   uses and records it without touching the serving tables. Promote each part in order: *Preview promotion*
   shows the exact row changes, and you type the phrase it shows to apply it. Promoted parts can be rolled
   back from *History & delete*.
-- **Guide discovery.** After one browser verification through the VPS network, the server can run
-  scheduled guide reads itself:
-  1. Create a `guide_discovery` job in *Sync* and enable *CatalogSync* on the Modules tab.
-  2. On your computer, open a SOCKS tunnel to the VPS (`ssh -N -D 127.0.0.1:1087 administrator@VPS_HOST`).
-     Open the guide in a separate Firefox profile configured for SOCKS5 at `127.0.0.1:1087` with remote
-     DNS. Complete the initial verification there. A clearance issued for your ordinary local connection
-     may still be challenged from the VPS network.
-  3. In Firefox Storage Inspector, copy only the **value** of the guide's `cf_clearance` cookie. In the
-     dashboard Settings tab, under *Guide catalog*, save it as *Guide clearance*. Set *Guide User-Agent*
-     to that Firefox profile's User-Agent. The clearance is a write-only secret setting, encrypted in
-     the control database; neither the dashboard nor logs return its value. It takes effect on the next
-     CatalogSync run, without a container restart. Do not paste a full HAR into the dashboard.
+- **Guide discovery.** Create a `guide_discovery` job in *Sync* and enable *CatalogSync* on the Modules
+  tab. The server obtains guide clearance through Chromium on the VPS whenever no clearance is available
+  or a guide request is challenged. It retries the interrupted page with the browser's clearance and
+  matching User-Agent. No workstation tunnel, extension, or owner click is part of scheduled operation.
+  Previously saved guide clearance and User-Agent settings remain optional; renewed values live only in
+  the worker process and never appear in logs or the dashboard.
 
   The server uses the existing guide lease planner and parsers: one page at a time, 3 s apart, at most
   50 per lease, with no daily request cap. A kind is checked once a week: the check scans every index
   page until the guide repeats its final page, then reads every known detail of that kind (creatures
   first, then items, master realms and realms). Existing snapshot item and creature IDs are tracked as
   pending and due at once, like new IDs. A full weekly pass is roughly 33,000 requests, about 28 hours
-  at 3 s apart; the worker is then idle until the next week. A Cloudflare challenge stops that lease
-  without moving the successful checkpoint; the kind remains incomplete until a valid clearance is
-  saved. The cookie's browser
-  expiry is not a guarantee that Cloudflare will accept it until that date. If it is invalidated, the
-  one-time browser verification and secret setting update must be repeated. Automated renewal of an
-  interactive challenge is not established.
+  at 3 s apart; the worker is then idle until the next week. If browser verification fails, the lease
+  stops without moving the successful checkpoint and the worker retries after the partial retry delay.
+  A successful renewal continues the same leased page, so pending details can advance automatically.
 
   The earlier Tampermonkey relay and its stage-only tokens remain available for manual recovery; the
   scheduled server reader does not need an extension or a relay token.

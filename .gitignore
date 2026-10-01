@@ -23,6 +23,8 @@ npm-debug.log*
 
 # Node modules
 node_modules/
+__pycache__/
+*.pyc
 
 # IDE
 .vscode/

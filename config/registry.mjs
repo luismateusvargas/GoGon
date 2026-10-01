@@ -110,14 +110,14 @@ export const CONFIG_DEFINITIONS = Object.freeze([
         reloadMode: 'bootstrap', validator: 'https-url', default: 'https://account.huntedcow.com/auth?game=6', owners: ['session'],
         aliases: ['GG_SSO_URL', 'SWS_SSO_URL'], description: 'HuntedCow SSO entry point.' }),
 
-    // --- Guide catalog (server-owned reads after one verified browser session) ---
+    // --- Guide catalog (server-owned reads with automatic browser verification) ---
     def('GG_GUIDE_CLEARANCE', { label: 'Guide clearance', section: 'catalog', type: 'secret', sensitivity: 'secret',
         reloadMode: 'hot', validator: 'guide-clearance', owners: ['CatalogSync'],
-        description: 'cf_clearance value issued through this server network; enter only the value, without the cookie name.' }),
+        description: 'Optional existing clearance. GoGon obtains a fresh one automatically when needed.' }),
     def('GG_GUIDE_USER_AGENT', { label: 'Guide User-Agent', section: 'catalog', type: 'string', sensitivity: 'public',
         reloadMode: 'hot', validator: 'user-agent',
         default: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0',
-        owners: ['CatalogSync'], description: 'User-Agent of the browser that obtained guide clearance.' }),
+        owners: ['CatalogSync'], description: 'Used with an optional saved clearance; automatic renewal uses its own browser User-Agent.' }),
 
     // --- Discord bot (discord-integration-v1) ---
     def('GG_DISCORD_TOKEN', { label: 'Discord bot token', section: 'discord', type: 'secret', sensitivity: 'secret',

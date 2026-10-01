@@ -81,6 +81,11 @@ jobs:
           echo "GG_MYSQL_PASSWORD=ci-throwaway-mysql-password" >> .env
       - run: docker compose config --quiet
       - run: docker compose build
+      - name: Guide browser dependencies are available in the production image
+        run: >-
+          docker compose run --rm --no-deps gogon
+          xvfb-run -a -s "-screen 0 1280x900x24"
+          /opt/gogon-guide-python/bin/python /app/scripts/control-plane/smoke-guide-browser.py
       - name: Bundled MySQL starts healthy with the compose settings
         run: docker compose up --detach --wait --wait-timeout 180 mysql
       - name: The mysql service publishes no host port

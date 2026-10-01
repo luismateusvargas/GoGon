@@ -18,6 +18,7 @@ import { createCatalogService } from '../catalog/catalogService.js';
 import { createSeedService } from '../catalog/seedService.js';
 import { createGuideRelay } from '../catalog/guideRelay.js';
 import { createGuideWorker } from '../catalog/guideWorker.js';
+import { renewGuideClearance } from '../catalog/guideClearance.js';
 import { configureCatalogTask, runCatalogSync } from '../catalog/catalogTask.js';
 
 /**
@@ -37,6 +38,7 @@ export async function createCatalog() {
     const guideWorker = createGuideWorker({ relay,
         getClearance: () => getSetting('GG_GUIDE_CLEARANCE'),
         getUserAgent: () => getSetting('GG_GUIDE_USER_AGENT'),
+        renewClearance: renewGuideClearance,
     });
     configureCatalogTask({ store, collector, guideWorker });
     const service = createCatalogService({ db, store, guideStore, collector, relay, seeds: createSeedService({ db, store }) });

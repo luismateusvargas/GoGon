@@ -63,7 +63,7 @@ test('AC-DATA-007 / DATA-TASK-008: MySQL is bundled, private, persistent, and re
 
 test('DATA-TASK-008/010: the image has no native build toolchain and SQLite is absent from project dependencies', () => {
     const df = strip(read('Dockerfile'));
-    assert.doesNotMatch(df, /apt-get|g\+\+|python3/);
+    assert.doesNotMatch(df, /g\+\+|build-essential|libsqlite3-dev/);
     const pkg = JSON.parse(read('package.json'));
     assert.ok(pkg.dependencies.mysql2);
     assert.equal(pkg.dependencies['better-sqlite3'], undefined);
