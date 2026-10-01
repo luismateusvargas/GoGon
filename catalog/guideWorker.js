@@ -12,6 +12,7 @@ import { GuideClearanceError } from './guideClearance.js';
 export const DEFAULT_GUIDE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0';
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const RENEWAL_FAILURE_RETRY_MS = 5 * 60_000;
 const CLEARANCE_PATTERN = /^[A-Za-z0-9._-]{1,4096}$/;
 
 function validCredentials(credentials) {
@@ -65,7 +66,7 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
         };
     }
 
-    async function fetchPage(url, signal, suppliedCredentials) {
+    async function fetchPage(url, signal, suppliedCredentials, onRenewalFailure) {
         let credentials = activeCredentials ?? suppliedCredentials;
         let renewed = false;
         if (!validCredentials(credentials)) {
@@ -87,6 +88,7 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
         } catch (error) {
             if (!(error instanceof GuideClearanceError)) throw error;
             console.warn('[Catalog] Guide browser verification did not complete.');
+            onRenewalFailure();
             return response;
         }
         activeCredentials = credentials;
@@ -94,12 +96,13 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
     }
 
     async function submitPending(workerId, currentConfiguration) {
-        const { lease, results, requests } = pendingSubmission;
+        const { lease, results, requests, renewalFailed } = pendingSubmission;
         try {
             const summary = await relay.submit(workerId, lease.leaseId, { results, requests });
             pendingSubmission = null;
             if (results.at(-1)?.outcome === 'challenge') {
-                lastChallenge = { configuration: currentConfiguration, at: now() };
+                lastChallenge = { configuration: currentConfiguration, at: now(),
+                    retryAfterMs: renewalFailed ? RENEWAL_FAILURE_RETRY_MS : GUIDE_POLICY.partialRetryMs };
             }
             return { status: 'sent', kind: lease.kind, requests, results: results.length,
                 challenge: results.at(-1)?.outcome === 'challenge', sweepComplete: Boolean(summary.sweepComplete) };
@@ -127,7 +130,7 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
             if (signal?.aborted) return { status: 'aborted' };
             const currentConfiguration = `${currentCredentials.clearance}\n${currentCredentials.userAgent}`;
             if (lastChallenge?.configuration === currentConfiguration
-                && now() - lastChallenge.at < GUIDE_POLICY.partialRetryMs) return { status: 'challenged' };
+                && now() - lastChallenge.at < lastChallenge.retryAfterMs) return { status: 'challenged' };
             lastChallenge = null;
 
             if (!seededDetailsScheduled) {
@@ -143,15 +146,16 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
             if (next.status !== 'lease') return { status: next.status };
 
             let requests = 0;
+            let renewalFailed = false;
             const results = await runLease(next.lease, {
-                fetchPage: url => fetchPage(url, signal, suppliedCredentials),
+                fetchPage: url => fetchPage(url, signal, suppliedCredentials, () => { renewalFailed = true; }),
                 parseHtml,
                 sleep: ms => sleep(ms, undefined, { signal }),
                 stopped: () => Boolean(signal?.aborted),
                 now,
                 onRequest: () => { requests++; },
             });
-            pendingSubmission = { lease: next.lease, results, requests };
+            pendingSubmission = { lease: next.lease, results, requests, renewalFailed };
             const submittedCredentials = activeCredentials ?? suppliedCredentials;
             return submitPending(workerId, `${submittedCredentials.clearance}\n${submittedCredentials.userAgent}`);
         },
