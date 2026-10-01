@@ -10,6 +10,7 @@ from pathlib import Path
 
 import cv2
 import nodriver
+from guide_browser_environment import prepare_browser_environment
 
 
 GUIDE_URL = "https://guide.fallensword.com/index.php?cmd=items&index=0"
@@ -77,6 +78,7 @@ async def renew():
         browser_args.append("--window-position=-32000,-32000")
 
     profile_directory = Path(tempfile.mkdtemp(prefix="gogon-guide-clearance-"))
+    prepare_browser_environment(profile_directory)
     browser = None
     try:
         browser = await nodriver.start(

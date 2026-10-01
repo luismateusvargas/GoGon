@@ -9,12 +9,14 @@ from pathlib import Path
 import cv2
 import nodriver
 from nodriver.core import util
+from guide_browser_environment import prepare_browser_environment
 
 
 async def main():
     if cv2.imread(str(Path(__file__).with_name("guide-checkbox-template.png"))) is None:
         raise FileNotFoundError("Guide checkbox template is unavailable")
     with tempfile.TemporaryDirectory(prefix="gogon-guide-smoke-") as profile_directory:
+        prepare_browser_environment(profile_directory)
         try:
             browser = await nodriver.start(
                 browser_executable_path=shutil.which("chromium"),
