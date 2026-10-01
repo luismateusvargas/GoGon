@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createGuideWorker, DEFAULT_GUIDE_USER_AGENT } from '../../catalog/guideWorker.js';
+import { GuideClearanceError } from '../../catalog/guideClearance.js';
 import { GUIDE_POLICY } from '../../catalog/contracts/policy.js';
 
 const itemIndex = readFileSync('tests/catalog-sync/fixtures/guide-item-index.html', 'utf8');
@@ -182,4 +183,50 @@ test('guide worker picks up clearance saved after startup on its next run', asyn
     clearance = 'new-clearance';
     assert.equal((await worker.run()).status, 'sent');
     assert.equal(relay.calls.submissions.length, 1);
+});
+
+test('guide worker renews a challenged clearance and retries the same leased page', async () => {
+    const relay = fakeRelay();
+    const sentCookies = [];
+    let renewals = 0;
+    const worker = createGuideWorker({ relay, clearance: 'stale-clearance',
+        renewClearance: async () => { renewals++; return { clearance: 'fresh-clearance', userAgent: 'Chrome guide test' }; },
+        fetchFn: async (url, options) => {
+            assert.equal(url, 'https://guide.fallensword.com/index.php?cmd=items&index=0');
+            sentCookies.push(options.headers.cookie);
+            if (options.headers.cookie.includes('stale')) {
+                return new Response(challenge, { status: 403, headers: { 'cf-mitigated': 'challenge' } });
+            }
+            assert.equal(options.headers['user-agent'], 'Chrome guide test');
+            return new Response(itemIndex, { status: 200, headers: { 'content-type': 'text/html' } });
+        } });
+
+    assert.equal((await worker.run()).challenge, false);
+    assert.deepEqual(sentCookies, ['cf_clearance=stale-clearance', 'cf_clearance=fresh-clearance']);
+    assert.equal(renewals, 1);
+    assert.equal(relay.calls.submissions[0].results[0].outcome, 'ok');
+    assert.equal((await worker.run()).challenge, false);
+    assert.equal(renewals, 1);
+    assert.equal(sentCookies.at(-1), 'cf_clearance=fresh-clearance');
+});
+
+test('guide worker can start with no configured clearance and renew automatically', async () => {
+    const relay = fakeRelay();
+    const worker = createGuideWorker({ relay, clearance: '',
+        renewClearance: async () => ({ clearance: 'fresh-clearance', userAgent: 'Chrome guide test' }),
+        fetchFn: async (url, options) => {
+            assert.equal(options.headers.cookie, 'cf_clearance=fresh-clearance');
+            return new Response(itemIndex, { status: 200, headers: { 'content-type': 'text/html' } });
+        } });
+    assert.equal((await worker.run()).challenge, false);
+    assert.equal(relay.calls.submissions[0].results[0].outcome, 'ok');
+});
+
+test('guide worker preserves the checkpoint when browser renewal fails', async () => {
+    const relay = fakeRelay();
+    const worker = createGuideWorker({ relay, clearance: 'stale-clearance',
+        renewClearance: async () => { throw new GuideClearanceError('test failure'); },
+        fetchFn: async () => new Response(challenge, { status: 403, headers: { 'cf-mitigated': 'challenge' } }) });
+    assert.equal((await worker.run()).challenge, true);
+    assert.deepEqual(relay.calls.submissions[0].results, [{ type: 'index', page: 0, outcome: 'challenge' }]);
 });

@@ -1,18 +1,24 @@
-// Server-owned guide reads. A clearance is obtained once through the VPS network and supplied
-// through an authenticated hot setting; the worker uses the existing lease planner, classifier,
-// and parsers. If the guide
-// challenges a request, runLease reports it and the planner leaves that checkpoint incomplete.
+// Server-owned guide reads. A browser renews clearance when Cloudflare challenges a request;
+// the existing lease planner, classifier, and parsers still decide what enters the catalog.
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseHTML } from 'linkedom';
 import { CatalogError } from '../_gg_data/handler/catalogStore.js';
 import { nativeFetch } from '../session.mjs';
 import { runLease } from './relayClient.js';
 import { GUIDE_POLICY } from './contracts/policy.js';
+import { classifyResponse } from './contracts/classify.js';
+import { GuideClearanceError } from './guideClearance.js';
 
 export const DEFAULT_GUIDE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0';
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const CLEARANCE_PATTERN = /^[A-Za-z0-9._-]{1,4096}$/;
+
+function validCredentials(credentials) {
+    return typeof credentials?.clearance === 'string' && CLEARANCE_PATTERN.test(credentials.clearance)
+        && typeof credentials.userAgent === 'string' && credentials.userAgent.length > 0
+        && credentials.userAgent.length <= 300 && !/[\r\n\x00-\x1f\x7f]/.test(credentials.userAgent);
+}
 
 async function readBoundedBody(response) {
     if (!response.body) return '';
@@ -35,16 +41,19 @@ async function readBoundedBody(response) {
 /** Runs at most one guide lease per CatalogSync tick. No clearance value enters a log or result. */
 export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_USER_AGENT,
     getClearance = () => clearance, getUserAgent = () => userAgent,
-    fetchFn = nativeFetch, parseHtml = html => parseHTML(html).document, now = Date.now }) {
+    fetchFn = nativeFetch, renewClearance = null,
+    parseHtml = html => parseHTML(html).document, now = Date.now }) {
     let pendingSubmission = null;
     let lastChallenge = null;
     let seededDetailsScheduled = false;
+    let activeCredentials = null;
+    let suppliedConfiguration = null;
 
-    async function fetchPage(url, signal, currentClearance, currentUserAgent) {
+    async function readResponse(url, signal, credentials) {
         const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
         const response = await fetchFn(url, {
-            headers: { cookie: `cf_clearance=${currentClearance}`, 'user-agent': currentUserAgent },
+            headers: { cookie: `cf_clearance=${credentials.clearance}`, 'user-agent': credentials.userAgent },
             redirect: 'follow',
             signal: requestSignal,
         });
@@ -54,6 +63,34 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
             cfMitigated: response.headers.get('cf-mitigated'),
             body: await readBoundedBody(response),
         };
+    }
+
+    async function fetchPage(url, signal, suppliedCredentials) {
+        let credentials = activeCredentials ?? suppliedCredentials;
+        let renewed = false;
+        if (!validCredentials(credentials)) {
+            try {
+                credentials = await renewClearance({ signal });
+            } catch (error) {
+                if (error instanceof GuideClearanceError) console.warn('[Catalog] Guide browser verification did not complete.');
+                throw error;
+            }
+            if (!validCredentials(credentials)) throw new GuideClearanceError('Guide browser returned invalid credentials.');
+            activeCredentials = credentials;
+            renewed = true;
+        }
+        const response = await readResponse(url, signal, credentials);
+        if (renewed || !renewClearance || classifyResponse(response, 'html').class !== 'challenge') return response;
+        try {
+            credentials = await renewClearance({ signal });
+            if (!validCredentials(credentials)) throw new GuideClearanceError('Guide browser returned invalid credentials.');
+        } catch (error) {
+            if (!(error instanceof GuideClearanceError)) throw error;
+            console.warn('[Catalog] Guide browser verification did not complete.');
+            return response;
+        }
+        activeCredentials = credentials;
+        return readResponse(url, signal, credentials);
     }
 
     async function submitPending(workerId, currentConfiguration) {
@@ -77,13 +114,18 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
 
     return {
         async run({ signal } = {}) {
-            const currentClearance = getClearance();
-            const currentUserAgent = getUserAgent();
-            if (!currentClearance) return { status: 'unconfigured' };
-            if (!CLEARANCE_PATTERN.test(currentClearance) || typeof currentUserAgent !== 'string' || currentUserAgent.length > 300
-                || /[\r\n\x00-\x1f\x7f]/.test(currentUserAgent)) return { status: 'invalid_configuration' };
+            const suppliedCredentials = { clearance: getClearance(), userAgent: getUserAgent() };
+            const configuration = `${suppliedCredentials.clearance}\n${suppliedCredentials.userAgent}`;
+            if (configuration !== suppliedConfiguration) {
+                activeCredentials = null;
+                suppliedConfiguration = configuration;
+            }
+            const currentCredentials = activeCredentials ?? suppliedCredentials;
+            if (!validCredentials(currentCredentials) && !renewClearance) {
+                return { status: suppliedCredentials.clearance ? 'invalid_configuration' : 'unconfigured' };
+            }
             if (signal?.aborted) return { status: 'aborted' };
-            const currentConfiguration = `${currentClearance}\n${currentUserAgent}`;
+            const currentConfiguration = `${currentCredentials.clearance}\n${currentCredentials.userAgent}`;
             if (lastChallenge?.configuration === currentConfiguration
                 && now() - lastChallenge.at < GUIDE_POLICY.partialRetryMs) return { status: 'challenged' };
             lastChallenge = null;
@@ -102,7 +144,7 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
 
             let requests = 0;
             const results = await runLease(next.lease, {
-                fetchPage: url => fetchPage(url, signal, currentClearance, currentUserAgent),
+                fetchPage: url => fetchPage(url, signal, suppliedCredentials),
                 parseHtml,
                 sleep: ms => sleep(ms, undefined, { signal }),
                 stopped: () => Boolean(signal?.aborted),
@@ -110,7 +152,8 @@ export function createGuideWorker({ relay, clearance, userAgent = DEFAULT_GUIDE_
                 onRequest: () => { requests++; },
             });
             pendingSubmission = { lease: next.lease, results, requests };
-            return submitPending(workerId, currentConfiguration);
+            const submittedCredentials = activeCredentials ?? suppliedCredentials;
+            return submitPending(workerId, `${submittedCredentials.clearance}\n${submittedCredentials.userAgent}`);
         },
     };
 }
