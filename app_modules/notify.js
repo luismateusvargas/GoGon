@@ -9,8 +9,11 @@ import { claimNotification, appendNotifications, getProcessedContent } from '../
 import { getSetting } from '../config/runtime.mjs';
 import { bindAccount, isCurrentAccount } from '../config/accountScope.mjs';
 
-/** Binds a monitor run to the active account; call it before the run's first account-specific read. */
-export { bindAccount };
+/**
+ * bindAccount() binds a monitor run to the active account; call it before the run's first
+ * account-specific read. isCurrentAccount(account) tells whether that account is still the active one.
+ */
+export { bindAccount, isCurrentAccount };
 
 /** One outbox notification: the webhook setting key (resolved at send time) and the message body. */
 export const alertFor = (settingKey, payload) => ({ settingKey, payload });
