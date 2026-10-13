@@ -4,15 +4,19 @@
 spec:
   id: "discord-integration-v1"
   status: draft
-  version: "1.3.0"
+  version: "1.4.0"
   created: "2026-09-22"
-  updated: "2026-09-24"
+  updated: "2026-10-13"
 
   version_policy:
     sync_group: "api-surface"
     depends_on: ["business-domain", "security"]
 
   changelog:
+    - version: "1.4.0"
+      date: "2026-10-13"
+      changes:
+        - "Orchestrated domain metadata and requirements in place; existing acceptance criteria remain the detailed contract."
     - version: "1.3.0"
       date: "2026-09-24"
       changes:
@@ -41,6 +45,90 @@ domain:
     Handles Discord Bot lifecycle, gateway connection, slash command interactions (/buff, /bebuff,
     /checkbuffs, /gvgcooldown), permissions/role gating, and the outbound webhook delivery pipeline
     incorporating rate-limited sequential queues and burst message batching (up to 10 embeds per payload).
+
+  id: discord-integration
+  status: draft
+  version: 0.1.0
+  project_ref: specs/project.yaml
+  constitution_ref: specs/constitution.yaml
+  boundary: 'Handles Discord Bot lifecycle, gateway connection, slash command interactions (/buff, /bebuff,
+
+    /checkbuffs, /gvgcooldown), permissions/role gating, and the outbound webhook delivery pipeline
+
+    incorporating rate-limited sequential queues and burst message batching (up to 10 embeds per payload).'
+  current_implementation: Current delivery is in-memory and unbounded on a pending node-fetch request. Historical
+    AC-DISC-004 says SQLite, but live state is MySQL. The correction task specs define the target recovery behavior.
+  requirements:
+  - id: AC-DISC-001
+    statement: Slash command registration and command routing
+    scenarios:
+    - given: Valid GG_DISCORD_TOKEN, GG_DISCORD_APP_ID, and GG_DISCORD_GUILD_ID in .env
+      when: setupDiscord() is called during startup
+      then: Registers /buff, /bebuff, /checkbuffs, and /gvgcooldown with Discord REST API and binds interaction
+        event listeners
+    - given: Discord credentials missing from .env
+      when: setupDiscord() is evaluated in app.mjs
+      then: Logs warning and skips bot initialization without preventing scraper engine execution
+  - id: AC-DISC-002
+    statement: Checkbuffs pagination and duration calculation
+    scenarios:
+    - given: A player name provided to /checkbuffs
+      when: handleCheckBuffsInteraction() executes
+      then: Fetches active buffs and server timestamp (parsedAt) via getBuffs(), computes remaining duration (expire_time
+        - parsedAt), and formats paginated embed with Next/Previous buttons
+    - given: Player has no active buffs or player does not exist
+      when: Command runs
+      then: Replies with polite informational message '**[Username]** has no active buffs' without throwing error
+  - id: AC-DISC-003
+    statement: Buff casting and Buff Enhancer sequence
+    scenarios:
+    - given: User issues /buff or /bebuff command
+      when: Command handler runs (no role gating; owner decision 2026-09-24)
+      then: Executes buff sequence, verifies minimum required levels, and reports cast summary to Discord
+    - given: Stamina is insufficient or required potions are missing
+      when: Command runs
+      then: Replies with descriptive rejection message and does not cast buffs
+  - id: AC-DISC-004
+    statement: GvG cooldown listing with 25-field embed chunking
+    scenarios:
+    - given: Active GvG cooldown records stored in SQLite
+      when: /gvgcooldown command is triggered
+      then: Filters valid entries with string guildName and numeric expires, formats remaining time, and splits
+        fields into chunks of maximum 25 fields across multiple embeds
+    - given: More than 25 active cooldowns exist simultaneously
+      when: Embed is constructed
+      then: Chunks fields into multiple embeds (max 25 fields per embed) to avoid Discord 400 Bad Request error
+    - given: No active cooldowns exist
+      when: Command is invoked
+      then: Replies with '✅ There are currently no active GvG cooldowns.'
+  - id: AC-DISC-005
+    statement: Webhook delivery rate limiting and backoff
+    scenarios:
+    - given: Outbound messages added to Discord delivery queue
+      when: processQueue() runs
+      then: Enforces minimum 2000ms delay between consecutive webhook posts and backs off on HTTP 429 rate limit
+    - given: Webhook returns 429 Too Many Requests with retry_after header
+      when: Response is processed
+      then: Pauses queue for indicated retry duration and retries failed message
+  - id: AC-DISC-006
+    statement: Burst notification batching
+    scenarios:
+    - given: Rapid burst of notifications arriving at the same webhook (e.g. 15 SE kills or 20 ladder bands)
+      when: Messages enter batching queue
+      then: Combines up to 10 embeds into a single webhook POST after 100ms idle timeout, cutting HTTP calls by
+        up to 10x
+    - given: Application initiates shutdown while messages are in batch queue
+      when: flushAllBatches() is called
+      then: Immediately posts all pending batched embeds synchronously before process termination
+  dependencies:
+  - domain_ref: specs/auth-session.spec.yaml
+    relationship: Slash commands invoke getBuffs and API calls through session layer.
+  - domain_ref: specs/data-storage.spec.yaml
+    relationship: Slash commands query GvG cooldowns and buff definitions from storage.
+  evidence:
+  - specs/discord-integration.spec.yaml acceptance_criteria and dependencies
+  - app.mjs and relevant source paths named in this spec
+  open_decisions: []
 
 entities:
   - name: DiscordCommandInteraction

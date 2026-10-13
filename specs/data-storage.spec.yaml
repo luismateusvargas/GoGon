@@ -4,15 +4,19 @@
 spec:
   id: "data-storage-v1"
   status: locked
-  version: "2.1.1"
+  version: "2.2.0"
   created: "2026-09-22"
-  updated: "2026-09-28"
+  updated: "2026-10-13"
 
   version_policy:
     sync_group: "data-model"
     depends_on: []
 
   changelog:
+    - version: "2.2.0"
+      date: "2026-10-13"
+      changes:
+        - "Orchestrated domain metadata and requirements in place; existing acceptance criteria remain the detailed contract."
     - version: "2.1.1"
       date: "2026-09-28"
       changes:
@@ -61,6 +65,108 @@ domain:
     key-value persistence supporting both FIFO capped history lists and atomic scalar/object states.
     The live database is the MySQL service bundled in compose.yaml. Tests use an in-process fake
     of mysql2, and CI also runs the data-layer tests against a real MySQL.
+
+  id: data-storage
+  status: draft
+  version: 0.1.0
+  project_ref: specs/project.yaml
+  constitution_ref: specs/constitution.yaml
+  boundary: 'Provides asynchronous MySQL database operations through a mysql2 connection pool, ordered schema
+
+    migrations, in-memory LRU caching for high-frequency entity lookups (items, creatures, realms), and
+
+    key-value persistence supporting both FIFO capped history lists and atomic scalar/object states.
+
+    The live database is the MySQL service bundled in compose.yaml. Tests use an in-process fake
+
+    of mysql2, and CI also runs the data-layer tests against a real MySQL.'
+  current_implementation: Live persistence is MySQL 8.4 via mysql2; retired SQLite backup behavior is excluded from
+    orchestrated requirements.
+  requirements:
+  - id: AC-DATA-001
+    statement: Ordered schema migrations before first use
+    scenarios:
+    - given: An empty or partially migrated MySQL database named by GG_MYSQL_DATABASE
+      when: initDatabase() runs, or any data-layer function is first awaited
+      then: Creates schema_migrations if missing, applies the pending _gg_data/migrations/*.sql files in file-name
+        order one statement at a time, records each applied file name, and runs the migrations only once per process
+        even when called concurrently
+    - given: A migration file contains an invalid statement
+      when: The migration runs
+      then: Stops at that file, does not record its version, logs the file name, and rejects; earlier migrations
+        stay recorded. MySQL commits DDL implicitly, so every migration statement is idempotent (CREATE TABLE IF
+        NOT EXISTS) and the fixed file can be re-run
+  - id: AC-DATA-002
+    statement: FIFO capped list persistence via setContent
+    scenarios:
+    - given: A list of stored event IDs with max capacity N (default 100)
+      when: await setContent(key, newItem, maxSize) is called with a new ID
+      then: Inside one transaction that locks the row (SELECT ... FOR UPDATE), appends newItem, trims the oldest
+        items beyond maxSize, and writes the JSON array back to key_value_store; concurrent calls on the same key
+        lose no item
+    - given: Stored value in database is corrupted non-array JSON
+      when: setContent() attempts to append
+      then: Logs warning, resets key to fresh single-item array, and saves successfully
+  - id: AC-DATA-003
+    statement: Atomic single object persistence via setObject
+    scenarios:
+    - given: A scalar or structured state object (e.g. current_gear_state='peace' or conflict state map)
+      when: await setObject(key, value) is called
+      then: Serializes value directly to JSON without wrapping in an array, saving to key_value_store
+    - given: Value is undefined
+      when: setObject() executes
+      then: Does not crash; deletes the entry cleanly
+  - id: AC-DATA-004
+    statement: State deletion via deleteContent
+    scenarios:
+    - given: An existing entry in key_value_store
+      when: await deleteContent(key) is called
+      then: Executes DELETE FROM key_value_store WHERE `key` = ? and resolves the number of removed rows
+    - given: Key does not exist in database
+      when: deleteContent(key) is called
+      then: Resolves 0 without error
+  - id: AC-DATA-005
+    statement: In-memory LRU caching for item, creature, and realm queries
+    scenarios:
+    - given: Configured LRU cache for items, creatures, and realms (default capacity 500)
+      when: getItemById(id), getCreatureById(id), or getRealmById(id) is awaited repeatedly
+      then: First call queries MySQL and populates cache; subsequent calls return the cached object without a database
+        query
+    - given: Requested ID does not exist in database
+      when: Lookup function executes
+      then: Resolves undefined, without caching the miss
+  - id: AC-DATA-007
+    statement: MySQL connection configuration
+    scenarios:
+    - given: GG_MYSQL_HOST, GG_MYSQL_PORT, GG_MYSQL_USER, GG_MYSQL_PASSWORD, and GG_MYSQL_DATABASE registered in
+        config/registry.mjs
+      when: The pool is first created
+      then: Connects with those values read through getSetting(), with a bounded pool (connectionLimit 5), utf8mb4,
+        and multi-statement queries disabled
+    - given: GG_MYSQL_PASSWORD is empty, or MySQL is unreachable
+      when: initDatabase() runs at startup
+      then: Rejects with a message naming the setting or host:port, never the password; app.mjs exits with code
+        1 before the first game login
+  - id: AC-DATA-008
+    statement: Test fake and real-MySQL parity
+    scenarios:
+    - given: The npm test preload
+      when: Tests import the data layer
+      then: mysql2/promise is replaced by an in-process fake (a fresh, empty database per test process) that runs
+        the same SQL; with GG_TEST_MYSQL_URL set, the fake is not installed and each test process uses its own throwaway
+        database on that server, dropped at exit
+    - given: A statement uses MySQL syntax the fake does not translate
+      when: The fake executes it
+      then: Throws an error naming the statement, so the gap is fixed in the fake rather than silently ignored
+  dependencies:
+  - domain_ref: specs/task-engine.spec.yaml
+    relationship: Storage layer is initialized and validated during engine startup.
+  - domain_ref: specs/control-plane.spec.yaml
+    relationship: controlStore keeps overrides, module preferences, encrypted profiles, and audit events in MySQL.
+  evidence:
+  - specs/data-storage.spec.yaml acceptance_criteria and dependencies
+  - app.mjs and relevant source paths named in this spec
+  open_decisions: []
 
 entities:
   - name: KeyValueStore

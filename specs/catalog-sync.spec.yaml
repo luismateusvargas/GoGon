@@ -4,15 +4,19 @@
 spec:
   id: "catalog-sync-v1"
   status: locked
-  version: "1.6.0"
+  version: "1.7.0"
   created: "2026-09-25"
-  updated: "2026-09-29"
+  updated: "2026-10-13"
 
   version_policy:
     sync_group: "business-domain"
     depends_on: ["data-model", "api-surface", "security"]
 
   changelog:
+    - version: "1.7.0"
+      date: "2026-10-13"
+      changes:
+        - "Orchestrated domain metadata and requirements in place; existing acceptance criteria remain the detailed contract."
     - version: "1.6.0"
       date: "2026-09-29"
       changes:
@@ -92,6 +96,234 @@ domain:
     The existing owner-authenticated, loopback-only control plane exposes a Catalog tab for browse,
     synchronization, seed promotion, run history, and guarded deletion or rollback. This domain
     never controls gameplay: it observes ordinary game responses and uses approved read endpoints.
+
+  id: catalog-sync
+  status: draft
+  version: 0.1.0
+  project_ref: specs/project.yaml
+  constitution_ref: specs/constitution.yaml
+  boundary: 'Extends GoGon''s existing authenticated Fallen Sword HTTP session with a low-rate, resumable
+
+    catalog collector for items, creatures, realms, master realms, relics, and quests. It records
+
+    source provenance and observations before updating the existing serving tables used by Discord.
+
+    The existing owner-authenticated, loopback-only control plane exposes a Catalog tab for browse,
+
+    synchronization, seed promotion, run history, and guarded deletion or rollback. This domain
+
+    never controls gameplay: it observes ordinary game responses and uses approved read endpoints.'
+  requirements:
+  - id: AC-CAT-001
+    statement: Collector reuses the active GoGon session without exposing credentials.
+    scenarios:
+    - given: GoGon has authenticated through session.mjs and the account switcher is idle
+      when: CatalogSync starts an approved read operation
+      then: It uses the existing authenticated fetch path and cookie jar, does not create another login or export
+        cookies, and stores only validated game-domain fields
+    - given: The session is unavailable, expired, or an account switch is in progress
+      when: CatalogSync attempts a request
+      then: It pauses or fails closed without advancing the cursor, logging only a redacted reason
+  - id: AC-CAT-002
+    statement: CatalogSync is passive and bounded.
+    scenarios:
+    - given: A queued game-session job with a configured request budget
+      when: The task executes
+      then: It performs at most one in-flight request and never calls attack, movement, travel, equip, use-item,
+        form-post, or account-management game endpoints
+    - given: A requested operation is not in the server-side operation allowlist
+      when: The dashboard requests it
+      then: The API rejects it with 400, creates no job, and records a denied audit event
+  - id: AC-CAT-003
+    statement: Current-realm observation captures available creature identity without combat.
+    scenarios:
+    - given: An authenticated game-session response containing a realm and creature actions
+      when: CatalogSync observes that realm
+      then: It records the realm and available creature ID, name, and image plus creature-to-realm association;
+        any separate creature detail request records only fields supported by its validated read contract and creates
+        no combat action
+    - given: A detail response is malformed, an HTML login page, Cloudflare mitigation, or an unrecognized schema
+      when: CatalogSync parses it
+      then: It records a redacted failed run, preserves the cursor, and writes no partial serving-table update
+  - id: AC-CAT-004
+    statement: Item frontier scan is resumable and never treats gaps as proof of absence.
+    scenarios:
+    - given: A validated item frontier cursor and an item-ID request budget
+      when: CatalogSync scans item details
+      then: It checkpoints only after each validated response, records positive and classified negative outcomes
+        separately, and preserves an overlap window on the next run
+    - given: Rate limiting, timeout, session failure, or a response classification other than known-not-found
+      when: The scan reaches that ID
+      then: It backs off, leaves the unresolved ID eligible for retry, and does not advance highest_confirmed_item_id
+        past it
+  - id: AC-CAT-005
+    statement: Provenance precedes serving-table projection.
+    scenarios:
+    - given: A valid observation that differs from the current canonical entity
+      when: The catalog service accepts it
+      then: It persists the run and observation with source, hash, and timestamp before applying a deterministic
+        incremental projection to existing item, creature, realm, master_realm, relic, or quest data
+    - given: A projection write fails
+      when: The catalog transaction executes
+      then: No partially projected entity or relation is visible; the observation/run reports failure and remains
+        diagnosable
+  - id: AC-CAT-006
+    statement: Existing full-replace seed script is never an automatic live refresh.
+    scenarios:
+    - given: The current scripts/populate_db.mjs behavior that clears master tables before loading its external
+        snapshot
+      when: A Catalog seed or update is requested
+      then: The catalog service uses a staged import and incremental promotion path, never invokes the destructive
+        full-replace script automatically
+    - given: A seed payload fails schema validation, has an unapproved source key, or exceeds its size limit
+      when: The seed is submitted
+      then: The API rejects it before any catalog or serving-table write
+  - id: AC-CAT-007
+    statement: Catalog browse API is owner-authenticated, paginated, and safe to render.
+    scenarios:
+    - given: An authenticated control-plane session
+      when: The owner requests a catalog list, entity detail, run history, or freshness summary
+      then: The API applies strict allowlisted filters and bounded pagination, returns only catalog fields, and
+        the UI renders all returned text as textContent rather than HTML
+    - given: An unauthenticated, cross-origin, malformed, or out-of-range request
+      when: It targets an ordinary Catalog browse or administration endpoint
+      then: It receives the existing authenticated control-plane denial with no data disclosure or stack trace
+  - id: AC-CAT-008
+    statement: Remote synchronization is an audited job command, not an unbounded request.
+    scenarios:
+    - given: An authenticated owner with a valid CSRF token and same-origin request
+      when: The owner creates, pauses, resumes, or cancels an allowed Catalog job
+      then: The server validates its small allowlisted payload, persists the state transition, emits dashboard state
+        through existing SSE, and records an audit event with no secrets or raw game URLs
+    - given: A second conflicting run or job mutation targets the same cursor while one is active
+      when: The owner submits it
+      then: The server returns 409 and preserves the current job state
+  - id: AC-CAT-009
+    statement: Seed and deletion actions require deterministic preview and explicit confirmation.
+    scenarios:
+    - given: An authenticated owner requests a seed promotion, run rollback, or deletion
+      when: The server builds the action plan
+      then: It returns an immutable plan ID, exact affected counts, a short expiry, and no state change
+    - given: A plan is expired, already used, does not match the current catalog revision, or its required confirmation
+        phrase/count differs
+      when: The owner executes it
+      then: The server rejects the action, preserves data, and audits the denial
+  - id: AC-CAT-010
+    statement: Run rollback is recoverable and does not orphan a catalog entity.
+    scenarios:
+    - given: A valid confirmed deletion plan for a completed catalog run
+      when: The owner executes rollback
+      then: The service restores each affected entity and relation to its most recent remaining provenance record,
+        marks the run reverted, invalidates relevant caches, and records before/after counts
+    - given: An entity has no earlier source record
+      when: Rollback is computed
+      then: The preview identifies it as a removal candidate; execution removes it only as part of the confirmed
+        transaction and never leaves dangling relations
+  - id: AC-CAT-011
+    statement: The guide discovers new catalog IDs and refreshes every known record weekly from its known index
+      and detail pages.
+    scenarios:
+    - given: The supplied item, creature, realm, and master-realm guide index parsers and durable per-kind discovery
+        state
+      when: A weekly (7-day) guide discovery check runs through the approved browser relay or server guide worker
+      then: It validates each response, checks every index page for each active kind, records newly found IDs, then
+        reads every known detail of each checked kind without a per-lease refresh cap, and records last successful
+        check, last seen ID, page coverage, and source provenance for the Catalog tab
+    - given: An index page is missing, challenged, malformed, or unexpectedly empty
+      when: The check reaches it
+      then: It pauses with a visible status and preserves the last successful checkpoint; it does not mark missing
+        IDs deleted or move a high-water mark past an unverified page
+  - id: AC-CAT-012
+    statement: A guide high-water mark does not hide older edits or gaps.
+    scenarios:
+    - given: A previously successful guide scan with a last seen ID for each entity kind
+      when: The next weekly scan checks guide indexes
+      then: It scans every index page, including pages before and after the highest known ID, because low-level
+        releases can appear anywhere, and re-reads every known detail once in that check; unchanged content (same
+        hash) stages no new observation.
+    - given: An existing item, creature, or realm changes without receiving a new ID
+      when: A later valid index or detail check detects the change
+      then: It stages a new guide observation while preserving game-session field precedence and the previous source
+        history
+  - id: AC-CAT-013
+    statement: Catalog completeness is explicit and limited to verified source coverage.
+    scenarios:
+    - given: A creature or item discovered from a game location, guide index, or guide detail
+      when: Its catalog projection or relations change
+      then: Its catalog entity has a complete or incomplete value, missing-data reasons, and last verification time;
+        a valid guide detail with all required fields and all currently known drop links resolved may become complete
+    - given: A detail page failed validation, a known drop relation is unresolved, or only game identity fields
+        are available
+      when: Completeness is recalculated
+      then: It remains incomplete, is eligible for later guide verification, and the Catalog tab shows the reason
+        without claiming every possible drop is known
+  - id: AC-CAT-014
+    statement: The browser guide relay can stage data without a cross-origin dashboard session.
+    scenarios:
+    - given: An owner-issued, unexpired, revocable guide-relay token and a userscript restricted to guide.fallensword.com
+        with GM_xmlhttpRequest and @connect 127.0.0.1
+      when: The userscript sends a bounded validated batch to the dedicated loopback relay endpoint through the
+        owner's SSH tunnel
+      then: The endpoint authenticates the relay token, accepts only allowlisted guide observations and checkpoint
+        data for staging under a previously owner-enabled guide job, enforces byte/rate limits and audit logging,
+        and never accepts cookies, CSRF values, raw HTML, arbitrary URLs, promotion, deletion, or job-control commands;
+        the server may auto-project validated staged observations under that fixed job policy
+    - given: The token is missing, expired, revoked, wrong-scope, or the request targets a normal Catalog mutation
+        route
+      when: The request arrives
+      then: The server denies it without staging or projecting data; normal Catalog mutations still require owner
+        session, same-origin, and CSRF
+  - id: AC-CAT-015
+    statement: Guide request budgets reflect the index coverage needed for a complete check.
+    scenarios:
+    - given: Every active guide kind may gain new IDs anywhere across hundreds of index pages
+      when: CAT-TASK-001 defines the guide request policy before the first scheduled run
+      then: It records a separate guide minimum delay, per-execution request budget, request usage, expected full-sweep
+        size and duration, and a checkpointed chunk schedule that can cover every index page without a daily request
+        cap
+    - given: A chunk stops before coverage is complete
+      when: The weekly check is reported
+      then: The Catalog tab shows partial or overdue coverage and preserves the cursor; it never advances last_successful_check_at
+        or claims no new IDs
+  - id: AC-CAT-016
+    statement: The server can continue scheduled guide discovery after owner browser verification from its network.
+    scenarios:
+    - given: The owner has enabled a guide_discovery job and CatalogSync, and saved a VPS-network-issued cf_clearance
+        value with its matching browser User-Agent as authenticated settings
+      when: CatalogSync receives its scheduled tick
+      then: The in-process worker obtains at most one code-owned guide lease, reads its allowlisted pages serially
+        within the existing guide request budget, validates and stages its results, and advances only verified checkpoints;
+        the clearance is a write-only encrypted secret and is never included in results, logs, or catalog observations
+    - given: The clearance is missing or malformed
+      when: CatalogSync runs
+      then: The worker makes no guide request and reports an unconfigured or invalid configuration status without
+        exposing the value
+    - given: The guide challenges the server or a result submission fails
+      when: The worker handles that lease
+      then: A challenge stops the lease without declaring a successful sweep; a transient submission failure retains
+        the read results for retry rather than reading the same pages again
+    - given: The serving tables already contain snapshot items and creatures before guide discovery begins
+      when: The server worker prepares its first lease
+      then: It registers those known IDs as pending guide details due at once, like newly discovered IDs, without
+        claiming them verified or moving successful index checkpoints (DEC-CAT-023 supersedes the earlier 30-day
+        spread)
+  dependencies:
+  - domain_ref: specs/auth-session.spec.yaml
+    relationship: Catalog uses the existing authenticated fetch path and must fail closed with session/account transitions.
+  - domain_ref: specs/task-engine.spec.yaml
+    relationship: CatalogSync is a serialized, abortable, pause-aware engine task.
+  - domain_ref: specs/data-storage.spec.yaml
+    relationship: Catalog migrations, transactional provenance, projection, and cache invalidation use the MySQL
+      data layer.
+  - domain_ref: specs/control-plane.spec.yaml
+    relationship: Catalog browse and administration extend the existing authenticated same-origin API, SSE state
+      stream, audit store, and loopback deployment.
+  - domain_ref: specs/game-monitors.spec.yaml
+    relationship: Serving projections preserve the item, creature, and realm lookup contracts used by Discord notifications.
+  evidence:
+  - specs/catalog-sync.spec.yaml acceptance_criteria and dependencies
+  - app.mjs and relevant source paths named in this spec
+  open_decisions: []
 
 entities:
   - name: CatalogSyncRun
