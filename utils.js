@@ -4,6 +4,7 @@ import {
     DISCORD_MAX_RATE_LIMITS, DISCORD_RATE_LIMIT_FALLBACK, DISCORD_MAX_RETRY_AFTER,
 } from './webhooks.js';
 import { LOG, WARN, ERR } from './app_modules/core.js';
+import { incrementMetric } from './app_modules/metricsStore.js';
 import { getBuffNameById } from './game_modules/buffParser.js';
 import { apiEndpoints } from './game_modules/API.js';
 import * as cheerio from 'cheerio';
@@ -47,11 +48,13 @@ function __swsDumpHtml(tag, url, html) {
   }
 }*/
 
-const messageQueue = []; // { webhook, payload, attempts, rateLimits, notBefore, accountScope, settle[] }
+const messageQueue = []; // { webhook, payload, attempts, rateLimits, notBefore, queuedAt, accountScope, settle[] }
 let processingQueue = false;
 let lastPostAt = -Infinity; // start of the latest webhook POST; enforces DELAY_BETWEEN_MESSAGES
 let globalBlockedUntil = 0; // set by a 429 with global: true
 let wakeDispatcher = null;  // resolves the dispatcher's current wait when new work arrives
+// Delivery progress (specs/tasks/2026-10-notification-progress-health.md): times in ms, failure as a category only.
+const progress = { attemptStartedAt: null, lastAttemptAt: null, lastSuccessAt: null, lastFailure: null };
 
 // v1.8.0: Batch queue for combining multiple messages
 const batchQueue = new Map(); // batch key -> { webhook, accountScope, messages: [], settle: [], timeout: null, totalChars: 0 }
@@ -171,7 +174,7 @@ function batchKey(webhook, accountScope) {
 
 /** Adds one Discord message to the send queue and starts or wakes the dispatcher. */
 function enqueueSend({ webhook, payload, accountScope, settle }) {
-    messageQueue.push({ webhook, payload, attempts: 0, rateLimits: 0, notBefore: 0, accountScope, settle });
+    messageQueue.push({ webhook, payload, attempts: 0, rateLimits: 0, notBefore: 0, queuedAt: Date.now(), accountScope, settle });
 
     // Start processing, or wake a dispatcher that is waiting on a retry delay
     if (!processingQueue) {
@@ -218,6 +221,10 @@ function sendBatch(key) {
 
     // Clear this batch
     batchQueue.delete(key);
+    if (batch.messages.length > 1) {
+        incrementMetric('discordBatches');
+        incrementMetric('discordMessagesSaved', batch.messages.length - 1);
+    }
 
     // Add to processing queue
     enqueueSend({ webhook: batch.webhook, payload: mergedPayload, accountScope: batch.accountScope, settle: batch.settle });
@@ -313,7 +320,11 @@ function handleQueueFailure(item, err, now) {
     const dest = destinationKey(item.webhook);
     const category = err?.category || 'unexpected';
     const status = err?.status ? ` (HTTP ${err.status})` : '';
+    progress.lastFailure = { category, ...(err?.status ? { status: err.status } : {}), at: now };
+    incrementMetric('discordErrors');
+    if (category === 'timeout') incrementMetric('discordTimeouts');
     if (category === 'rate_limit') {
+        incrementMetric('discordRateLimits');
         item.rateLimits++;
         if (item.rateLimits <= DISCORD_MAX_RATE_LIMITS) {
             item.notBefore = now + err.retryAfter;
@@ -324,12 +335,14 @@ function handleQueueFailure(item, err, now) {
     } else {
         item.attempts++;
         if (err?.retryable && item.attempts < DISCORD_MAX_ATTEMPTS) {
+            incrementMetric('discordRetries');
             item.notBefore = now + RETRY_DELAY;
             WARN('DiscordQueue', `Send to ${dest} failed: ${category}${status}, attempt ${item.attempts}/${DISCORD_MAX_ATTEMPTS}. Retrying in ${RETRY_DELAY}ms.`);
             return;
         }
     }
     removeItem(item);
+    incrementMetric('discordDropped');
     ERR('DiscordQueue', `Dropped message for ${dest}: ${category}${status} after ${item.attempts + item.rateLimits} attempt(s), ${item.rateLimits} rate limited.`);
     settleItem(item, { ok: false, error: err });
 }
@@ -359,17 +372,50 @@ export async function processQueue() {
                 continue;
             }
             lastPostAt = now;
+            progress.attemptStartedAt = now;
             try {
                 await securePostDiscord(item.webhook, item.payload, { retries: 1 });
+                progress.lastAttemptAt = progress.lastSuccessAt = Date.now();
+                incrementMetric('discordSent');
                 removeItem(item);
                 settleItem(item, { ok: true });
             } catch (err) {
-                handleQueueFailure(item, err, Date.now());
+                progress.lastAttemptAt = Date.now();
+                handleQueueFailure(item, err, progress.lastAttemptAt);
+            } finally {
+                progress.attemptStartedAt = null;
             }
         }
     } finally {
         processingQueue = false;
     }
+}
+
+
+/**
+ * Read-only view of the send queue for delivery health. Contains counts, times (ms since epoch) and a
+ * failure category; never a webhook URL or payload.
+ * dueSince is the earliest time a queued message became eligible to send (ignoring the two-second
+ * spacing); messages still waiting for a 429 or retry delay, or still in a batch window, are not due.
+ */
+export function getDiscordQueueProgress(now = Date.now()) {
+    let dueSince = null;
+    for (const item of messageQueue) {
+        if (item.notBefore > now) continue;
+        const since = Math.max(item.queuedAt, item.notBefore);
+        if (dueSince === null || since < dueSince) dueSince = since;
+    }
+    let batched = 0;
+    for (const batch of batchQueue.values()) batched += batch.messages.length;
+    return {
+        queued: messageQueue.length,
+        batched,
+        dueSince,
+        attemptStartedAt: progress.attemptStartedAt,
+        lastAttemptAt: progress.lastAttemptAt,
+        lastSuccessAt: progress.lastSuccessAt,
+        lastFailure: progress.lastFailure ? { ...progress.lastFailure } : null,
+    };
 }
 
 

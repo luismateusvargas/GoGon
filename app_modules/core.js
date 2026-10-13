@@ -10,6 +10,8 @@ export function ts() {
   return d.toISOString().replace('T',' ').replace('Z','');
 }
 export function LOG(feature, msg, extra)  { if (!isDebugEnabled()) return; const base = `[${ts()}][${feature}] ${msg}`; extra!==undefined ? console.log(base, extra) : console.log(base); }
+// INFO is always printed: operational events (delivery stall recovery) that must stay visible with GG_DEBUG=0.
+export function INFO(feature, msg, extra) { const base = `[${ts()}][${feature}] ${msg}`; extra!==undefined ? console.log(base, extra) : console.log(base); }
 export function WARN(feature, msg, extra) { const base = `⚠️ [${ts()}][${feature}] ${msg}`; extra!==undefined ? console.warn(base, extra) : console.warn(base); }
 export function ERR(feature, msg, extra)  { const base = `❌ [${ts()}][${feature}] ${msg}`; extra!==undefined ? console.error(base, extra) : console.error(base); }
 

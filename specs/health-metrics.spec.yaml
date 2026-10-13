@@ -4,7 +4,7 @@
 spec:
   id: "health-metrics-v1"
   status: draft
-  version: "2.1.0"
+  version: "2.2.0"
   created: "2026-09-22"
   updated: "2026-10-13"
 
@@ -13,6 +13,12 @@ spec:
     depends_on: ["business-domain", "security"]
 
   changelog:
+    - version: "2.2.0"
+      date: "2026-10-13"
+      changes:
+        - "Delivery progress (specs/tasks/2026-10-notification-progress-health.md): deliveryHealth.mjs classifies notification delivery as idle, backlog, stalled, or recovered from the in-memory queue and the active account's outbox. Stalled = due notifications and no completed send attempt for 5 min (DELIVERY_STALL_AFTER); the loopback /health answers 503 'delivery stalled' after 15 min (DELIVERY_UNHEALTHY_AFTER). An empty queue is healthy however long no game event occurs; work waiting for a 429 pause, retry delay, or outbox backoff is a backlog, not a stall. The probe body adds only delivery (state name) and tasks.overdue (count)."
+        - "Owner /api/health and /api/state health carry the delivery detail (pending, queue age, current attempt age, last progress and success times, sanitized failure category, thresholds) and the overdue module names. /api/metrics adds discord retries/timeouts/dropped, outbox delivered/retried/failed, delivery { state, pending, lastProgressAt, lastSuccessAt, lastFailure }, and tasks.overdue; counters advance at actual outcomes (utils.js, notificationDispatcher.js). getMetrics() is async. No metric or health field contains a webhook URL or message body."
+        - "One WARN when a stall begins and one INFO (new always-on INFO in app_modules/core.js) when it clears, however often health is polled; app.mjs also checks every 60 s."
     - version: "2.1.0"
       date: "2026-10-13"
       changes:
@@ -51,7 +57,7 @@ domain:
     and sanitized configuration summaries, protected by per-IP rate limiting (60 req/min).'
   current_implementation: Current implementation serves a loopback /health and authenticated /api/health, /api/metrics,
     /api/state; the old description and some historical acceptance wording still mention retired /metrics and /config
-    probe routes. Delivery progress is not assessed yet.
+    probe routes. Delivery progress (idle/backlog/stalled/recovered) and overdue modules are assessed since 2.2.0.
   requirements:
   - id: AC-HLTH-001
     statement: Health endpoint returns system status and task health

@@ -16,6 +16,7 @@ import { getAccountScope } from './config/accountScope.mjs';
 import { getConnection } from './_gg_data/handler/gg_database.js';
 import { createNotificationOutboxStore, outboxEvents } from './_gg_data/handler/notificationOutbox.js';
 import { LOG, WARN, ERR } from './app_modules/core.js';
+import { incrementMetric } from './app_modules/metricsStore.js';
 import {
     OUTBOX_MAX_ROUNDS, OUTBOX_RETRY_BASE, OUTBOX_RETRY_CAP, OUTBOX_POLL_INTERVAL, OUTBOX_BATCH_LIMIT, OUTBOX_DELIVERED_RETENTION,
 } from './webhooks.js';
@@ -49,6 +50,17 @@ export function createNotificationDispatcher({
     let timer = null;
     let wakeScheduled = false;
     let lastPrune = -Infinity;
+    // When this dispatcher began serving the current account: replayed rows (after a restart or an account
+    // switch) keep their old next_attempt_at, but they only became due for this process at this time.
+    let servedScope = scope();
+    let servingSince = now();
+
+    function noteScope(accountScope) {
+        if (accountScope !== servedScope) {
+            servedScope = accountScope;
+            servingSince = now();
+        }
+    }
 
     async function retryAcks() {
         if (!unacked.size) return;
@@ -72,6 +84,7 @@ export function createNotificationDispatcher({
         const what = `${row.source} event ${row.eventId}#${row.part} to ${row.settingKey}`;
         try {
             await store.recordFailure(row.id, { error: label, terminal, nextAttemptAt: iso(now() + delay), now: iso(now()) });
+            incrementMetric(terminal ? 'outboxFailed' : 'outboxRetried');
             if (terminal) ERR('Outbox', `Notification ${what} failed: ${label} after ${rounds} round(s). Kept for owner review.`);
             else WARN('Outbox', `Notification ${what} not delivered: ${label}, round ${rounds}/${OUTBOX_MAX_ROUNDS}. Retrying in ${delay}ms.`);
         } catch (e) {
@@ -84,6 +97,7 @@ export function createNotificationDispatcher({
 
     async function onSettled(row, outcome) {
         if (outcome.ok) {
+            incrementMetric('outboxDelivered');
             try {
                 await store.markDelivered([row.id], iso(now()));
                 inFlight.delete(row.id);
@@ -111,6 +125,7 @@ export function createNotificationDispatcher({
 
     async function pumpOnce() {
         const accountScope = scope();
+        noteScope(accountScope);
         if (!accountScope) return;
         await retryAcks();
         await maybePrune();
@@ -187,6 +202,20 @@ export function createNotificationDispatcher({
                 oldestPendingAt: summary.filter(r => r.state === 'pending').map(r => r.oldest).sort()[0] ?? null,
                 rows: rows.map(r => ({ ...r, id: Number(r.id), part: Number(r.part), attempts: Number(r.attempts) })),
             };
+        },
+
+        /**
+         * Delivery progress of the active account's outbox (read-only): how many pending rows are due now
+         * and since when (ms). Rows waiting for their backoff or held for another account are not due;
+         * rows already in the in-memory queue are counted by that queue instead.
+         */
+        async progress() {
+            const accountScope = scope();
+            noteScope(accountScope);
+            if (!accountScope) return { due: 0, dueSince: null };
+            const { due, dueSince } = await store.dueSummary({ accountScope, now: iso(now()), excludeIds: inFlight });
+            const since = dueSince ? Date.parse(dueSince) : NaN;
+            return { due, dueSince: due ? Math.max(Number.isFinite(since) ? since : 0, servingSince) : null };
         },
 
         async retry(id) {

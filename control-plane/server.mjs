@@ -104,7 +104,7 @@ class HttpError extends Error {
  * @param {object} opts.switcher - account switcher
  * @param {(subsystem: string) => Promise<void>} [opts.rebind] - restarts a named subsystem
  * @param {() => object|Promise<object>} [opts.healthReport] - { status, ... } for /api/health
- * @param {() => object} [opts.metrics] - telemetry for /api/metrics
+ * @param {() => object|Promise<object>} [opts.metrics] - telemetry for /api/metrics
  * @param {() => object} [opts.validation] - configValidator summary
  * @param {object} [opts.catalog] - CAT-TASK-005: { service (catalog/catalogService.js), runNow(), relay (catalog/guideRelay.js) }
  */
@@ -454,7 +454,8 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
             modules: engine.getTasksStatus().map(m => ({
                 id: m.name, enabled: m.enabled, active: m.isActive, running: m.isRunning,
                 intervalMs: m.interval, defaultIntervalMs: m.defaultInterval, lastRun: m.lastRun,
-                health: m.lastRun?.outcome === 'error' ? 'failing' : m.isActive ? 'ok' : m.enabled ? 'waiting' : 'disabled',
+                overdue: Boolean(m.overdue), overdueMs: m.overdueMs ?? 0, // app_modules/taskHealth.js grace rule
+                health: m.lastRun?.outcome === 'error' ? 'failing' : m.overdue ? 'overdue' : m.isActive ? 'ok' : m.enabled ? 'waiting' : 'disabled',
             })),
             intervalBounds: MODULE_INTERVAL_BOUNDS,
             sections: SECTIONS,
@@ -544,7 +545,7 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
         }
         if (m === 'GET' && p === '/api/health') { const h = await healthReport(); return send(res, h.status === 'unhealthy' ? 503 : 200, h); }
         if (m === 'GET' && p === '/api/metrics') {
-            try { return send(res, 200, metrics()); } catch { return send(res, 500, { status: 'error', message: 'Metrics unavailable.' }); }
+            try { return send(res, 200, await metrics()); } catch { return send(res, 500, { status: 'error', message: 'Metrics unavailable.' }); }
         }
         if (m === 'GET' && catalog && p.startsWith('/api/catalog/')) return catalogGet(res, url, p);
         if (m === 'GET' && notifications && p === '/api/notifications') return send(res, 200, await describeNotifications());

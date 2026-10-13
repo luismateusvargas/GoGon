@@ -31,7 +31,7 @@ main { padding: 20px; max-width: 1200px; margin: 0 auto; }
 
 .pill, .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--chip); font-size: 12px; white-space: nowrap; }
 .pill-ok, .badge.ok { background: var(--ok-bg); color: var(--ok); }
-.pill-warn, .badge.warn, .pill-waiting { background: var(--warn-bg); color: var(--warn); }
+.pill-warn, .badge.warn, .pill-waiting, .pill-overdue { background: var(--warn-bg); color: var(--warn); }
 .pill-bad, .pill-failing { background: var(--bad-bg); color: var(--bad); }
 .pill-disabled, .pill-muted { color: var(--muted); }
 .badges { display: inline-flex; gap: 4px; flex-wrap: wrap; }

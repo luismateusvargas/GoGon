@@ -68,6 +68,7 @@ import { validateAndExit, getConfigSummary } from './configValidator.mjs';
 // Private control plane (CTRL-TASK-003/004/005)
 import { isControlPlaneEnabled, prepareControlPlane, startControlPlane } from './control-plane/index.mjs';
 import { getMetrics } from './metrics.mjs';
+import { deliveryMonitor } from './deliveryHealth.mjs';
 import { initDatabase } from './_gg_data/handler/gg_database.js';
 import { startNotificationOutbox, notificationOutbox } from './notificationDispatcher.js';
 
@@ -166,7 +167,7 @@ async function main() {
                     if (subsystem !== 'discord') throw new Error(`Unknown subsystem ${subsystem}`);
                     await restartDiscord(getSetting('GG_DISCORD_TOKEN'), getSetting('GG_DISCORD_APP_ID'), getSetting('GG_DISCORD_GUILD_ID'));
                 },
-                healthReport: () => healthReport(),
+                healthReport: () => healthReport({ detail: true }),
                 metrics: () => getMetrics(),
                 validation: () => getConfigSummary(),
                 notifications: notificationOutbox(),
@@ -175,6 +176,9 @@ async function main() {
             console.error(`[GoGon_ERROR] Control plane failed to start: ${e.message}`);
         }
     }
+
+    // 7b. Delivery progress: log a stall and its recovery even when nothing polls health
+    deliveryMonitor.start();
 
     // 8. Loopback health probe
     if (getSetting('GG_HEALTH_CHECK_ENABLED') !== '0') {

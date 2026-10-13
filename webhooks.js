@@ -58,6 +58,14 @@ export const OUTBOX_POLL_INTERVAL = 15_000; // How often due rows are looked up 
 export const OUTBOX_BATCH_LIMIT = 50; // Rows moved into the in-memory queue per lookup
 export const OUTBOX_DELIVERED_RETENTION = 7 * 24 * 3600_000; // Delivered rows are pruned after this
 
+// === Delivery Progress Health (specs/tasks/2026-10-notification-progress-health.md) ===
+// "Stalled": due notifications exist and no send attempt has completed (accepted or failed) for this long.
+// A healthy queue completes an attempt at least every DISCORD_MAX_RETRY_AFTER + DISCORD_REQUEST_TIMEOUT
+// (75 s) while work is due, and the outbox wakes every OUTBOX_POLL_INTERVAL, so 5 min leaves ample margin.
+export const DELIVERY_STALL_AFTER = 5 * 60_000; // Owner health and metrics report 'stalled' (with a WARN)
+export const DELIVERY_UNHEALTHY_AFTER = 15 * 60_000; // The loopback /health probe answers 503
+export const DELIVERY_RECOVERED_WINDOW = 15 * 60_000; // How long 'recovered' is shown after a stall clears
+
 // === Validation ===
 // Check if critical webhooks are configured
 const requiredWebhooks = {

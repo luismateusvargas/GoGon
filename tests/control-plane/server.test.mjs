@@ -20,6 +20,9 @@ const HASH = hashPassword(ADMIN_PASSWORD);
 const SECRET_WEBHOOK = 'https://discord.com/api/webhooks/123456789012345678/server-fixture-secret-token-00';
 
 let cp, base, origin, store, engine, rebinds, clock;
+// Health and metrics providers; a test may replace them (both may be async, as in app.mjs).
+let healthImpl = () => ({ status: 'ok' });
+let metricsImpl = () => ({ system: { uptime: 1 } });
 
 // The notification outbox as the dashboard sees it (notificationDispatcher describe/retry/discard).
 const outbox = {
@@ -56,7 +59,7 @@ before(async () => {
     clock = { t: Date.now() };
     const switcher = { events: new EventEmitter(), status: () => ({ state: 'idle', activeLabel: null, lastError: null }), switchTo: async () => ({ activeLabel: 'X', resumed: [] }) };
     const config = { username: ADMIN, passwordHash: HASH, sessionSecret: 'x'.repeat(48), host: '127.0.0.1', port: 0, cookieSecure: false };
-    cp = createControlPlane({ config, store, engine, switcher, rebind: async s => { rebinds.push(s); }, now: () => clock.t, healthReport: () => ({ status: 'ok' }), metrics: () => ({ system: { uptime: 1 } }), notifications: outbox });
+    cp = createControlPlane({ config, store, engine, switcher, rebind: async s => { rebinds.push(s); }, now: () => clock.t, healthReport: () => healthImpl(), metrics: () => metricsImpl(), notifications: outbox });
     const { port } = await cp.listen(0, '127.0.0.1');
     cp.allowHost(`127.0.0.1:${port}`);
     base = `http://127.0.0.1:${port}`;
@@ -176,6 +179,36 @@ test('AC-CTRL-002: state lists every registry entry, modules, and account, with 
     assert.equal(r.json.modules[0].lastRun.outcome, 'ok');
     assert.deepEqual(r.json.account, { state: 'idle', activeLabel: null, lastError: null, source: 'env' });
     assert.ok(!JSON.stringify(r.json.audit).includes('server-fixture-secret-token'));
+});
+
+test('progress-health AC-1/AC-2/AC-3: owner state shows overdue modules and delivery progress; async metrics are served', async (t) => {
+    const { cookie } = await login();
+    const getTasksStatus = engine.getTasksStatus;
+    engine.getTasksStatus = () => getTasksStatus().map(m => (m.name === 'Crates' ? { ...m, overdue: true, overdueMs: 5000 } : m));
+    const delivery = { state: 'stalled', unhealthy: true, pending: 3, oldestDueAgeMs: 960_000, attemptAgeMs: null, lastFailure: { category: 'timeout', at: '2026-10-13T00:00:00.000Z' } };
+    healthImpl = async () => ({ status: 'unhealthy', error: 'delivery stalled', delivery, tasks: { active: 2, total: 2, overdue: 1, overdueModules: ['Crates'] } });
+    metricsImpl = async () => ({ discord: { sent: 4, timeouts: 1 }, delivery: { state: 'stalled', pending: 3, lastProgressAt: null } });
+    t.after(() => {
+        engine.getTasksStatus = getTasksStatus;
+        healthImpl = () => ({ status: 'ok' });
+        metricsImpl = () => ({ system: { uptime: 1 } });
+    });
+
+    const state = await req('GET', '/api/state', { cookie });
+    assert.equal(state.status, 200);
+    assert.deepEqual(state.json.modules.map(m => [m.id, m.health, m.overdue, m.overdueMs]), [['SuperElites', 'ok', false, 0], ['Crates', 'overdue', true, 5000]]);
+    assert.deepEqual(state.json.health.delivery, delivery);
+
+    const health = await req('GET', '/api/health', { cookie });
+    assert.equal(health.status, 503);
+    assert.equal(health.json.delivery.pending, 3);
+
+    const metrics = await req('GET', '/api/metrics', { cookie });
+    assert.equal(metrics.status, 200);
+    assert.deepEqual(metrics.json.delivery, { state: 'stalled', pending: 3, lastProgressAt: null });
+
+    metricsImpl = async () => { throw new Error('boom'); };
+    assert.equal((await req('GET', '/api/metrics', { cookie })).status, 500, 'AC-HLTH-002 error case with an async provider');
 });
 
 test('AC-CTRL-002: the live stream sends the state on connect', async () => {

@@ -25,7 +25,8 @@ test('AC-HLTH-001: GET /health returns JSON status, uptime, and task counts', as
         assert.match(res.headers.get('content-type'), /application\/json/);
         const body = await res.json();
         assert.equal(body.status, 'ok');
-        assert.deepEqual(body.tasks, { active: 1, total: 2 });
+        assert.deepEqual(body.tasks, { active: 1, total: 2, overdue: 0 });
+        assert.equal(body.delivery, 'idle', 'an empty queue is healthy');
         assert.ok(body.uptime);
         assert.equal(res.headers.get('access-control-allow-origin'), null, 'no wildcard CORS');
         assert.ok(JSON.stringify(body).length < 64 * 1024);

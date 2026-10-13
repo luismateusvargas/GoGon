@@ -4,7 +4,7 @@
 spec:
   id: "task-engine-v1"
   status: draft
-  version: "1.4.0"
+  version: "1.5.0"
   created: "2026-09-22"
   updated: "2026-10-13"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: ["security"]
 
   changelog:
+    - version: "1.5.0"
+      date: "2026-10-13"
+      changes:
+        - "getTasksStatus() adds nextRunAt (when the scheduled next run is due) and overdue/overdueMs (specs/tasks/2026-10-notification-progress-health.md AC-3). Rule in app_modules/taskHealth.js: overdue when now > expected start + max(interval, 2 min), expected start = nextRunAt or end of lastRun + interval; never for a disabled or stopped module, a paused engine, a run in flight, or before the first run finishes. Existing fields are unchanged."
     - version: "1.4.0"
       date: "2026-10-13"
       changes:

@@ -336,3 +336,44 @@ test('end to end: a claimed alert is posted with its stored payload and acknowle
     assert.equal(getAccountScope(), 'env');
     void utils;
 });
+
+// --- specs/tasks/2026-10-notification-progress-health.md: outbox progress and counters ---------------
+
+test('progress-health: progress() counts due rows not yet queued, from when this dispatcher began serving the account', async () => {
+    const { metricCounters } = await import('../../app_modules/metricsStore.js');
+    const before = metricCounters();
+    clock += 60_000;
+    const servingSince = clock;
+    const { dispatcher, queued } = scripted();
+    await claim(901);
+    await claim(902);
+    await claim(903);
+    clock += 30_000;
+    assert.deepEqual(await dispatcher.progress(), { due: 3, dueSince: servingSince },
+        'rows claimed earlier are counted as due only from when this dispatcher started');
+
+    await dispatcher.pump();
+    assert.equal(queued.length, 3);
+    assert.deepEqual(await dispatcher.progress(), { due: 0, dueSince: null }, 'rows in the in-memory queue are counted by that queue');
+
+    await queued[0].meta.onSettled({ ok: true, batchSize: 1 });
+    await queued[1].meta.onSettled({ ok: false, error: { category: 'server', status: 502 }, batchSize: 1 });
+    await queued[2].meta.onSettled({ ok: false, error: { category: 'client', status: 400 }, batchSize: 1 });
+    assert.deepEqual(await dispatcher.progress(), { due: 0, dueSince: null }, 'a row waiting for its backoff is not due');
+    const after = metricCounters();
+    assert.deepEqual(['outboxDelivered', 'outboxRetried', 'outboxFailed'].map(k => after[k] - before[k]), [1, 1, 1]);
+
+    clock += outboxBackoff(1);
+    const due = await dispatcher.progress();
+    assert.equal(due.due, 1, 'the retryable row is due again after its backoff');
+
+    // Another account: its rows are held, and the clock restarts when the account becomes active again.
+    setAccountScope('profile:other');
+    assert.deepEqual(await dispatcher.progress(), { due: 0, dueSince: null });
+    clock += 5_000;
+    setAccountScope('env');
+    assert.deepEqual(await dispatcher.progress(), { due: 1, dueSince: clock });
+    setAccountScope(null);
+    assert.deepEqual(await dispatcher.progress(), { due: 0, dueSince: null }, 'no active account');
+    assert.ok(!JSON.stringify(await dispatcher.progress()).includes('fixture-outbox'));
+});

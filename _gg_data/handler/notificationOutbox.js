@@ -81,6 +81,20 @@ export function createNotificationOutboxStore(db) {
         },
 
         /** Counts by state and account, for the owner and health views. */
+        /**
+         * Count of one account's pending rows that are due, and the earliest next_attempt_at among them,
+         * leaving out excludeIds (rows already queued in memory).
+         */
+        async dueSummary({ accountScope, now = nowIso(), excludeIds = new Set() }) {
+            const ids = [...excludeIds];
+            const [row] = await db.query(
+                "SELECT COUNT(*) AS n, MIN(next_attempt_at) AS dueSince FROM notification_outbox "
+                + "WHERE state = 'pending' AND account_scope = ? AND next_attempt_at <= ?"
+                + (ids.length ? ` AND id NOT IN (${ids.map(() => '?').join(', ')})` : ''),
+                [accountScope, now, ...ids]);
+            return { due: Number(row?.n ?? 0), dueSince: row?.dueSince ?? null };
+        },
+
         async summary() {
             const rows = await db.query(
                 'SELECT state, account_scope AS accountScope, COUNT(*) AS n, MIN(created_at) AS oldest FROM notification_outbox GROUP BY state, account_scope');

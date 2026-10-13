@@ -31,15 +31,14 @@ constitution:
       applies_to: Data and catalog changes.
       verification: Run data tests and the MySQL CI job.
   logging:
-    info: "Use the existing LOG(feature, message) for meaningful startup, module transition, completed delivery, and recovery events with safe module or channel key, outcome, timestamp, and duration. LOG is currently controlled by GG_DEBUG, so required operational INFO visibility is a verified gap."
+    info: "Use the existing LOG(feature, message) for meaningful startup, module transition, completed delivery, and recovery events with safe module or channel key, outcome, timestamp, and duration. LOG is controlled by GG_DEBUG; app_modules/core.js INFO is always printed and is used for operational recovery events (delivery stall recovered). Other required INFO events still go through LOG, which remains a gap."
     warning: "Use WARN for retries, timeout, stale progress, rate limits, disabled dependencies, and recoverable failures; include operation, sanitized destination key, attempt, HTTP status when known, and bounded delay."
     error: "Use ERR for failed delivery after bounded retries, monitor failures, and failed account or database operations; include sanitized operation, category, module, and duration without URL or payload."
     debug: "Use LOG for detailed diagnostic state only while GG_DEBUG is enabled by the owner; include sanitized task and queue state, not raw responses or account content. GG_DEBUG is currently enabled by default in config/registry.mjs; a later change may separate INFO from DEBUG."
     safeguards: "Use app_modules/core.js LOG/WARN/ERR and Compose local log rotation. Never print tokens, webhook URLs, credentials, cookie jars, raw payloads, or sensitive HTML; bound repetitive messages."
     coverage_gaps:
-      - Monitor alerts are durable in the notification outbox, but there is no delivery-progress health signal yet; direct (non-outbox) Discord sends are still dropped after bounded retries with only an ERR log.
-      - metrics.mjs defines Discord counters but no runtime code calls incrementMetric.
-      - healthCheck.mjs does not assess last delivery progress or overdue task runs.
+      - Direct (non-outbox) Discord sends are still dropped after bounded retries with only an ERR log and a discordDropped metric.
+      - Overdue modules are shown to the owner but do not change the probe status or raise a log event.
   quality_gates:
     - id: GATE-001
       check: npm test on Node 22 with no-network fixtures
