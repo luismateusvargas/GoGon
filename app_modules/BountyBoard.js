@@ -4,7 +4,7 @@ import { LOG, WARN, ERR } from './core.js';
 import { secureFetch, getGoldInHand, getBuffs } from '../utils.js';
 import { BountyGroup } from '../webhooks.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor, processedContent } from './notify.js';
+import { claimAlerts, alertFor, processedContent, bindAccount } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 
 // --- CONFIGURATION & STATE ---
@@ -55,9 +55,9 @@ async function lookupOrUnknown(what, bounty, fn) {
  * Loads the set of processed bounty IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing unique IDs of processed bounties.
  */
-async function loadProcessedBounties() {
+async function loadProcessedBounties(account) {
     try {
-        const storedIdsJson = (await processedContent(BOUNTY_ID_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(BOUNTY_ID_STORAGE_KEY, account)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('bounty', `Loaded ${storedIdsArray.length} processed bounty IDs from database.`);
         return new Set(storedIdsArray);
@@ -75,7 +75,8 @@ async function loadProcessedBounties() {
 export async function checkBounties() {
 LOG('bounty', 'Checking for new bounties...');
     try {
-        const processedBountyIds = await loadProcessedBounties();
+        const account = bindAccount(); // this run reads and claims only for the account active now (O4)
+        const processedBountyIds = await loadProcessedBounties(account);
 
         const response = await secureFetch(apiEndpoints.game.bountyBoard);
         if (!response.ok) {
@@ -109,7 +110,7 @@ LOG('bounty', 'Checking for new bounties...');
 
         // 2. Build each alert (target lookups run concurrently), then claim the ID and enqueue the
         // alert in one transaction.
-        await claimAlerts('bounty', { storageKey: BOUNTY_ID_STORAGE_KEY, historyLimit: BOUNTY_HISTORY_LIMIT }, newBounties, {
+        await claimAlerts('bounty', { storageKey: BOUNTY_ID_STORAGE_KEY, historyLimit: BOUNTY_HISTORY_LIMIT, account }, newBounties, {
             idOf: bounty => bounty.id,
             build: async bounty => {
                 // A failed profile or buff lookup must not drop the alert: it is sent with 'Unknown'. AC-MON-002

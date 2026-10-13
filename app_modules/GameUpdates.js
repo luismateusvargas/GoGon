@@ -3,7 +3,7 @@
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor, processedContent } from './notify.js';
+import { claimAlerts, alertFor, processedContent, bindAccount } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import * as cheerio from 'cheerio';
 
@@ -16,9 +16,9 @@ const DISCORD_CHAR_LIMIT = 2000;
  * Loads the set of processed update news IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing the unique IDs of processed news items.
  */
-async function loadProcessedUpdates() {
+async function loadProcessedUpdates(account) {
     try {
-        const storedIdsJson = (await processedContent(UPDATES_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(UPDATES_STORAGE_KEY, account)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('updates', `Loaded ${storedIdsArray.length} processed update news IDs from database.`);
         return new Set(storedIdsArray);
@@ -88,7 +88,8 @@ function splitMessage(title, content) {
 export async function checkForUpdatesArchive() {
     LOG('updates', 'Checking for new game updates...');
     try {
-        const processedUpdateIds = await loadProcessedUpdates();
+        const account = bindAccount(); // this run reads and claims only for the account active now (O4)
+        const processedUpdateIds = await loadProcessedUpdates(account);
 
         const response = await secureFetch(apiEndpoints.game.updateArchive);
         if (!response.ok) throw new Error(`Failed to fetch update archive data. Status: ${response.status}`);
@@ -111,7 +112,7 @@ export async function checkForUpdatesArchive() {
         // 2. Build each update's messages (one outbox part per chunk, sent in order), then claim
         // the ID and enqueue them in one transaction
         LOG('updates', `Found ${newUpdates.length} new game updates. Claiming them now...`);
-        await claimAlerts('updates', { storageKey: UPDATES_STORAGE_KEY, historyLimit: UPDATES_HISTORY_LIMIT }, newUpdates, {
+        await claimAlerts('updates', { storageKey: UPDATES_STORAGE_KEY, historyLimit: UPDATES_HISTORY_LIMIT, account }, newUpdates, {
             idOf: news => news.id,
             build: news => {
                 const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });

@@ -3,7 +3,7 @@
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor, processedContent } from './notify.js';
+import { claimAlerts, alertFor, processedContent, bindAccount } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 
 // --- CONFIGURATION & STATE ---
@@ -14,9 +14,9 @@ const GUILD_MSG_HISTORY_LIMIT = 100;
  * Loads the set of processed guild message IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing the unique IDs of processed messages.
  */
-async function loadProcessedGuildMessages() {
+async function loadProcessedGuildMessages(account) {
     try {
-        const storedIdsJson = (await processedContent(GUILD_MSG_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(GUILD_MSG_STORAGE_KEY, account)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('guildmsg', `Loaded ${storedIdsArray.length} processed guild message IDs from database.`);
         return new Set(storedIdsArray);
@@ -32,7 +32,8 @@ async function loadProcessedGuildMessages() {
 export async function checkGuildMessages() {
     LOG('guildmsg', 'Checking for new guild messages...');
     try {
-        const processedMessageIds = await loadProcessedGuildMessages();
+        const account = bindAccount(); // this run reads and claims only for the account active now (O4)
+        const processedMessageIds = await loadProcessedGuildMessages(account);
 
         const response = await secureFetch(apiEndpoints.player.privateMessages);
         if (!response.ok) throw new Error(`Failed to fetch private messages. Status: ${response.status}`);
@@ -55,7 +56,7 @@ export async function checkGuildMessages() {
 
         // 2. Build each alert, then claim the ID and enqueue the alert in one transaction
         LOG('guildmsg', `Found ${newGuildMessages.length} new guild messages. Claiming them now...`);
-        await claimAlerts('guildmsg', { storageKey: GUILD_MSG_STORAGE_KEY, historyLimit: GUILD_MSG_HISTORY_LIMIT }, newGuildMessages, {
+        await claimAlerts('guildmsg', { storageKey: GUILD_MSG_STORAGE_KEY, historyLimit: GUILD_MSG_HISTORY_LIMIT, account }, newGuildMessages, {
             idOf: msg => msg.id,
             build: msg => {
                 const dateTime = new Date(msg.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });

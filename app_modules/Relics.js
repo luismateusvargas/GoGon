@@ -3,7 +3,7 @@
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor, processedContent } from './notify.js';
+import { claimAlerts, alertFor, processedContent, bindAccount } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 
 // --- CONFIGURATION & STATE ---
@@ -14,9 +14,9 @@ const RELIC_HISTORY_LIMIT = 500;
  * Loads the set of processed relic log IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing the unique IDs of processed log entries.
  */
-async function loadProcessedRelicLogs() {
+async function loadProcessedRelicLogs(account) {
     try {
-        const storedIdsJson = (await processedContent(RELIC_LOG_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(RELIC_LOG_STORAGE_KEY, account)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('relics', `Loaded ${storedIdsArray.length} processed relic log IDs from database.`);
         return new Set(storedIdsArray);
@@ -32,7 +32,8 @@ async function loadProcessedRelicLogs() {
 export async function checkRelics() {
     LOG('relics', 'Checking for new relic events...');
     try {
-        const processedLogIds = await loadProcessedRelicLogs();
+        const account = bindAccount(); // this run reads and claims only for the account active now (O4)
+        const processedLogIds = await loadProcessedRelicLogs(account);
 
         const response = await secureFetch(apiEndpoints.guild.log);
         if (!response.ok) throw new Error(`Failed to fetch guild log data. Status: ${response.status}`);
@@ -61,7 +62,7 @@ export async function checkRelics() {
 
         // 2. Build each alert, then claim the ID and enqueue the alert in one transaction
         LOG('relics', `Found ${newRelicEvents.length} new relic events. Claiming them now...`);
-        await claimAlerts('relics', { storageKey: RELIC_LOG_STORAGE_KEY, historyLimit: RELIC_HISTORY_LIMIT }, newRelicEvents, {
+        await claimAlerts('relics', { storageKey: RELIC_LOG_STORAGE_KEY, historyLimit: RELIC_HISTORY_LIMIT, account }, newRelicEvents, {
             idOf: log => log.id,
             build: log => {
                 const text = log.msg.text;

@@ -4,7 +4,7 @@ import { LOG, WARN, ERR, sleep } from './core.js';
 import { secureFetch } from '../utils.js';
 import { LadderGroup } from '../webhooks.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, appendAlerts, alertFor, processedContent } from './notify.js';
+import { claimAlerts, appendAlerts, alertFor, processedContent, bindAccount } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import { EMOJIS, DELAYS, EMBED_COLORS } from './constants.js';
 
@@ -16,9 +16,9 @@ const LADDER_HISTORY_LIMIT = 100;
  * Loads the set of processed ladder news IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing the unique IDs of processed news items.
  */
-async function loadProcessedLadderNews() {
+async function loadProcessedLadderNews(account) {
     try {
-        const storedIdsJson = (await processedContent(LADDER_NEWS_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(LADDER_NEWS_STORAGE_KEY, account)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('ladder', `Loaded ${storedIdsArray.length} processed ladder news IDs from database.`);
         return new Set(storedIdsArray);
@@ -32,9 +32,10 @@ async function loadProcessedLadderNews() {
  * Fetches the results of the previous ladder for all bands with controlled concurrency.
  * Processes bands in batches of 3 to avoid overloading the server.
  * Each band's result is added to the reset event's outbox rows (parts 1..n) once fetched.
+ * @param {{ scope: string|null, epoch: number }} account - The account of the run that claimed the reset.
  * @param {number|string} resetEventId - The claimed ladder reset news ID.
  */
-async function fetchAndAnnounceAllPreviousRankings(resetEventId) {
+async function fetchAndAnnounceAllPreviousRankings(account, resetEventId) {
     LOG('ladder', 'Fetching previous ladder rankings for all bands...');
     try {
         const initialResponse = await secureFetch(apiEndpoints.game.ladderResetScoreboard(1));
@@ -100,7 +101,7 @@ async function fetchAndAnnounceAllPreviousRankings(resetEventId) {
 
             const message = `**Band ${band.id} (Levels ${band.level_start}-${band.level_end})**\n${playerLines}`.trim();
 
-            await appendAlerts('ladder', resetEventId, part++, [alertFor('GG_LADDER_WEBHOOK', extraDiscordPayload(
+            await appendAlerts('ladder', account, resetEventId, part++, [alertFor('GG_LADDER_WEBHOOK', extraDiscordPayload(
                 message, 
                 "Previous PvP Ladder Results", 
                 EMBED_COLORS.LADDER_RANKING.toString(), 
@@ -123,7 +124,8 @@ async function fetchAndAnnounceAllPreviousRankings(resetEventId) {
 export async function checkLadderReset() {
     LOG('ladder', 'Checking for PvP ladder reset...');
     try {
-        const processedNewsIds = await loadProcessedLadderNews();
+        const account = bindAccount(); // this run reads and claims only for the account active now (O4)
+        const processedNewsIds = await loadProcessedLadderNews(account);
 
         const response = await secureFetch(apiEndpoints.game.newsArchive);
         if (!response.ok) throw new Error(`Failed to fetch news archive data. Status: ${response.status}`);
@@ -147,7 +149,7 @@ export async function checkLadderReset() {
 
         // 2. Build each reset alert, then claim the ID and enqueue the alert in one transaction
         LOG('ladder', `Found ${newResetEvents.length} new ladder reset event(s). Claiming...`);
-        const claimed = await claimAlerts('ladder', { storageKey: LADDER_NEWS_STORAGE_KEY, historyLimit: LADDER_HISTORY_LIMIT }, newResetEvents, {
+        const claimed = await claimAlerts('ladder', { storageKey: LADDER_NEWS_STORAGE_KEY, historyLimit: LADDER_HISTORY_LIMIT, account }, newResetEvents, {
             idOf: news => news.id,
             build: news => {
                 const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
@@ -169,7 +171,7 @@ export async function checkLadderReset() {
 
         // 3. After announcing, fetch and post the results (usually only one reset)
         for (const news of claimed) {
-            await fetchAndAnnounceAllPreviousRankings(news.id);
+            await fetchAndAnnounceAllPreviousRankings(account, news.id);
         }
     } catch (error) {
         ERR('ladder', 'Error occurred while checking for ladder resets', error);

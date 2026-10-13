@@ -4,7 +4,7 @@ import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { TitanGroup } from '../webhooks.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor, processedContent } from './notify.js';
+import { claimAlerts, alertFor, processedContent, bindAccount } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
     getCreatureById
@@ -18,9 +18,9 @@ const TITAN_HISTORY_LIMIT = 100; // Standard history limit of 100
  * Loads the set of processed titan news IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing the unique IDs of processed news items.
  */
-async function loadProcessedTitanNews() {
+async function loadProcessedTitanNews(account) {
     try {
-        const storedIdsJson = (await processedContent(TITAN_NEWS_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(TITAN_NEWS_STORAGE_KEY, account)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('titans', `Loaded ${storedIdsArray.length} processed titan news IDs from database.`);
         return new Set(storedIdsArray);
@@ -36,7 +36,8 @@ async function loadProcessedTitanNews() {
 export async function checkForTitanNotifications() {
     LOG('titans', 'Checking for new titan notifications...');
     try {
-        const processedNewsIds = await loadProcessedTitanNews();
+        const account = bindAccount(); // this run reads and claims only for the account active now (O4)
+        const processedNewsIds = await loadProcessedTitanNews(account);
 
         const response = await secureFetch(apiEndpoints.game.newsArchive);
         if (!response.ok) throw new Error(`Failed to fetch news archive data. Status: ${response.status}`);
@@ -61,7 +62,7 @@ export async function checkForTitanNotifications() {
 
         // 2. Build each alert, then claim the ID and enqueue the alert in one transaction
         LOG('titans', `Found ${newTitanNews.length} new titan sightings. Claiming them now...`);
-        await claimAlerts('titans', { storageKey: TITAN_NEWS_STORAGE_KEY, historyLimit: TITAN_HISTORY_LIMIT }, newTitanNews, {
+        await claimAlerts('titans', { storageKey: TITAN_NEWS_STORAGE_KEY, historyLimit: TITAN_HISTORY_LIMIT, account }, newTitanNews, {
             idOf: news => news.id,
             build: async news => {
                 const newsId = news.id;

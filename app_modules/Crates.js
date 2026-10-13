@@ -3,7 +3,7 @@
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor, processedContent } from './notify.js';
+import { claimAlerts, alertFor, processedContent, bindAccount } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
     getItemById,
@@ -18,9 +18,9 @@ const CRATES_HISTORY_LIMIT = 100;
  * Loads the set of processed crate IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing the unique IDs of processed crates.
  */
-async function loadProcessedCrates() {
+async function loadProcessedCrates(account) {
     try {
-        const storedIdsJson = (await processedContent(CRATES_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(CRATES_STORAGE_KEY, account)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('crates', `Loaded ${storedIdsArray.length} processed crate IDs from database.`);
         return new Set(storedIdsArray);
@@ -36,7 +36,8 @@ async function loadProcessedCrates() {
 export async function checkForCratesFound() {
 LOG('crates', 'Checking for new crates...');
     try {
-        const processedCrateIds = await loadProcessedCrates();
+        const account = bindAccount(); // this run reads and claims only for the account active now (O4)
+        const processedCrateIds = await loadProcessedCrates(account);
 
         const response = await secureFetch(apiEndpoints.game.cratesArchive);
         if (!response.ok) throw new Error(`Failed to fetch crate data. Status: ${response.status}`);
@@ -58,7 +59,7 @@ LOG('crates', 'Checking for new crates...');
 
         // 2. Build each alert, then claim the ID and enqueue the alert in one transaction
         LOG('crates', `Found ${newCrates.length} new crates. Claiming them now...`);
-        await claimAlerts('crates', { storageKey: CRATES_STORAGE_KEY, historyLimit: CRATES_HISTORY_LIMIT }, newCrates, {
+        await claimAlerts('crates', { storageKey: CRATES_STORAGE_KEY, historyLimit: CRATES_HISTORY_LIMIT, account }, newCrates, {
             idOf: crate => crate.id,
             build: async crate => {
                 const actualTimestamp = serverTimestamp - crate.time;

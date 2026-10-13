@@ -2,7 +2,7 @@
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { extraDiscordPayload, noDropDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor, processedContent } from './notify.js';
+import { claimAlerts, alertFor, processedContent, bindAccount } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
     getCreatureById,
@@ -20,9 +20,9 @@ export const UNINDEXED_ITEM_TEXT = 'New Item';
  * Loads the set of processed SE kill IDs from the SQLite key-value store.
  * @returns {Set<string>} A Set containing unique IDs of processed kills.
  */
-async function loadProcessedSeKills() {
+async function loadProcessedSeKills(account) {
     try {
-        const storedIdsJson = (await processedContent(SE_KILLS_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(SE_KILLS_STORAGE_KEY, account)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('superelites', `Loaded ${storedIdsArray.length} processed SE kill IDs from database.`);
         return new Set(storedIdsArray);
@@ -38,7 +38,8 @@ async function loadProcessedSeKills() {
 export async function checkSuperElites() {
     LOG('superelites', 'Checking for new Super Elite kills...');
     try {
-        const processedSeKills = await loadProcessedSeKills();
+        const account = bindAccount(); // this run reads and claims only for the account active now (O4)
+        const processedSeKills = await loadProcessedSeKills(account);
 
         const response = await secureFetch(apiEndpoints.game.superEliteArchive);
         if (!response.ok) throw new Error(`Failed to fetch SE data. Status: ${response.status}`);
@@ -68,7 +69,7 @@ export async function checkSuperElites() {
 
         // 2. Build each alert, then claim the ID and enqueue the alert in one transaction
         console.log(`Found ${newKills.length} new SE kills. Claiming them now...`);
-        await claimAlerts('superelites', { storageKey: SE_KILLS_STORAGE_KEY, historyLimit: SE_KILL_HISTORY_LIMIT }, newKills, {
+        await claimAlerts('superelites', { storageKey: SE_KILLS_STORAGE_KEY, historyLimit: SE_KILL_HISTORY_LIMIT, account }, newKills, {
             idOf: kill => kill.uniqueKillId,
             build: async kill => {
                 // AC-MON-001: an unindexed creature is still announced with a fallback name (MON-TASK-001)
