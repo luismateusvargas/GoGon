@@ -1,6 +1,6 @@
 # Restore forward progress in Discord webhook delivery
 
-Status: ready
+Status: implemented (pending review)
 Project: specs/project.yaml
 Constitution: specs/constitution.yaml
 Related domains: specs/discord-integration.spec.yaml, specs/task-engine.spec.yaml

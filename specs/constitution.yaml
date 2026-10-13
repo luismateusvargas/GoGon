@@ -37,7 +37,7 @@ constitution:
     debug: "Use LOG for detailed diagnostic state only while GG_DEBUG is enabled by the owner; include sanitized task and queue state, not raw responses or account content. GG_DEBUG is currently enabled by default in config/registry.mjs; a later change may separate INFO from DEBUG."
     safeguards: "Use app_modules/core.js LOG/WARN/ERR and Compose local log rotation. Never print tokens, webhook URLs, credentials, cookie jars, raw payloads, or sensitive HTML; bound repetitive messages."
     coverage_gaps:
-      - Discord queue has no request deadline or stalled-head warning; utils.js processQueue can remain pending silently.
+      - Discord queue drops items after bounded retries with only an ERR log; there is no durable outbox or delivery-progress health signal yet.
       - metrics.mjs defines Discord counters but no runtime code calls incrementMetric.
       - healthCheck.mjs does not assess last delivery progress or overdue task runs.
   quality_gates:

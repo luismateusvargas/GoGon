@@ -4,7 +4,7 @@
 spec:
   id: "discord-integration-v1"
   status: draft
-  version: "1.4.0"
+  version: "1.5.0"
   created: "2026-09-22"
   updated: "2026-10-13"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: ["business-domain", "security"]
 
   changelog:
+    - version: "1.5.0"
+      date: "2026-10-13"
+      changes:
+        - "Delivery recovery (specs/tasks/2026-10-discord-delivery-recovery.md): every webhook request has a 15s deadline covering the body read; timeouts, network errors and 5xx get at most 3 attempts; other 4xx are permanent; 429 pauses only the limited webhook (bounded fallback and 60s cap, at most 5 per message) while other webhooks keep the 2000ms global spacing. Failed items are dropped with a sanitized ERR (hashed destination key, category, status). Constants live in webhooks.js."
     - version: "1.4.0"
       date: "2026-10-13"
       changes:
@@ -56,8 +60,9 @@ domain:
     /checkbuffs, /gvgcooldown), permissions/role gating, and the outbound webhook delivery pipeline
 
     incorporating rate-limited sequential queues and burst message batching (up to 10 embeds per payload).'
-  current_implementation: Current delivery is in-memory and unbounded on a pending node-fetch request. Historical
-    AC-DISC-004 says SQLite, but live state is MySQL. The correction task specs define the target recovery behavior.
+  current_implementation: Delivery is in-memory with a finite request deadline and bounded retries (delivery recovery,
+    2026-10-13); items that exhaust retries are dropped until the notification outbox task lands. Historical AC-DISC-004
+    says SQLite, but live state is MySQL.
   requirements:
   - id: AC-DISC-001
     statement: Slash command registration and command routing
@@ -109,7 +114,8 @@ domain:
       then: Enforces minimum 2000ms delay between consecutive webhook posts and backs off on HTTP 429 rate limit
     - given: Webhook returns 429 Too Many Requests with retry_after header
       when: Response is processed
-      then: Pauses queue for indicated retry duration and retries failed message
+      then: Retries the limited message no earlier than the indicated duration (bounded) while other webhooks keep
+        sending with the global 2000ms spacing
   - id: AC-DISC-006
     statement: Burst notification batching
     scenarios:
@@ -240,7 +246,7 @@ acceptance_criteria:
     error_cases:
       - given: "Webhook returns 429 Too Many Requests with retry_after header"
         when: "Response is processed"
-        then: "Pauses queue for indicated retry duration and retries failed message"
+        then: "Retries the limited message no earlier than the indicated duration (bounded) while other webhooks keep sending with the global 2000ms spacing"
 
   - id: AC-DISC-006
     description: "Burst notification batching"

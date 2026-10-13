@@ -42,6 +42,13 @@ onSettingChange(key => {
 export const DELAY_BETWEEN_MESSAGES = 2000; // 2 seconds between Discord messages
 export const RETRY_DELAY = 2000; // 2 seconds retry delay
 
+// === Discord Delivery Recovery ===
+export const DISCORD_REQUEST_TIMEOUT = 15_000; // Deadline for one webhook request, including the response body
+export const DISCORD_MAX_ATTEMPTS = 3; // Attempts per message for timeouts, network errors and 5xx
+export const DISCORD_MAX_RATE_LIMITS = 5; // 429 responses tolerated per message before it is dropped
+export const DISCORD_RATE_LIMIT_FALLBACK = 5_000; // Delay used when a 429 has no valid retry_after
+export const DISCORD_MAX_RETRY_AFTER = 60_000; // Upper bound on any single 429 pause
+
 // === Validation ===
 // Check if critical webhooks are configured
 const requiredWebhooks = {
