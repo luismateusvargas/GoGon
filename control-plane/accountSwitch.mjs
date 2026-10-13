@@ -12,8 +12,11 @@ import { EventEmitter } from 'node:events';
  * @param {{ pauseAll: Function, resumeAll: Function }} deps.engine
  * @param {() => Promise<boolean>} deps.drainQueue - flushes pending Discord notifications
  * @param {{ resetSession: Function, setCredentialProvider: Function, login: Function, isLoggedIn: Function }} deps.session
+ * @param {(profileId: string|null|undefined) => void} [deps.onAccountChange] - called with the signed-in
+ *   profile ID (null for the .env account) or undefined while no account is signed in; the
+ *   notification outbox uses it to send each alert only under the account that produced it
  */
-export function createAccountSwitcher({ store, engine, drainQueue, session }) {
+export function createAccountSwitcher({ store, engine, drainQueue, session, onAccountChange = () => {} }) {
     const events = new EventEmitter();
     let state = 'idle';            // idle | switching | failed-closed
     let lastError = null;
@@ -52,6 +55,7 @@ export function createAccountSwitcher({ store, engine, drainQueue, session }) {
         } catch { /* a stuck webhook must not block the switch; the queue belongs to the old account */ }
 
         // Invalidate the old account before authenticating the new one: no partial account.
+        onAccountChange(undefined);
         session.setCredentialProvider(null);
         await session.resetSession();
         await store.setActiveProfile(null);
@@ -73,6 +77,7 @@ export function createAccountSwitcher({ store, engine, drainQueue, session }) {
         useProfileCredentials(creds);
         await store.setActiveProfile(profileId);
         activeLabel = creds.label;
+        onAccountChange(profileId);
         await store.audit({ actor, action: 'account.switch', subject: creds.label, detail: { from } });
         const resumed = await engine.resumeAll(resumeList);
         state = 'idle';
@@ -91,10 +96,14 @@ export function createAccountSwitcher({ store, engine, drainQueue, session }) {
          */
         async applyStoredActiveProfile() {
             const active = await store.getActiveProfile();
-            if (!active) return null;
+            if (!active) {
+                onAccountChange(null);
+                return null;
+            }
             const creds = await store.getProfileCredentials(active.id);
             useProfileCredentials(creds);
             activeLabel = creds.label;
+            onAccountChange(active.id);
             return creds.label;
         },
 

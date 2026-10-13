@@ -1,10 +1,11 @@
 // app_modules/BountyBoard.js revamped on 09/26/2025
 import { LOG, WARN, ERR } from './core.js';
 // Make sure all necessary functions are imported from your utils and database modules.
-import { secureFetch, sendExtraDiscordMessage, getGoldInHand, getBuffs } from '../utils.js';
-import { bountyWebhook, BountyGroup } from '../webhooks.js';
+import { secureFetch, getGoldInHand, getBuffs } from '../utils.js';
+import { BountyGroup } from '../webhooks.js';
+import { extraDiscordPayload } from './discordPayload.js';
+import { claimAlerts, alertFor, processedContent, bindAccount } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
-import { getContent, setContent } from '../_gg_data/handler/gg_database.js';
 
 // --- CONFIGURATION & STATE ---
 const BOUNTY_ID_STORAGE_KEY = 'processed_bounty_ids';
@@ -54,9 +55,9 @@ async function lookupOrUnknown(what, bounty, fn) {
  * Loads the set of processed bounty IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing unique IDs of processed bounties.
  */
-async function loadProcessedBounties() {
+async function loadProcessedBounties(account) {
     try {
-        const storedIdsJson = (await getContent(BOUNTY_ID_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(BOUNTY_ID_STORAGE_KEY, account)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('bounty', `Loaded ${storedIdsArray.length} processed bounty IDs from database.`);
         return new Set(storedIdsArray);
@@ -74,7 +75,8 @@ async function loadProcessedBounties() {
 export async function checkBounties() {
 LOG('bounty', 'Checking for new bounties...');
     try {
-        const processedBountyIds = await loadProcessedBounties();
+        const account = bindAccount(); // this run reads and claims only for the account active now (O4)
+        const processedBountyIds = await loadProcessedBounties(account);
 
         const response = await secureFetch(apiEndpoints.game.bountyBoard);
         if (!response.ok) {
@@ -106,23 +108,17 @@ LOG('bounty', 'Checking for new bounties...');
 
         console.log(`Found ${newBounties.length} new unique bounties to process.`);
 
-        // The rest of the "claim-then-process" logic is still correct.
-        // It now operates on a truly unique list.
-        
-        // 2. IMMEDIATELY claim and save the new IDs to the database
-        for (const bounty of newBounties) {
-            await setContent(BOUNTY_ID_STORAGE_KEY, bounty.id, BOUNTY_HISTORY_LIMIT);
-        }
-        LOG('bounty', `Claimed and saved ${newBounties.length} new bounty IDs.`);
-        
-        // 3. Process notifications concurrently
-        const processingPromises = newBounties.map(async (bounty) => {
-            // A failed profile or buff lookup must not drop the alert: it is sent with 'Unknown'. AC-MON-002
-            const goldInHand = await lookupOrUnknown('gold in hand', bounty, () => getGoldInHand(apiEndpoints.player.details(bounty.target.id)));
-            const buffs = await lookupOrUnknown('buffs', bounty, () => getBuffs(apiEndpoints.player.activeBuffs(bounty.target.id), true));
-            const rewardInfo = formatBountyReward(bounty);
+        // 2. Build each alert (target lookups run concurrently), then claim the ID and enqueue the
+        // alert in one transaction.
+        await claimAlerts('bounty', { storageKey: BOUNTY_ID_STORAGE_KEY, historyLimit: BOUNTY_HISTORY_LIMIT, account }, newBounties, {
+            idOf: bounty => bounty.id,
+            build: async bounty => {
+                // A failed profile or buff lookup must not drop the alert: it is sent with 'Unknown'. AC-MON-002
+                const goldInHand = await lookupOrUnknown('gold in hand', bounty, () => getGoldInHand(apiEndpoints.player.details(bounty.target.id)));
+                const buffs = await lookupOrUnknown('buffs', bounty, () => getBuffs(apiEndpoints.player.activeBuffs(bounty.target.id), true));
+                const rewardInfo = formatBountyReward(bounty);
 
-            const message = `
+                const message = `
 :hammer: Target: ${bounty.target.name} (Lvl ${bounty.target.level})
 :scales: Offerer: ${bounty.offerer.name}
 :moneybag: Reward: ${rewardInfo.type}
@@ -132,25 +128,18 @@ LOG('bounty', 'Checking for new bounties...');
 :crystal_ball: Buffs: ${buffs?.numberOfBuffs ?? UNKNOWN}
             `.trim();
 
-            try {
-                // Assuming sendExtraDiscordMessage can handle the image URL parameter.
-                sendExtraDiscordMessage(
+                LOG('bounty', `Notifying: ${bounty.target.name} (id=${bounty.id})`);
+                return [alertFor('GG_BOUNTY_WEBHOOK', extraDiscordPayload(
                     message,
                     "Bounty Board",
                     "16711680",
                     "Gotta Smash'em all!",
                     BountyGroup,
-                    bountyWebhook,
                     "", // No primary image for bounties
                     rewardInfo.imageUrl || ""
-                );
-                LOG('bounty', `Notified: ${bounty.target.name} (id=${bounty.id})`);
-            } catch (e) {
-                ERR('bounty', 'Failed to send bounty to Discord', e);
-            }
+                ))];
+            },
         });
-
-        await Promise.allSettled(processingPromises);
 
     } catch (error) {
         ERR('bounty', 'Error occurred while checking bounties', error);

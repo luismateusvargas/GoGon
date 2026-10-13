@@ -42,6 +42,30 @@ onSettingChange(key => {
 export const DELAY_BETWEEN_MESSAGES = 2000; // 2 seconds between Discord messages
 export const RETRY_DELAY = 2000; // 2 seconds retry delay
 
+// === Discord Delivery Recovery ===
+export const DISCORD_REQUEST_TIMEOUT = 15_000; // Deadline for one webhook request, including the response body
+export const DISCORD_MAX_ATTEMPTS = 3; // Attempts per message for timeouts, network errors and 5xx
+export const DISCORD_MAX_RATE_LIMITS = 5; // 429 responses tolerated per message before it is dropped
+export const DISCORD_RATE_LIMIT_FALLBACK = 5_000; // Delay used when a 429 has no valid retry_after
+export const DISCORD_MAX_RETRY_AFTER = 60_000; // Upper bound on any single 429 pause
+
+// === Notification Outbox (specs/tasks/2026-10-notification-outbox.md) ===
+// One "round" is a full in-memory delivery attempt above (with its own bounded retries).
+export const OUTBOX_MAX_ROUNDS = 12; // Rounds before a retryable failure becomes 'failed' (about 3.5 h with the backoff below)
+export const OUTBOX_RETRY_BASE = 60_000; // Delay after the first failed round; doubles per round
+export const OUTBOX_RETRY_CAP = 30 * 60_000; // Upper bound on the delay between rounds
+export const OUTBOX_POLL_INTERVAL = 15_000; // How often due rows are looked up besides new-claim wakeups
+export const OUTBOX_BATCH_LIMIT = 50; // Rows moved into the in-memory queue per lookup
+export const OUTBOX_DELIVERED_RETENTION = 7 * 24 * 3600_000; // Delivered rows are pruned after this
+
+// === Delivery Progress Health (specs/tasks/2026-10-notification-progress-health.md) ===
+// "Stalled": due notifications exist and no send attempt has completed (accepted or failed) for this long.
+// A healthy queue completes an attempt at least every DISCORD_MAX_RETRY_AFTER + DISCORD_REQUEST_TIMEOUT
+// (75 s) while work is due, and the outbox wakes every OUTBOX_POLL_INTERVAL, so 5 min leaves ample margin.
+export const DELIVERY_STALL_AFTER = 5 * 60_000; // Owner health and metrics report 'stalled' (with a WARN)
+export const DELIVERY_UNHEALTHY_AFTER = 15 * 60_000; // The loopback /health probe answers 503
+export const DELIVERY_RECOVERED_WINDOW = 15 * 60_000; // How long 'recovered' is shown after a stall clears
+
 // === Validation ===
 // Check if critical webhooks are configured
 const requiredWebhooks = {

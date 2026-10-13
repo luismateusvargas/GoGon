@@ -141,8 +141,10 @@ test('AC-AUTH-001: a failed login makes the boot sequence exit with code 1', asy
     const { readFile } = await import('node:fs/promises');
     const src = await readFile(new URL('../../app.mjs', import.meta.url), 'utf8');
     const block = src.slice(src.indexOf('// 4. Login Sequence'), src.indexOf('// 5. Engine Initialization'));
-    assert.match(block, /await login\(email, pass\)/);
+    assert.match(block, /await loginBeforeDelivery\(\{ email, password: pass, login, ensureLogin,/);
     assert.match(block, /catch \(e\) \{[\s\S]*process\.exit\(1\)/);
+    // Outbox O3: pending alerts are replayed only by loginBeforeDelivery, after the login is validated.
+    assert.doesNotMatch(src.slice(src.indexOf('async function main'), src.indexOf('// 4. Login Sequence')), /startNotificationOutbox\(|setAccountScope\(/);
 });
 
 // --- AC-AUTH-002 -------------------------------------------------------------------------------------

@@ -206,3 +206,56 @@ test('AC-ENG-005: shutdown stops every active task and flushes Discord batches',
     await tick(t, 10 * 60_000);
     assert.equal(calls.length, 2, 'no run after shutdown');
 });
+
+// --- specs/tasks/2026-10-notification-progress-health.md AC-3 ----------------------------------------
+
+test('progress-health AC-3: an enabled module whose next run is late beyond the grace is overdue; disabled, paused and running are not', async (t) => {
+    quiet(t);
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
+    const { overdueBy, overdueGrace, TASK_OVERDUE_MIN_GRACE } = await import('../../app_modules/taskHealth.js');
+    engine.startTask('Ladder');
+    await flush();
+    const s0 = status('Ladder');
+    const grace = overdueGrace(s0.interval);
+    assert.equal(grace, Math.max(s0.interval, TASK_OVERDUE_MIN_GRACE));
+    assert.equal(s0.nextRunAt, 1_000_000 + s0.interval, 'the next run is scheduled one interval after the first run');
+    assert.equal(s0.overdue, false);
+    assert.equal(s0.overdueMs, 0);
+
+    // The scheduled run should have started at nextRunAt; it is overdue only after the grace too.
+    const late = s0.nextRunAt + grace;
+    assert.equal(overdueBy(s0, { now: late }), 0, 'within the grace');
+    assert.equal(overdueBy(s0, { now: late + 1 }), 1, 'one interval plus the grace has passed with no new run');
+    assert.equal(overdueBy(s0, { now: late + 1, paused: true }), 0, 'paused engine (account switch)');
+    assert.equal(overdueBy({ ...s0, enabled: false }, { now: late + 1 }), 0, 'disabled');
+    assert.equal(overdueBy({ ...s0, isRunning: true }, { now: late + 1 }), 0, 'run in flight');
+    assert.equal(overdueBy({ ...s0, lastRun: null }, { now: late + 1 }), 0, 'first run not finished yet');
+    assert.equal(overdueBy({ ...s0, nextRunAt: null }, { now: s0.lastRun.startedAt + s0.lastRun.durationMs + s0.interval + grace + 1 }), 1,
+        'without nextRunAt the end of the last run plus the interval is used');
+
+    // When the run fires on time the module is not overdue.
+    await tick(t, s0.interval);
+    assert.equal(status('Ladder').overdue, false);
+    assert.equal(status('Ladder').nextRunAt, 1_000_000 + 2 * s0.interval);
+
+    engine.stopTask('Ladder');
+    assert.equal(status('Ladder').overdue, false, 'stopped');
+    assert.equal(status('Ladder').nextRunAt, null);
+});
+
+test('progress-health AC-3: a long run in flight is not overdue; the module is overdue only once it stops progressing after it', async (t) => {
+    quiet(t);
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 5_000_000 });
+    let finish;
+    behaviour.Relics = () => new Promise(r => { finish = r; });
+    engine.startTask('Relics');
+    await flush();
+    const interval = status('Relics').interval;
+    t.mock.timers.tick(10 * interval);
+    await flush();
+    assert.equal(status('Relics').isRunning, true);
+    assert.equal(status('Relics').overdue, false, 'running');
+    finish();
+    await flush();
+    assert.equal(status('Relics').overdue, false, 'the next run was just scheduled');
+});

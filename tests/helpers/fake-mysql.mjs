@@ -11,6 +11,8 @@
 // are enforced on the real-MySQL CI run only (CAT-TASK-002).
 // ALTER TABLE ... MODIFY col VARCHAR(n) is a no-op here (SQLite ignores VARCHAR widths); column
 // widths are checked on the real-MySQL run.
+// A named CONSTRAINT ... UNIQUE in CREATE TABLE becomes a unique index of that name, as in MySQL, so
+// ALTER TABLE ... DROP INDEX name and CREATE UNIQUE INDEX behave (and fail) as they do there.
 // CHECKs declared in CREATE TABLE are listed in information_schema.CHECK_CONSTRAINTS and
 // TABLE_CONSTRAINTS under MySQL's generated names (<table>_chk_<n>, or the CONSTRAINT name), so
 // migration 007 sees the allow-lists a fresh database has. SQLite cannot drop or add a CHECK on an
@@ -133,7 +135,15 @@ export function translate(sql) {
             extra.push(`CREATE INDEX IF NOT EXISTS ${name} ON ${table} (${cols})`);
             return '';
         });
+        // Inline CONSTRAINT name UNIQUE (cols) -> a named unique index, which MySQL creates too and a
+        // later ALTER TABLE ... DROP INDEX name can remove (SQLite cannot drop a table constraint).
+        s = s.replace(/,\s*CONSTRAINT\s+`?(\w+)`?\s+UNIQUE\s*(?:KEY|INDEX)?\s*\(([^)]*)\)/gi, (_, name, cols) => {
+            extra.push(`CREATE UNIQUE INDEX IF NOT EXISTS ${name} ON ${table} (${cols})`);
+            return '';
+        });
     }
+    const dropIndex = s.match(/^ALTER\s+TABLE\s+`?\w+`?\s+DROP\s+(?:INDEX|KEY)\s+`?(\w+)`?$/i);
+    if (dropIndex) return [`DROP INDEX ${dropIndex[1]}`];
     s = s.replace(/\s+FOR\s+UPDATE\s*$/i, '');
     s = s.replace(/^INSERT\s+IGNORE\b/i, 'INSERT OR IGNORE');
     if (/\b(AUTO_INCREMENT|ENGINE\s*=|UNSIGNED)\b/i.test(s)) throw untranslatable(sql, 'MySQL-only syntax');
@@ -157,6 +167,8 @@ function mapError(error, sql) {
     if (/CHECK constraint failed/.test(m)) return as('ER_CHECK_CONSTRAINT_VIOLATED', 3819);
     if (/NOT NULL constraint failed/.test(m)) return as('ER_BAD_NULL_ERROR', 1048);
     if (/no such table/.test(m)) return as('ER_NO_SUCH_TABLE', 1146);
+    if (/index \S+ already exists/.test(m)) return as('ER_DUP_KEYNAME', 1061);
+    if (/no such index/.test(m)) return as('ER_CANT_DROP_FIELD_OR_KEY', 1091);
     if (/syntax error|incomplete input|unrecognized token/.test(m)) return as('ER_PARSE_ERROR', 1064);
     return as('ER_UNKNOWN_ERROR', 1105);
 }

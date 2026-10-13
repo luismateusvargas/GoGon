@@ -4,13 +4,17 @@
 spec:
   id: "backup-reconciliation-v1"
   status: draft
-  version: "1.6.1"
+  version: "1.7.0"
   created: "2026-09-23"
-  updated: "2026-09-28"
+  updated: "2026-10-13"
   version_policy:
     sync_group: "reconciliation"
     depends_on: ["auth-session-v1", "data-storage-v1", "discord-integration-v1", "game-monitors-v1", "task-engine-v1"]
   changelog:
+    - version: "1.7.0"
+      date: "2026-10-13"
+      changes:
+        - "Orchestrated domain metadata and requirements in place; existing acceptance criteria remain the detailed contract."
     - version: "1.6.1"
       date: "2026-09-28"
       changes:
@@ -58,6 +62,61 @@ domain:
     overwriting newer root capabilities. The backup is evidence of prior behavior,
     not an authority to copy wholesale. Each selected change must be ported,
     tested, and accepted against the current runtime interfaces.
+
+  id: backup-reconciliation
+  status: draft
+  version: 0.1.0
+  project_ref: specs/project.yaml
+  constitution_ref: specs/constitution.yaml
+  boundary: 'Reconciles proven behavior from backup/ into the current GoGon codebase without
+
+    overwriting newer root capabilities. The backup is evidence of prior behavior,
+
+    not an authority to copy wholesale. Each selected change must be ported,
+
+    tested, and accepted against the current runtime interfaces.'
+  requirements:
+  - id: AC-REC-001
+    statement: An opt-in local manifest distinguishes files to port from root-only capabilities to retain
+    scenarios:
+    - given: The current root and backup/ trees
+      when: The reconciliation preflight runs
+      then: It records SHA-256 hashes and a reviewed disposition for every differing or one-sided application path,
+        excluding .env, node_modules, build output, and database secrets
+    - given: A selected source path changes after review
+      when: The owner runs the local reconciliation preflight
+      then: It reports the stale review for local follow-up without blocking a merge or release
+  - id: AC-REC-002
+    statement: Root-only operational capabilities are retained while backup behavior is ported selectively
+    scenarios:
+    - given: Root-only migration, cache, validation, health, metrics, and constants modules
+      when: A backup behavior is introduced
+      then: No root-only capability is removed unless a dedicated acceptance test proves an explicit replacement
+    - given: A direct file copy would delete a root-only import or public function
+      when: The merge is reviewed
+      then: The copy is rejected and the behavior is ported into the current module interface
+  - id: AC-REC-003
+    statement: Legacy game data is imported safely
+    scenarios:
+    - given: backup/_sws_data/database/sws_data.db and the active gg_data database
+      when: The data reconciliation runs
+      then: It creates a timestamped snapshot, imports through an explicit mapping into a staging database, verifies
+        SQLite integrity and required table counts, and atomically promotes only a validated result
+    - given: Integrity, schema compatibility, or count validation fails
+      when: Import completes
+      then: The active gg_data database remains untouched and the report identifies the failed check
+  - id: AC-REC-004
+    statement: Reconciled behavior is verified without a real FallenSword or Discord account
+    scenarios:
+    - given: Fixture responses for game, SSO, and Discord APIs
+      when: The reconciliation test suite runs
+      then: It exercises selected regressions and confirms no outbound request is sent to real account or Discord
+        endpoints
+  dependencies: []
+  evidence:
+  - specs/backup-reconciliation.spec.yaml acceptance_criteria and dependencies
+  - app.mjs and relevant source paths named in this spec
+  open_decisions: []
 
 entities:
   - name: ReconciliationManifest

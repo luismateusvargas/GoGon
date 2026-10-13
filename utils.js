@@ -1,6 +1,10 @@
 // utils.js - GoGon Utility Functions
-import { DELAY_BETWEEN_MESSAGES, RETRY_DELAY } from './webhooks.js';
+import {
+    DELAY_BETWEEN_MESSAGES, RETRY_DELAY, DISCORD_REQUEST_TIMEOUT, DISCORD_MAX_ATTEMPTS,
+    DISCORD_MAX_RATE_LIMITS, DISCORD_RATE_LIMIT_FALLBACK, DISCORD_MAX_RETRY_AFTER,
+} from './webhooks.js';
 import { LOG, WARN, ERR } from './app_modules/core.js';
+import { incrementMetric } from './app_modules/metricsStore.js';
 import { getBuffNameById } from './game_modules/buffParser.js';
 import { apiEndpoints } from './game_modules/API.js';
 import * as cheerio from 'cheerio';
@@ -8,9 +12,12 @@ import * as cheerio from 'cheerio';
 // Session management imports
 import { FS_BASE, authedFetch, ensureLogin, isLoggedIn, DEFAULT_UA, DEFAULT_LANG } from './session.mjs';
 import { getSetting } from './config/runtime.mjs';
+import { getAccountScope } from './config/accountScope.mjs';
+import { extraDiscordPayload, noDropDiscordPayload, basicDiscordPayload } from './app_modules/discordPayload.js';
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import discordFetch from 'node-fetch';
 
 let LAST_GOOD_REFERER = (new URL('index.php?cmd=news', new URL(FS_BASE || 'https://www.fallensword.com/'))).toString();
@@ -41,11 +48,16 @@ function __swsDumpHtml(tag, url, html) {
   }
 }*/
 
-const messageQueue = [];
+const messageQueue = []; // { webhook, payload, attempts, rateLimits, notBefore, queuedAt, accountScope, settle[] }
 let processingQueue = false;
+let lastPostAt = -Infinity; // start of the latest webhook POST; enforces DELAY_BETWEEN_MESSAGES
+let globalBlockedUntil = 0; // set by a 429 with global: true
+let wakeDispatcher = null;  // resolves the dispatcher's current wait when new work arrives
+// Delivery progress (specs/tasks/2026-10-notification-progress-health.md): times in ms, failure as a category only.
+const progress = { attemptStartedAt: null, lastAttemptAt: null, lastSuccessAt: null, lastFailure: null };
 
 // v1.8.0: Batch queue for combining multiple messages
-const batchQueue = new Map(); // webhook -> { messages: [], timeout: null, totalChars: 0 }
+const batchQueue = new Map(); // batch key -> { webhook, accountScope, messages: [], settle: [], timeout: null, totalChars: 0 }
 const BATCH_SIZE = 10; // Max 10 embeds per Discord message
 const BATCH_IDLE_TIMEOUT = 100; // 100ms idle before sending partial batch
 const MAX_DISCORD_CHARS = 5800; // Safety limit (actual is 6000) for title+desc+fields+footer+author
@@ -78,18 +90,32 @@ function getEmbedSize(embed) {
  * Automatically splits batches if size exceeds Discord limits (6000 chars).
  * @param {string} webhook - The webhook URL.
  * @param {object} payload - The message payload with embeds.
+ * @param {object} [meta] - Outbox delivery (specs/tasks/2026-10-notification-outbox.md):
+ * @param {string} [meta.accountScope] - Only sent while this account is active; otherwise released unsent.
+ * @param {(outcome: { ok: boolean, held?: boolean, error?: Error, batchSize?: number }) => void} [meta.onSettled]
+ *   Called once with the final outcome: Discord accepted it, it was dropped after bounded retries, or it was held.
+ * @param {boolean} [meta.solo] - Send as its own Discord message, never merged into a batch.
  */
-export function queueDiscordMessage(webhook, payload) {
-    // Get or create batch for this webhook
-    if (!batchQueue.has(webhook)) {
-        batchQueue.set(webhook, {
+export function queueDiscordMessage(webhook, payload, meta = {}) {
+    const { accountScope, onSettled, solo = false } = meta;
+    if (solo) {
+        enqueueSend({ webhook, payload, accountScope, settle: onSettled ? [onSettled] : [] });
+        return;
+    }
+    const key = batchKey(webhook, accountScope);
+    // Get or create batch for this webhook and account
+    if (!batchQueue.has(key)) {
+        batchQueue.set(key, {
+            webhook,
+            accountScope,
             messages: [],
+            settle: [],
             timeout: null,
             totalChars: 0
         });
     }
 
-    const batch = batchQueue.get(webhook);
+    const batch = batchQueue.get(key);
     
     // Calculate new message size
     let msgSize = (payload.content || '').length;
@@ -113,14 +139,15 @@ export function queueDiscordMessage(webhook, payload) {
         if (wouldExceedSize) {
              LOG('BatchQueue', `Batch size limit reached (${batch.totalChars} + ${msgSize} > ${MAX_DISCORD_CHARS}). Sending partial batch.`);
         }
-        sendBatch(webhook);
+        sendBatch(key);
         
         // Re-get new (empty) batch
-        return queueDiscordMessage(webhook, payload);
+        return queueDiscordMessage(webhook, payload, meta);
     }
     
     // Add message to batch
     batch.messages.push(payload);
+    if (onSettled) batch.settle.push(onSettled);
     batch.totalChars += msgSize;
 
     // Clear existing timeout
@@ -131,24 +158,41 @@ export function queueDiscordMessage(webhook, payload) {
 
     // If batch is full (count limit), send immediately
     if (batch.messages.length >= BATCH_SIZE) {
-        sendBatch(webhook);
+        sendBatch(key);
     } else {
         // Schedule batch send after idle timeout
         batch.timeout = setTimeout(() => {
-            sendBatch(webhook);
+            sendBatch(key);
         }, BATCH_IDLE_TIMEOUT);
+    }
+}
+
+/** Batches never mix accounts, so a batch is released or sent as a whole. */
+function batchKey(webhook, accountScope) {
+    return accountScope === undefined ? webhook : `${accountScope}\u0000${webhook}`;
+}
+
+/** Adds one Discord message to the send queue and starts or wakes the dispatcher. */
+function enqueueSend({ webhook, payload, accountScope, settle }) {
+    messageQueue.push({ webhook, payload, attempts: 0, rateLimits: 0, notBefore: 0, queuedAt: Date.now(), accountScope, settle });
+
+    // Start processing, or wake a dispatcher that is waiting on a retry delay
+    if (!processingQueue) {
+        processQueue();
+    } else if (wakeDispatcher) {
+        wakeDispatcher();
     }
 }
 
 /**
  * Sends a batch of messages for a specific webhook.
  * Merges multiple payloads into a single Discord message with multiple embeds.
- * @param {string} webhook - The webhook URL to send the batch to.
+ * @param {string} key - The batch key (see batchKey).
  */
-function sendBatch(webhook) {
-    if (!batchQueue.has(webhook)) return;
+function sendBatch(key) {
+    if (!batchQueue.has(key)) return;
 
-    const batch = batchQueue.get(webhook);
+    const batch = batchQueue.get(key);
     
     // Clear timeout
     if (batch.timeout) {
@@ -158,7 +202,7 @@ function sendBatch(webhook) {
 
     // Nothing to send
     if (batch.messages.length === 0) {
-        batchQueue.delete(webhook);
+        batchQueue.delete(key);
         return;
     }
 
@@ -175,16 +219,15 @@ function sendBatch(webhook) {
     // Log batch efficiency
     LOG('BatchQueue', `Sending batch: ${batch.messages.length} messages, 1 API call (saved ${(batch.messages.length - 1) * 2}s)`);
 
-    // Add to processing queue
-    messageQueue.push({ webhook, payload: mergedPayload });
-    
     // Clear this batch
-    batchQueue.delete(webhook);
-
-    // Start processing if not already running
-    if (!processingQueue) {
-        processQueue();
+    batchQueue.delete(key);
+    if (batch.messages.length > 1) {
+        incrementMetric('discordBatches');
+        incrementMetric('discordMessagesSaved', batch.messages.length - 1);
     }
+
+    // Add to processing queue
+    enqueueSend({ webhook: batch.webhook, payload: mergedPayload, accountScope: batch.accountScope, settle: batch.settle });
 }
 
 /**
@@ -193,9 +236,8 @@ function sendBatch(webhook) {
  */
 export function flushAllBatches() {
     LOG('BatchQueue', `Flushing ${batchQueue.size} pending batches...`);
-    const webhooks = Array.from(batchQueue.keys());
-    for (const webhook of webhooks) {
-        sendBatch(webhook);
+    for (const key of Array.from(batchQueue.keys())) {
+        sendBatch(key);
     }
 }
 
@@ -216,30 +258,164 @@ export async function drainDiscordQueue(timeoutMs = 15_000) {
 
 
 
+/** A non-secret label for a webhook URL, safe to log. */
+function destinationKey(url) {
+    return `hook#${createHash('sha256').update(String(url)).digest('hex').slice(0, 8)}`;
+}
+
+/** Waits up to ms, returning early when new work is queued. */
+function dispatcherWait(ms) {
+    return new Promise(resolve => {
+        const done = () => { clearTimeout(timer); wakeDispatcher = null; resolve(); };
+        const timer = setTimeout(done, ms);
+        wakeDispatcher = done;
+    });
+}
+
 /**
- * Processes the message queue one by one, sending messages to Discord.
+ * The eligible item that was queued first. Only the oldest pending item of each webhook is a candidate,
+ * so a delayed item keeps later items for the same webhook behind it. notBefore is only an eligibility
+ * gate: a retried item keeps its queue position, so fresh traffic for other webhooks cannot starve it.
+ */
+function nextEligibleItem(now) {
+    const seen = new Set();
+    for (const item of messageQueue) {
+        if (seen.has(item.webhook)) continue;
+        seen.add(item.webhook);
+        if (item.notBefore <= now) return item;
+    }
+    return null;
+}
+
+function removeItem(item) {
+    const i = messageQueue.indexOf(item);
+    if (i !== -1) messageQueue.splice(i, 1);
+}
+
+/** Reports an item's final outcome to its outbox callbacks; a callback error never stops the queue. */
+function settleItem(item, outcome) {
+    for (const fn of item.settle || []) {
+        try {
+            Promise.resolve(fn({ ...outcome, batchSize: item.settle.length })).catch(err => ERR('DiscordQueue', 'Delivery outcome handler failed', err));
+        } catch (err) {
+            ERR('DiscordQueue', 'Delivery outcome handler failed', err);
+        }
+    }
+}
+
+/**
+ * Releases queued items that belong to an account other than the active one, unsent: an alert is
+ * never posted while a different account (or none) is active. Their outbox rows stay pending.
+ */
+function releaseForeignItems() {
+    const active = getAccountScope();
+    for (const item of messageQueue.filter(i => i.accountScope !== undefined && i.accountScope !== active)) {
+        removeItem(item);
+        settleItem(item, { ok: false, held: true });
+    }
+}
+
+/** Applies a failed attempt to a queued item: schedules a bounded retry or drops it with an explicit outcome. */
+function handleQueueFailure(item, err, now) {
+    const dest = destinationKey(item.webhook);
+    const category = err?.category || 'unexpected';
+    const status = err?.status ? ` (HTTP ${err.status})` : '';
+    progress.lastFailure = { category, ...(err?.status ? { status: err.status } : {}), at: now };
+    incrementMetric('discordErrors');
+    if (category === 'timeout') incrementMetric('discordTimeouts');
+    if (category === 'rate_limit') {
+        incrementMetric('discordRateLimits');
+        item.rateLimits++;
+        if (item.rateLimits <= DISCORD_MAX_RATE_LIMITS) {
+            item.notBefore = now + err.retryAfter;
+            if (err.global) globalBlockedUntil = item.notBefore;
+            WARN('DiscordQueue', `Rate limited on ${dest} (${item.rateLimits}/${DISCORD_MAX_RATE_LIMITS}). Retrying in ${err.retryAfter}ms.`);
+            return;
+        }
+    } else {
+        item.attempts++;
+        if (err?.retryable && item.attempts < DISCORD_MAX_ATTEMPTS) {
+            incrementMetric('discordRetries');
+            item.notBefore = now + RETRY_DELAY;
+            WARN('DiscordQueue', `Send to ${dest} failed: ${category}${status}, attempt ${item.attempts}/${DISCORD_MAX_ATTEMPTS}. Retrying in ${RETRY_DELAY}ms.`);
+            return;
+        }
+    }
+    removeItem(item);
+    incrementMetric('discordDropped');
+    ERR('DiscordQueue', `Dropped message for ${dest}: ${category}${status} after ${item.attempts + item.rateLimits} attempt(s), ${item.rateLimits} rate limited.`);
+    settleItem(item, { ok: false, error: err });
+}
+
+/**
+ * Processes the message queue, sending messages to Discord one at a time.
+ * Every POST starts at least DELAY_BETWEEN_MESSAGES after the previous one. A rate-limited or failed
+ * item waits for its own retry time while items for other webhooks keep moving.
  */
 export async function processQueue() {
     if (processingQueue) return;
     processingQueue = true;
-    while (messageQueue.length > 0) {
-        const { webhook, payload } = messageQueue[0];
-        try {
-            await securePostDiscord(webhook, payload);
-            messageQueue.shift(); // Remove message from queue on success
-            await sleep(DELAY_BETWEEN_MESSAGES);
-        } catch (err) {
-            // Handle rate limits by pausing and retrying the same message
-            if (err.status === 429 && err.retryAfter) {
-                WARN('DiscordQueue', `Rate limited. Pausing queue for ${err.retryAfter}ms...`);
-                await sleep(err.retryAfter);
-            } else {
-                ERR('DiscordQueue', 'Failed to send message, removing from queue', err);
-                messageQueue.shift(); // Remove message from queue on other errors
+    try {
+        while (messageQueue.length > 0) {
+            releaseForeignItems();
+            if (messageQueue.length === 0) break;
+            const now = Date.now();
+            const item = now >= globalBlockedUntil ? nextEligibleItem(now) : null;
+            if (!item) {
+                const readyAt = Math.max(globalBlockedUntil, Math.min(...messageQueue.map(i => i.notBefore)));
+                await dispatcherWait(Math.min(Math.max(readyAt - now, 1), DISCORD_MAX_RETRY_AFTER));
+                continue;
+            }
+            const gapWait = Math.min(lastPostAt + DELAY_BETWEEN_MESSAGES - now, DELAY_BETWEEN_MESSAGES);
+            if (gapWait > 0) {
+                await dispatcherWait(gapWait);
+                continue;
+            }
+            lastPostAt = now;
+            progress.attemptStartedAt = now;
+            try {
+                await securePostDiscord(item.webhook, item.payload, { retries: 1 });
+                progress.lastAttemptAt = progress.lastSuccessAt = Date.now();
+                incrementMetric('discordSent');
+                removeItem(item);
+                settleItem(item, { ok: true });
+            } catch (err) {
+                progress.lastAttemptAt = Date.now();
+                handleQueueFailure(item, err, progress.lastAttemptAt);
+            } finally {
+                progress.attemptStartedAt = null;
             }
         }
+    } finally {
+        processingQueue = false;
     }
-    processingQueue = false;
+}
+
+
+/**
+ * Read-only view of the send queue for delivery health. Contains counts, times (ms since epoch) and a
+ * failure category; never a webhook URL or payload.
+ * dueSince is the earliest time a queued message became eligible to send (ignoring the two-second
+ * spacing); messages still waiting for a 429 or retry delay, or still in a batch window, are not due.
+ */
+export function getDiscordQueueProgress(now = Date.now()) {
+    let dueSince = null;
+    for (const item of messageQueue) {
+        if (item.notBefore > now) continue;
+        const since = Math.max(item.queuedAt, item.notBefore);
+        if (dueSince === null || since < dueSince) dueSince = since;
+    }
+    let batched = 0;
+    for (const batch of batchQueue.values()) batched += batch.messages.length;
+    return {
+        queued: messageQueue.length,
+        batched,
+        dueSince,
+        attemptStartedAt: progress.attemptStartedAt,
+        lastAttemptAt: progress.lastAttemptAt,
+        lastSuccessAt: progress.lastSuccessAt,
+        lastFailure: progress.lastFailure ? { ...progress.lastFailure } : null,
+    };
 }
 
 
@@ -437,64 +613,99 @@ export async function securePost(url, form, options = {}, retries = 3) {
   return secureFetch(finalUrl, { ...options, method: 'POST', body, headers }, retries);
 }
 
+/** Error from a Discord webhook request. Messages carry no URL, payload, or response body. */
+class DiscordDeliveryError extends Error {
+    constructor(category, { status, retryAfter, global, code, method } = {}) {
+        super(`Discord ${method || 'request'} failed: ${category}${status ? ` (HTTP ${status})` : ''}`);
+        this.name = 'DiscordDeliveryError';
+        this.category = category; // timeout | network | server | rate_limit | client
+        this.retryable = category === 'timeout' || category === 'network' || category === 'server';
+        if (status) this.status = status;
+        if (retryAfter !== undefined) this.retryAfter = retryAfter;
+        if (global) this.global = true;
+        if (code) this.code = code;
+    }
+}
+
+/** Converts a 429 body/header into a bounded pause in ms; malformed values use the fallback. */
+function rateLimitDelay(body, headerValue) {
+    const raw = body?.retry_after ?? headerValue;
+    const seconds = (raw == null || raw === '' || typeof raw === 'object') ? NaN : Number(raw);
+    if (!Number.isFinite(seconds) || seconds < 0) return DISCORD_RATE_LIMIT_FALLBACK;
+    return Math.min(Math.round(seconds * 1000) + 500, DISCORD_MAX_RETRY_AFTER); // Add buffer
+}
+
+/** One request with a deadline covering both the response headers and the body read. */
+async function discordRequestOnce(url, init) {
+    const controller = new AbortController();
+    let timer;
+    const deadline = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+            controller.abort();
+            reject(new DiscordDeliveryError('timeout', { method: init.method }));
+        }, DISCORD_REQUEST_TIMEOUT);
+    });
+    const request = (async () => {
+        const res = await discordFetch(url, { ...init, signal: controller.signal });
+        const text = await res.text();
+        return { res, text };
+    })();
+    request.catch(() => {}); // a late rejection after the deadline must not go unhandled
+    try {
+        return await Promise.race([request, deadline]);
+    } catch (err) {
+        if (err instanceof DiscordDeliveryError) throw err;
+        throw new DiscordDeliveryError('network', { method: init.method, code: /^[A-Z_]+$/.test(err?.code || '') ? err.code : undefined });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function parseJson(text) {
+    try { return JSON.parse(text); } catch { return undefined; }
+}
+
+/**
+ * Sends one Discord webhook request with a deadline and bounded retries for timeouts, network errors and 5xx.
+ * 429 and other 4xx are thrown immediately. Resolves to a response-like { ok, status, headers, text(), json() }.
+ */
 export async function securePostDiscord(url, payload, opts = {}) {
-    const { retries = 3, method = 'POST' } = opts;
+    const { retries = DISCORD_MAX_ATTEMPTS, method = 'POST' } = opts;
     const headers = {
         'Content-Type': 'application/json',
         'User-Agent': 'SWS-Bot/1.0 (+https://www.fallensword.com)'
     };
+    const attempts = Math.max(1, retries);
 
-    for (let attempt = 0; attempt < retries; attempt++) {
+    for (let attempt = 1; ; attempt++) {
+        let error;
         try {
-            // [FIXED] Use the clean, dedicated 'discordFetch' for all Discord communication.
-            const res = await discordFetch(url, {
-                method: method,
-                headers,
-                body: JSON.stringify(payload)
-            });
-
+            const { res, text } = await discordRequestOnce(url, { method, headers, body: JSON.stringify(payload) });
             if (res.ok) {
-                return res;
+                return { ok: true, status: res.status, headers: res.headers, text: async () => text, json: async () => JSON.parse(text) };
             }
-
-            if (res.status === 429) { // Rate limited
-                const responseData = await res.json();
-                const retryAfterMs = Math.round(responseData.retry_after * 1000) + 500; // Add buffer
-                const error = new Error('Rate limited by Discord');
-                error.status = 429;
-                error.retryAfter = retryAfterMs;
-                throw error; // Throw to be handled by the caller (e.g., processQueue)
+            if (res.status === 429) { // Rate limited: the caller decides when to retry
+                const body = parseJson(text);
+                throw new DiscordDeliveryError('rate_limit', {
+                    method, status: 429, global: body?.global === true,
+                    retryAfter: rateLimitDelay(body, res.headers?.get?.('retry-after')),
+                });
             }
-
-            if (res.status >= 500 && attempt < retries - 1) { // Server error
-                WARN('Discord', `Server error (${res.status}). Retrying in ${RETRY_DELAY}ms...`);
-                await sleep(RETRY_DELAY);
-                continue;
-            }
-            
-            const errorText = await res.text();
-            throw new Error(`Request failed: ${res.status} - ${errorText}`);
-
+            const code = parseJson(text)?.code;
+            error = new DiscordDeliveryError(res.status >= 500 ? 'server' : 'client', {
+                method, status: res.status, code: Number.isInteger(code) ? code : undefined,
+            });
         } catch (err) {
-            if (err.status === 429) throw err; // Re-throw rate limit errors immediately
-            if (attempt >= retries - 1) {
-                throw err; // Throw the final error after all retries
-            }
+            error = err;
         }
+        if (!error.retryable || attempt >= attempts) throw error;
+        WARN('Discord', `${error.message}. Retrying in ${RETRY_DELAY}ms (attempt ${attempt}/${attempts})...`);
+        await sleep(RETRY_DELAY);
     }
 }
 
 export function sendDiscordMessage(message, wTitle, colorCode, footerText, group, webhook) {
-  const embed = {
-    title: wTitle,
-    description: message,
-    color: colorCode,
-    footer: {
-      text: footerText
-    }
-  };
-
-  queueDiscordMessage(webhook, { content: group, embeds: [embed] });
+  queueDiscordMessage(webhook, basicDiscordPayload(message, wTitle, colorCode, footerText, group));
 }
 
 export function sendExtraDiscordMessage(
@@ -507,22 +718,7 @@ export function sendExtraDiscordMessage(
   thumbUrl,
   thumb
 ) {
-  const embed = {
-    title: wTitle,
-    description: message,
-    image: {
-      url: thumbUrl
-    },
-    thumbnail: {
-      url: thumb
-    },
-    color: colorCode,
-    footer: {
-      text: footerText
-    }
-  };
-
-  queueDiscordMessage(webhook, { content: group, embeds: [embed] });
+  queueDiscordMessage(webhook, extraDiscordPayload(message, wTitle, colorCode, footerText, group, thumbUrl, thumb));
 }
 
 export function sendExtraDiscordMessageNODROP(
@@ -534,19 +730,7 @@ export function sendExtraDiscordMessageNODROP(
   webhook,
   thumbUrl
 ) {
-  const embed = {
-    title: wTitle,
-    description: message,
-    image: {
-      url: thumbUrl
-    },
-    color: colorCode,
-    footer: {
-      text: footerText
-    }
-  };
-
-  queueDiscordMessage(webhook, { content: group, embeds: [embed] });
+  queueDiscordMessage(webhook, noDropDiscordPayload(message, wTitle, colorCode, footerText, group, thumbUrl));
 }
 
 // --- DUPLICATED FUNCTIONS (NOW CENTRALIZED) ---

@@ -4,15 +4,27 @@
 spec:
   id: "game-monitors-v1"
   status: draft
-  version: "1.5.0"
+  version: "1.8.0"
   created: "2026-09-22"
-  updated: "2026-09-24"
+  updated: "2026-10-13"
 
   version_policy:
     sync_group: "business-domain"
     depends_on: ["data-model", "security"]
 
   changelog:
+    - version: "1.8.0"
+      date: "2026-10-13"
+      changes:
+        - "Supersedes the 1.7.0 Ladder note (a crash between the reset claim and the band fetch no longer loses the band results). Notification-outbox review counter-plans O4-O8: each monitor run is bound to the account active when it starts and claims or appends nothing once another account took over. Before a Ladder reset is claimed it is recorded in that account's 'ladder_followups@<account scope>' list; each later run under that account fetches the bands of every recorded reset again and adds only the missing parts (a band's part is its position in the band list, 1..n, unique per account and event). A reset leaves the list only once every band returned a valid answer (s set; an empty ranking needs no alert) and its part was queued or already existed while the account was still active. A crash, an account switch, a failed fetch, or a rejected or malformed band answer keeps the record. An account switch does not count as a failed attempt; failed runs are retried on every poll for the first five failures, then after a delay of 15 minutes that doubles per failure up to one day. The record is never dropped for failing and stays inspectable in the key-value store; setting its retryAt to a past time retries it on the next run. Parts are never stored or sent under another account."
+    - version: "1.7.0"
+      date: "2026-10-13"
+      changes:
+        - "Notification outbox (specs/tasks/2026-10-notification-outbox.md): BountyBoard, Crates, GameUpdates, GuildMessages, Ladder, Relics, Shoutbox, SuperElite and Titans build each alert first, then claim the ID and store the alert together (app_modules/notify.js claimAlerts), oldest first; a failed claim stops the run so later events are not claimed ahead of it. Dedupe keys, FIFO caps and alert text are unchanged (payload builders in app_modules/discordPayload.js). An event whose alert cannot be built (e.g. a transient database lookup failure) stays unclaimed and is built again on the next run, while later events are still claimed; an event built with no alert (Titans without a creature ID) or only alerts for an unconfigured webhook is claimed without a row (counter-plan O2). Each game account has its own processed list ('<key>@<account scope>', read through notify.js processedContent), seeded once from the legacy shared list (counter-plan O1). Ladder band results are appended to the reset event once fetched; a crash between the reset claim and that fetch still loses them. GuildConflicts (live counter via message ID and edits) and QoL (no alerts) are not outbox-backed. Multi-part game updates and alerts replayed together may share one Discord message, as concurrent alerts already could."
+    - version: "1.6.0"
+      date: "2026-10-13"
+      changes:
+        - "Orchestrated domain metadata and requirements in place; existing acceptance criteria remain the detailed contract."
     - version: "1.5.0"
       date: "2026-09-24"
       changes:
@@ -52,6 +64,118 @@ domain:
     Extracts real-time game events (Super Elites, Bounties, Crates, Titans, Ladder, Relics,
     Guild Conflicts, Shoutbox, Game Updates, Guild Messages), handles unindexed entity fallbacks,
     and executes Quality of Life automations (auto-group join and conflict-driven gear swapping).
+
+  id: game-monitors
+  status: draft
+  version: 0.1.0
+  project_ref: specs/project.yaml
+  constitution_ref: specs/constitution.yaml
+  boundary: 'Implements 12 specialized FallenSword scraper modules running on independent polling intervals.
+
+    Extracts real-time game events (Super Elites, Bounties, Crates, Titans, Ladder, Relics,
+
+    Guild Conflicts, Shoutbox, Game Updates, Guild Messages), handles unindexed entity fallbacks,
+
+    and executes Quality of Life automations (auto-group join and conflict-driven gear swapping).'
+  requirements:
+  - id: AC-MON-001
+    statement: Super Elite monitor alert with fallback for unindexed creatures
+    scenarios:
+    - given: A new Super Elite kill retrieved from the FallenSword API
+      when: The creature ID is not found in the local SQLite database (unindexed creature)
+      then: Monitor formats the notification using fallback name '**NEW SE Waiting on database**', checks if an
+        item dropped, and sends Discord embed alert without skipping
+    - given: Kill event was already processed (killId in processed_se_kill_ids set)
+      when: checkSuperElites() runs
+      then: Silently ignores the kill and does not send duplicate Discord alert
+  - id: AC-MON-002
+    statement: BountyBoard extracts buffs, gold in hand, and filters processed bounties
+    scenarios:
+    - given: Unprocessed bounties detected on the bounty board
+      when: checkBountyBoard() executes
+      then: Fetches target player active buffs (flagging Deflect and Cloak) and gold in hand, dispatches rich embed,
+        and stores bounty ID
+    - given: Target player profile lookup fails or player is offline
+      when: getBuffs() or getGoldInHand() throws
+      then: Dispatches bounty alert with 'Unknown' buff/gold info without halting execution
+  - id: AC-MON-003
+    statement: Automatic gear swap driven by active guild conflict status
+    scenarios:
+    - given: AutoGearSwap task is enabled with configured GG_PEACE_GEAR_IDS and GG_WAR_GEAR_IDS
+      when: checkAndSwapGear() runs and conflict status changes (e.g. war started or peace resumed)
+      then: Compares current equipped gear to target setup, equips missing items via FallenSword equip API, and
+        stores current_gear_state as a scalar string ('war' or 'peace')
+    - given: Equip item call fails due to inventory lock or server error
+      when: checkAndSwapGear() executes
+      then: Logs ERR and leaves current_gear_state unchanged so retry can occur on next iteration
+  - id: AC-MON-004
+    statement: Quality of Life auto-joining hunting groups
+    scenarios:
+    - given: Pending hunting group invites present on player group management page
+      when: autoJoinAllGroups() executes
+      then: Sends the game join-all group command (guild groups joinall) and logs the result
+    - given: Group is full or invite was cancelled
+      when: Join request is posted
+      then: Catches failure response and logs warning without throwing uncaught exception
+  - id: AC-MON-005
+    statement: Guild conflicts state synchronization and cooldown tracking
+    scenarios:
+    - given: Active guild conflicts and cooldown records
+      when: checkGuildConflicts() detects state changes
+      then: Saves updated conflict and cooldown maps to database using setObject, updating active Discord conflict
+        embed
+    - given: Database write throws error
+      when: Saving conflict state
+      then: Logs error to ERR logger and retries next cycle
+  - id: AC-MON-006
+    statement: Event deduplication across server restarts
+    scenarios:
+    - given: Bot process restarts after crash or deployment
+      when: Monitors initialize their processed ID sets from SQLite key_value_store
+      then: All previously seen event IDs are loaded into in-memory Sets, preventing duplicate alerts for already
+        processed events
+    - given: Key-value store has no prior record for module
+      when: Module initializes
+      then: Starts fresh with empty Set and records new IDs moving forward
+    - given: A claimed Ladder reset whose band results are incomplete because of a crash, an account switch, a failed
+        fetch, or a rejected or malformed band answer
+      when: Later Ladder runs execute under the account that claimed the reset
+      then: The reset stays in that account's ladder_followups record; each run (after the first five failures, at a
+        doubling delay capped at one day) fetches the bands again and adds each missing part exactly once, and the
+        record is removed only after every band returned a valid answer and its part exists. No other account stores
+        or sends those parts.
+  - id: AC-MON-007
+    statement: Guild conflict incoming-attack ping (owner rule). Incoming = the enemy guild hitting us; outgoing
+      = us hitting them.
+    scenarios:
+    - given: An active guild conflict whose stored state caches lastIncoming, lastIncomingAt, and lastPingAt in
+        the database
+      when: checkGuildConflicts() sees the incoming-attack count go up
+      then: It pings the configured mention in a new Discord message (never by editing the live embed) if no ping
+        has been sent in this conflict yet, or if at least 15 minutes have passed since the last ping and the enemy
+        had stopped (no incoming attack for more than 3 minutes) before this attack. It then records lastIncomingAt
+        and, when the ping was delivered, lastPingAt.
+    - given: The enemy keeps hitting (attacks at most every 2 minutes) inside the 15-minute window, or uninterruptedly
+        beyond it
+      when: Further incoming increases are seen
+      then: No further ping is sent; the live embed is still updated and monitoring continues every minute
+    - given: Only outgoing attacks or scores change
+      when: checkGuildConflicts() runs
+      then: No ping is sent
+    - given: Sending the ping message fails
+      when: The attack is processed
+      then: lastPingAt is not recorded, so the next qualifying attack pings again
+  dependencies:
+  - domain_ref: specs/auth-session.spec.yaml
+    relationship: Scrapers depend on authedFetch and secureFetch for all game communication.
+  - domain_ref: specs/data-storage.spec.yaml
+    relationship: Scrapers depend on SQLite and LRU cache for deduplication and entity resolution.
+  - domain_ref: specs/discord-integration.spec.yaml
+    relationship: Scrapers dispatch notifications via centralized Discord queue and batch system.
+  evidence:
+  - specs/game-monitors.spec.yaml acceptance_criteria and dependencies
+  - app.mjs and relevant source paths named in this spec
+  open_decisions: []
 
 entities:
   - name: SuperEliteKill
@@ -211,6 +335,9 @@ acceptance_criteria:
       - given: "Key-value store has no prior record for module"
         when: "Module initializes"
         then: "Starts fresh with empty Set and records new IDs moving forward"
+      - given: "A claimed Ladder reset whose band results are incomplete because of a crash, an account switch, a failed fetch, or a rejected or malformed band answer"
+        when: "Later Ladder runs execute under the account that claimed the reset"
+        then: "The reset stays in that account's ladder_followups record; each run (after the first five failures, at a doubling delay capped at one day) fetches the bands again and adds each missing part exactly once, and the record is removed only after every band returned a valid answer and its part exists. No other account stores or sends those parts."
 
   - id: AC-MON-007
     description: "Guild conflict incoming-attack ping (owner rule). Incoming = the enemy guild hitting us; outgoing = us hitting them."

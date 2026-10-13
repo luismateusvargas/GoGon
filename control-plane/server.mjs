@@ -104,11 +104,11 @@ class HttpError extends Error {
  * @param {object} opts.switcher - account switcher
  * @param {(subsystem: string) => Promise<void>} [opts.rebind] - restarts a named subsystem
  * @param {() => object|Promise<object>} [opts.healthReport] - { status, ... } for /api/health
- * @param {() => object} [opts.metrics] - telemetry for /api/metrics
+ * @param {() => object|Promise<object>} [opts.metrics] - telemetry for /api/metrics
  * @param {() => object} [opts.validation] - configValidator summary
  * @param {object} [opts.catalog] - CAT-TASK-005: { service (catalog/catalogService.js), runNow(), relay (catalog/guideRelay.js) }
  */
-export function createControlPlane({ config, store, engine, switcher, rebind = async () => {}, healthReport = () => ({ status: 'ok' }), metrics = () => ({}), validation = () => null, catalog = null, now = Date.now, sessionIdleMs = 30 * 60_000, sessionMaxMs = 8 * 3600_000 }) {
+export function createControlPlane({ config, store, engine, switcher, rebind = async () => {}, healthReport = () => ({ status: 'ok' }), metrics = () => ({}), validation = () => null, catalog = null, notifications = null, now = Date.now, sessionIdleMs = 30 * 60_000, sessionMaxMs = 8 * 3600_000 }) {
     const sessions = new Map();     // id -> { csrf, createdAt, lastSeen }
     const loginFailures = createLimiter({ max: 5, windowMs: 15 * 60_000, now });
     const globalLoginFailures = createLimiter({ max: 30, windowMs: 15 * 60_000, now });
@@ -454,7 +454,8 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
             modules: engine.getTasksStatus().map(m => ({
                 id: m.name, enabled: m.enabled, active: m.isActive, running: m.isRunning,
                 intervalMs: m.interval, defaultIntervalMs: m.defaultInterval, lastRun: m.lastRun,
-                health: m.lastRun?.outcome === 'error' ? 'failing' : m.isActive ? 'ok' : m.enabled ? 'waiting' : 'disabled',
+                overdue: Boolean(m.overdue), overdueMs: m.overdueMs ?? 0, // app_modules/taskHealth.js grace rule
+                health: m.lastRun?.outcome === 'error' ? 'failing' : m.overdue ? 'overdue' : m.isActive ? 'ok' : m.enabled ? 'waiting' : 'disabled',
             })),
             intervalBounds: MODULE_INTERVAL_BOUNDS,
             sections: SECTIONS,
@@ -518,6 +519,18 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
         send(res, 200, { ok: true, csrf }, { 'Set-Cookie': sessionCookie(signCookie(id), Math.floor(sessionMaxMs / 1000)) });
     }
 
+    /** Outbox counts and rows needing attention, with account scopes shown as profile labels. */
+    async function describeNotifications() {
+        const { activeScope, ...view } = await notifications.describe();
+        const labels = new Map((await store.listProfiles()).map(pr => [`profile:${pr.id}`, pr.label]));
+        const account = scope => (scope === 'env' ? '.env account' : labels.get(scope) ?? 'deleted profile');
+        return {
+            ...view,
+            activeAccount: activeScope ? account(activeScope) : null,
+            rows: view.rows.map(({ accountScope, ...row }) => ({ ...row, account: account(accountScope), held: row.state === 'pending' && accountScope !== activeScope })),
+        };
+    }
+
     async function handleApi(req, res, url, session) {
         const actor = config.username;
         const m = req.method;
@@ -532,9 +545,10 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
         }
         if (m === 'GET' && p === '/api/health') { const h = await healthReport(); return send(res, h.status === 'unhealthy' ? 503 : 200, h); }
         if (m === 'GET' && p === '/api/metrics') {
-            try { return send(res, 200, metrics()); } catch { return send(res, 500, { status: 'error', message: 'Metrics unavailable.' }); }
+            try { return send(res, 200, await metrics()); } catch { return send(res, 500, { status: 'error', message: 'Metrics unavailable.' }); }
         }
         if (m === 'GET' && catalog && p.startsWith('/api/catalog/')) return catalogGet(res, url, p);
+        if (m === 'GET' && notifications && p === '/api/notifications') return send(res, 200, await describeNotifications());
         if (m === 'GET' && p === '/api/events') {
             const initial = JSON.stringify(await buildState());
             res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', Connection: 'keep-alive' });
@@ -555,6 +569,15 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
         }
 
         if (m === 'POST' && catalog && p.startsWith('/api/catalog/')) return catalogPost(req, res, p, actor);
+
+        // Notification outbox owner actions: retry or discard a failed alert. Audit carries no payload.
+        if (m === 'POST' && notifications && (match = p.match(/^\/api\/notifications\/([1-9][0-9]{0,15})\/(retry|discard)$/))) {
+            const id = Number(match[1]);
+            const ok = match[2] === 'retry' ? await notifications.retry(id) : await notifications.discard(id);
+            if (!ok) throw new HttpError(404, 'No failed notification with this ID.');
+            await store.audit({ actor, action: `notification.${match[2]}`, subject: String(id) });
+            return send(res, 200, { ok: true });
+        }
 
         if (m === 'POST' && p === '/api/logout') {
             sessions.delete(session.id);

@@ -1,26 +1,59 @@
 // app_modules/Ladder.js - Refactored for JSON API and SQLite integration
 
 import { LOG, WARN, ERR, sleep } from './core.js';
-import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
-import { ladderWebhook, LadderGroup } from '../webhooks.js';
+import { secureFetch } from '../utils.js';
+import { LadderGroup } from '../webhooks.js';
+import { extraDiscordPayload } from './discordPayload.js';
+import { claimAlerts, appendAlerts, alertFor, processedContent, bindAccount, isCurrentAccount } from './notify.js';
+import { getContent, setObject } from '../_gg_data/handler/gg_database.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import { EMOJIS, DELAYS, EMBED_COLORS } from './constants.js';
-import {
-    getContent,
-    setContent
-} from '../_gg_data/handler/gg_database.js';
 
 // --- CONFIGURATION & STATE ---
 const LADDER_NEWS_STORAGE_KEY = 'processed_ladder_news_ids';
 const LADDER_HISTORY_LIMIT = 100;
+// Resets whose band results are not all queued yet, per account (review-2 O5, review-3 O6):
+// '<key>@<accountScope>' -> [{ id, attempts, retryAt? }]. A later run under that account fetches them
+// again. The record is kept until every band is queued; it is never dropped for failing.
+const LADDER_FOLLOWUPS_KEY = 'ladder_followups';
+const LADDER_FOLLOWUP_FAST_ATTEMPTS = 5; // failed runs retried on every poll; later retries back off
+const LADDER_FOLLOWUP_BACKOFF_MS = 15 * 60 * 1000;          // first delay after the fast attempts, doubled each failure
+const LADDER_FOLLOWUP_MAX_BACKOFF_MS = 24 * 60 * 60 * 1000; // at most one retry a day per reset
+
+const followupsKey = account => `${LADDER_FOLLOWUPS_KEY}@${account.scope}`;
+
+async function loadFollowups(account) {
+    try {
+        const list = JSON.parse((await getContent(followupsKey(account))) ?? '[]');
+        return Array.isArray(list) ? list.filter(f => f && f.id !== undefined) : [];
+    } catch (error) {
+        WARN('ladder', 'Failed to load unfinished ladder results; starting fresh.', error);
+        return [];
+    }
+}
+
+const saveFollowups = (account, list) => setObject(followupsKey(account), list.length ? list : undefined);
+
+/** When an entry with this many failed runs may be fetched again (0 = on the next run). */
+export function followupRetryAt(attempts, now = Date.now()) {
+    if (attempts < LADDER_FOLLOWUP_FAST_ATTEMPTS) return 0;
+    const delay = LADDER_FOLLOWUP_BACKOFF_MS * 2 ** (attempts - LADDER_FOLLOWUP_FAST_ATTEMPTS);
+    return now + Math.min(delay, LADDER_FOLLOWUP_MAX_BACKOFF_MS);
+}
+
+/**
+ * A band answer the game accepted (review-3 O7): `s` set and `previous` absent (no ranking) or a list.
+ * A rejected or malformed answer leaves the band, and so the reset, unfinished.
+ */
+const isValidBand = data => Boolean(data?.s && data.r && (data.r.previous == null || Array.isArray(data.r.previous)));
 
 /**
  * Loads the set of processed ladder news IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing the unique IDs of processed news items.
  */
-async function loadProcessedLadderNews() {
+async function loadProcessedLadderNews(account) {
     try {
-        const storedIdsJson = (await getContent(LADDER_NEWS_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(LADDER_NEWS_STORAGE_KEY, account)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('ladder', `Loaded ${storedIdsArray.length} processed ladder news IDs from database.`);
         return new Set(storedIdsArray);
@@ -33,8 +66,15 @@ async function loadProcessedLadderNews() {
 /**
  * Fetches the results of the previous ladder for all bands with controlled concurrency.
  * Processes bands in batches of 3 to avoid overloading the server.
+ * Each band's result is added to the reset event's outbox rows once fetched; a band's part is its
+ * position in the band list (1..n), so a repeated run adds only the parts still missing. A band
+ * counts as done only with a valid answer (an empty ranking needs no alert) whose part was queued.
+ * @param {{ scope: string|null, epoch: number }} account - The account of the run that claimed the reset.
+ * @param {number|string} resetEventId - The claimed ladder reset news ID.
+ * @returns {Promise<boolean>} True once every band has a valid answer and its part (if any) is queued
+ *   under that account.
  */
-async function fetchAndAnnounceAllPreviousRankings() {
+async function fetchAndAnnounceAllPreviousRankings(account, resetEventId) {
     LOG('ladder', 'Fetching previous ladder rankings for all bands...');
     try {
         const initialResponse = await secureFetch(apiEndpoints.game.ladderResetScoreboard(1));
@@ -42,7 +82,7 @@ async function fetchAndAnnounceAllPreviousRankings() {
 
         if (!initialData.s || !initialData.r.bands) {
             WARN('ladder', 'Could not fetch the list of PvP bands.');
-            return;
+            return false;
         }
 
         const bands = initialData.r.bands;
@@ -57,11 +97,15 @@ async function fetchAndAnnounceAllPreviousRankings() {
             LOG('ladder', `Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(bands.length / BATCH_SIZE)} (bands ${i + 1}-${Math.min(i + BATCH_SIZE, bands.length)})`);
 
             // Fetch current batch concurrently
-            const batchPromises = batch.map(async (band) => {
+            const batchPromises = batch.map(async (band, j) => {
                 try {
                     const response = await secureFetch(apiEndpoints.game.ladderResetScoreboard(band.id));
                     const data = await response.json();
-                    return { band, data, success: true };
+                    if (!isValidBand(data)) {
+                        WARN('ladder', `Band ${band.id} returned no usable result: ${data?.e?.message || 'rejected or malformed response'}`);
+                        return { band, data, success: false };
+                    }
+                    return { band, part: i + j + 1, data, success: true };
                 } catch (error) {
                     WARN('ladder', `Failed to fetch band ${band.id}: ${error.message}`);
                     return { band, data: null, success: false };
@@ -83,14 +127,14 @@ async function fetchAndAnnounceAllPreviousRankings() {
             }
         }
 
-        // 2. Sequentially send messages to avoid Discord rate-limiting
+        // 2. Sequentially enqueue messages to avoid Discord rate-limiting
         LOG('ladder', `Announcing ${allResults.length} band results to Discord...`);
         for (const result of allResults) {
-            if (!result.data.s || !result.data.r.previous || result.data.r.previous.length === 0) {
-                continue; // Skip bands with no data
+            if (!result.data.r.previous?.length) {
+                continue; // a valid band with no ranking has nothing to announce
             }
 
-            const { band, data } = result;
+            const { band, part, data } = result;
             const topPlayers = data.r.previous.slice(0, 3);
             const medals = [EMOJIS.FIRST, EMOJIS.SECOND, EMOJIS.THIRD];
             const playerLines = topPlayers.map((p, index) => {
@@ -99,21 +143,58 @@ async function fetchAndAnnounceAllPreviousRankings() {
 
             const message = `**Band ${band.id} (Levels ${band.level_start}-${band.level_end})**\n${playerLines}`.trim();
 
-            sendExtraDiscordMessage(
+            await appendAlerts('ladder', account, resetEventId, part, [alertFor('GG_LADDER_WEBHOOK', extraDiscordPayload(
                 message, 
                 "Previous PvP Ladder Results", 
                 EMBED_COLORS.LADDER_RANKING.toString(), 
                 `Top players for Band ${band.id}`, 
-                "", 
-                ladderWebhook
-            );
+                ""
+            ))]);
 
             await sleep(DELAYS.LADDER_BETWEEN_BANDS); // Use constant
         }
 
+        if (!isCurrentAccount(account)) return false; // parts fetched after the switch were not queued
         LOG('ladder', 'Finished announcing all ladder results.');
+        return allResults.length === bands.length;
     } catch (error) {
         ERR('ladder', 'Failed to fetch or process previous ladder rankings', error);
+        return false;
+    }
+}
+
+/**
+ * Fetches the band results of every reset this account claimed but has not finished (O5): new
+ * claims and resets interrupted by an account switch or a failed fetch. A finished reset is removed.
+ * One whose fetch keeps failing stays recorded (O6): it is retried on every run for the first
+ * LADDER_FOLLOWUP_FAST_ATTEMPTS failures, then with a doubling delay capped at one day, so the
+ * missing parts are added once the game answers again. An entry whose reset was never claimed is
+ * kept only while the reset is still waiting to be claimed.
+ */
+async function finishFollowups(account, followups, claimedIds, waitingIds) {
+    const now = Date.now();
+    for (const entry of [...followups]) {
+        if (!isCurrentAccount(account)) return; // the rest waits for a run under this account
+        const id = String(entry.id);
+        let done = false;
+        if (!claimedIds.has(id)) {
+            done = !waitingIds.has(id);
+        } else if ((entry.retryAt ?? 0) > now) {
+            continue; // backing off after repeated failures
+        } else if (await fetchAndAnnounceAllPreviousRankings(account, entry.id)) {
+            done = true;
+        } else if (isCurrentAccount(account)) {
+            entry.attempts = (entry.attempts ?? 0) + 1;
+            const retryAt = followupRetryAt(entry.attempts);
+            if (!retryAt) {
+                delete entry.retryAt;
+            } else {
+                entry.retryAt = retryAt;
+                WARN('ladder', `Band results of ladder reset ${id} are still incomplete after ${entry.attempts} failed attempts; retrying after ${new Date(retryAt).toISOString()}.`);
+            }
+        }
+        if (done) followups.splice(followups.indexOf(entry), 1);
+        await saveFollowups(account, followups);
     }
 }
 
@@ -123,7 +204,8 @@ async function fetchAndAnnounceAllPreviousRankings() {
 export async function checkLadderReset() {
     LOG('ladder', 'Checking for PvP ladder reset...');
     try {
-        const processedNewsIds = await loadProcessedLadderNews();
+        const account = bindAccount(); // this run reads and claims only for the account active now (O4)
+        const processedNewsIds = await loadProcessedLadderNews(account);
 
         const response = await secureFetch(apiEndpoints.game.newsArchive);
         if (!response.ok) throw new Error(`Failed to fetch news archive data. Status: ${response.status}`);
@@ -141,43 +223,46 @@ export async function checkLadderReset() {
             !processedNewsIds.has(news.id)
         );
 
-        if (newResetEvents.length === 0) {
+        const followups = account.scope ? await loadFollowups(account) : [];
+        if (newResetEvents.length === 0 && followups.length === 0) {
             return;
         }
 
-        // 2. IMMEDIATELY claim and save the new IDs
-        LOG('ladder', `Found ${newResetEvents.length} new ladder reset event(s). Claiming...`);
-        for (const news of newResetEvents) {
-            await setContent(LADDER_NEWS_STORAGE_KEY, news.id, LADDER_HISTORY_LIMIT);
+        // Record the new resets before claiming them, so a crash or an account switch between the claim
+        // and the band results leaves them to a later run under this account.
+        if (newResetEvents.length && isCurrentAccount(account)) {
+            for (const news of newResetEvents) {
+                if (!followups.some(f => String(f.id) === String(news.id))) followups.push({ id: news.id, attempts: 0 });
+            }
+            await saveFollowups(account, followups);
         }
-        LOG('ladder', `Claimed and saved ${newResetEvents.length} new ladder reset news IDs.`);
 
-        // 3. Process each reset event (usually only one)
-        for (const news of newResetEvents) {
-            try {
+        // 2. Build each reset alert, then claim the ID and enqueue the alert in one transaction
+        if (newResetEvents.length) LOG('ladder', `Found ${newResetEvents.length} new ladder reset event(s). Claiming...`);
+        const claimed = !newResetEvents.length ? [] : await claimAlerts('ladder', { storageKey: LADDER_NEWS_STORAGE_KEY, historyLimit: LADDER_HISTORY_LIMIT, account }, newResetEvents, {
+            idOf: news => news.id,
+            build: news => {
                 const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
                 const message = `
 :crossed_swords: **The PvP Ladder has been reset!**
 :calendar_spiral: ${dateTime}
 :trophy: Tokens have been allocated. Fetching previous ladder results...`.trim();
 
-                sendExtraDiscordMessage(
+                LOG('ladder', `Notifying PvP Ladder Reset (ID: ${news.id})`);
+                return [alertFor('GG_LADDER_WEBHOOK', extraDiscordPayload(
                     message, 
                     "PvP Ladder Reset", 
                     EMBED_COLORS.LADDER_RESET.toString(), 
                     "The battle begins anew!", 
-                    LadderGroup, 
-                    ladderWebhook
-                );
-                LOG('ladder', `Notified PvP Ladder Reset (ID: ${news.id})`);
+                    LadderGroup
+                ))];
+            },
+        });
 
-                // After announcing, fetch and post the results
-                await fetchAndAnnounceAllPreviousRankings();
-
-            } catch (e) {
-                ERR('ladder', `Failed to process ladder reset ID ${news.id}`, e);
-            }
-        }
+        // 3. After announcing, fetch and post the results of new and unfinished resets (usually one)
+        const claimedIds = new Set([...processedNewsIds, ...claimed.map(news => news.id)].map(String));
+        const waitingIds = new Set(newResetEvents.map(news => String(news.id)));
+        await finishFollowups(account, followups, claimedIds, waitingIds);
     } catch (error) {
         ERR('ladder', 'Error occurred while checking for ladder resets', error);
     }

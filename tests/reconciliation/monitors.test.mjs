@@ -4,22 +4,23 @@
 import { test, mock, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { configureTestWebhooks, storedAlerts, clearOutbox } from '../helpers/outbox-alerts.mjs';
 
 
-const sent = [];
+let sent = [];   // alerts stored in the notification outbox (see outbox-alerts.mjs)
 let seFixture = null;
-const record = kind => (...args) => { sent.push({ kind, args }); };
 
 mock.module(new URL('../../utils.js', import.meta.url).href, {
     namedExports: {
         secureFetch: async () => ({ ok: true, status: 200, json: async () => seFixture }),
-        sendExtraDiscordMessage: record('drop'),
-        sendExtraDiscordMessageNODROP: record('nodrop'),
     },
 });
 
+configureTestWebhooks();
 const db = await import('../../_gg_data/handler/gg_database.js');
-const { checkSuperElites, UNINDEXED_SE_NAME, UNINDEXED_ITEM_TEXT } = await import('../../app_modules/SuperElite.js');
+const superElite = await import('../../app_modules/SuperElite.js');
+const { UNINDEXED_SE_NAME, UNINDEXED_ITEM_TEXT } = superElite;
+const checkSuperElites = async () => { await superElite.checkSuperElites(); sent = await storedAlerts(db); };
 const { apiEndpoints } = await import('../../game_modules/API.js');
 
 const SERVER_TS = 1_790_000_000;
@@ -31,7 +32,9 @@ const fixture = (...kills) => ({ s: true, t: `x ${SERVER_TS}`, r: Object.fromEnt
 
 beforeEach(async () => {
     await db.deleteContent('processed_se_kill_ids');
-    sent.length = 0;
+    await db.deleteContent(db.processedListKey('processed_se_kill_ids', 'env')); // the active account's own list
+    await clearOutbox(db);
+    sent = [];
 });
 
 test('AC-MON-001: a kill of an unindexed creature is announced with the fallback name', async () => {

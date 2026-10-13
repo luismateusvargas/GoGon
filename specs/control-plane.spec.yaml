@@ -4,13 +4,21 @@
 spec:
   id: "control-plane-v1"
   status: draft
-  version: "1.5.0"
+  version: "1.7.0"
   created: "2026-09-23"
-  updated: "2026-09-24"
+  updated: "2026-10-13"
   version_policy:
     sync_group: "control-plane"
     depends_on: ["auth-session-v1", "data-storage-v1", "task-engine-v1", "health-metrics-v1"]
   changelog:
+    - version: "1.7.0"
+      date: "2026-10-13"
+      changes:
+        - "Module state adds overdue and overdueMs; health is 'overdue' (after 'failing') for an enabled module late beyond its grace (dashboard pill). state.health and /api/health include the delivery progress detail; /api/metrics awaits an async provider and still answers 500 when it fails (specs/tasks/2026-10-notification-progress-health.md)."
+    - version: "1.6.0"
+      date: "2026-10-13"
+      changes:
+        - "Orchestrated domain metadata and requirements in place; existing acceptance criteria remain the detailed contract."
     - version: "1.5.0"
       date: "2026-09-28"
       changes:
@@ -55,6 +63,91 @@ domain:
     encryption key are supplied through .env; all sensitive values are write-only and
     never returned to the browser. The initial deployment is reachable only at loopback,
     optionally through an owner-operated SSH tunnel.
+
+  id: control-plane
+  status: draft
+  version: 0.1.0
+  project_ref: specs/project.yaml
+  constitution_ref: specs/constitution.yaml
+  boundary: 'Supplies a private, locally published browser dashboard for observing and controlling
+
+    GoGon. It exposes every registered module and every supported configuration setting,
+
+    with live validation and audited changes. Bootstrap administrator credentials and the
+
+    encryption key are supplied through .env; all sensitive values are write-only and
+
+    never returned to the browser. The initial deployment is reachable only at loopback,
+
+    optionally through an owner-operated SSH tunnel.'
+  requirements:
+  - id: AC-CTRL-001
+    statement: Only the configured owner can access the control plane
+    scenarios:
+    - given: GG_ADMIN_USERNAME, GG_ADMIN_PASSWORD_HASH, and GG_CONTROL_SESSION_SECRET are set in .env
+      when: A browser requests the dashboard or API
+      then: Unauthenticated requests receive no operational data, successful login creates an HttpOnly, SameSite=Strict
+        session, and all state-changing requests require CSRF and Origin validation
+    - given: Invalid credentials, expired session, missing CSRF token, or cross-origin request
+      when: The request reaches the control plane
+      then: It is denied, rate-limited where applicable, and recorded without credential material
+  - id: AC-CTRL-002
+    statement: Dashboard presents live module and configuration state safely
+    scenarios:
+    - given: An authenticated owner and a running engine
+      when: The dashboard opens or receives a live update
+      then: It shows all registry entries, effective non-secret values, source and reload mode, module enabled state,
+        interval, health, latest result, selected account label, and validation errors
+    - given: A registry entry is secret
+      when: The dashboard renders state
+      then: It shows only set or unset and never returns the value, ciphertext, token, cookie, password, webhook
+        URL, or encryption key
+  - id: AC-CTRL-003
+    statement: Allow-listed runtime configuration and module controls take effect without a container rebuild
+    scenarios:
+    - given: An authenticated owner submits a valid update to a configuration definition or module
+      when: The update is accepted
+      then: It is persisted transactionally, audited, reflected in the live state stream, and applied according
+        to reloadMode; hot values affect the next task run and subsystem-rebind values restart only the named subsystem
+    - given: Unknown key, malformed type, out-of-range interval, invalid JSON, or an unsafe target URL
+      when: The update is submitted
+      then: It is rejected with a field error, no state changes, and no arbitrary environment variable or code path
+        can be written
+  - id: AC-CTRL-004
+    statement: The active FallenSword account can be switched safely
+    scenarios:
+    - given: At least two valid encrypted account profiles and active monitoring tasks
+      when: The owner selects a different profile
+      then: The engine pauses tasks, flushes pending notifications, invalidates the old cookie jar, authenticates
+        the selected profile, records only profile labels in the audit log, and resumes the prior enabled modules
+        after successful validation
+    - given: Selected profile authentication fails
+      when: The switch sequence runs
+      then: All tasks remain paused, no partial account is active, the dashboard reports a redacted failure, and
+        the owner may retry or select another profile
+  - id: AC-CTRL-005
+    statement: Containerized deployment is private, persistent, and minimally privileged
+    scenarios:
+    - given: A production .env and Docker Compose deployment
+      when: docker compose up starts GoGon
+      then: The application runs as non-root, publishes the control port only to 127.0.0.1, stores persistent MySQL
+        state in the private gogon-mysql named volume, uses a read-only root filesystem with required tmpfs paths,
+        drops Linux capabilities, and supplies a loopback-only health check
+    - given: Required administrator bootstrap values, encryption key, or application configuration are missing
+      when: The container starts
+      then: It fails closed before game login and exposes no control port with partial administrative access
+  - id: AC-CTRL-006
+    statement: The dashboard resists browser and API attacks
+    scenarios:
+    - given: Malicious HTML, unexpected JSON, URL-like values, or repeated login attempts
+      when: They are submitted to the dashboard API
+      then: Output is encoded, inputs are schema-validated and size-bounded, no wildcard CORS is sent, security
+        headers are set, and login/session endpoints enforce bounded rate limits
+  dependencies: []
+  evidence:
+  - specs/control-plane.spec.yaml acceptance_criteria and dependencies
+  - app.mjs and relevant source paths named in this spec
+  open_decisions: []
 
 entities:
   - name: ConfigurationDefinition

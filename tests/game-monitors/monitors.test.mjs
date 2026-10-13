@@ -3,12 +3,14 @@
 // Requires --experimental-test-module-mocks (set in the npm test script).
 import { test, mock, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { configureTestWebhooks, storedAlerts, clearOutbox } from '../helpers/outbox-alerts.mjs';
 
 
-const sent = [];            // Discord messages
+let sent = [];              // alerts stored in the notification outbox (see outbox-alerts.mjs)
 const fetched = [];         // secureFetch URLs
 let routes = {};            // url substring -> response body | Error | { status }
 let goldLookup, buffsLookup; // (targetId) => value | throws
+let fetchGate = null;        // (url) => Promise awaited before a fetch answers (holds a monitor mid-run)
 
 function respond(url) {
     fetched.push(url);
@@ -21,19 +23,25 @@ function respond(url) {
 
 mock.module(new URL('../../utils.js', import.meta.url).href, {
     namedExports: {
-        secureFetch: async (url) => respond(String(url)),
-        sendExtraDiscordMessage: (...args) => { sent.push({ kind: 'drop', args }); },
-        sendExtraDiscordMessageNODROP: (...args) => { sent.push({ kind: 'nodrop', args }); },
+        secureFetch: async (url) => { await fetchGate?.(String(url)); return respond(String(url)); },
         getGoldInHand: async (url) => goldLookup(url),
         getBuffs: async (url, isBounty) => buffsLookup(url, isBounty),
     },
 });
 
+configureTestWebhooks();
 const db = await import('../../_gg_data/handler/gg_database.js');
-const { checkBounties, UNKNOWN } = await import('../../app_modules/BountyBoard.js');
-const { checkSuperElites } = await import('../../app_modules/SuperElite.js');
+const bountyBoard = await import('../../app_modules/BountyBoard.js');
+const superElite = await import('../../app_modules/SuperElite.js');
+const { UNKNOWN } = bountyBoard;
+// Each run is followed by reading what it stored for delivery.
+const checkBounties = async () => { await bountyBoard.checkBounties(); sent = await storedAlerts(db); };
+const checkSuperElites = async () => { await superElite.checkSuperElites(); sent = await storedAlerts(db); };
 const { autoJoinAllGroups } = await import('../../app_modules/QoL.js');
 const { apiEndpoints } = await import('../../game_modules/API.js');
+const { setAccountScope } = await import('../../config/accountScope.mjs');
+// The active account is 'env' here; each account keeps its own processed list (outbox AC-4).
+const processed = async key => JSON.parse((await db.getContent(db.processedListKey(key, 'env'))) ?? 'null');
 
 after(() => db.closeDatabase());
 
@@ -44,10 +52,15 @@ function quiet(t) {
 }
 
 beforeEach(async () => {
-    for (const k of ['processed_bounty_ids', 'processed_se_kill_ids']) await db.deleteContent(k);
-    sent.length = 0;
+    for (const k of ['processed_bounty_ids', 'processed_se_kill_ids']) {
+        await db.deleteContent(k);
+        await db.deleteContent(db.processedListKey(k, 'env'));
+    }
+    await clearOutbox(db);
+    sent = [];
     fetched.length = 0;
     routes = {};
+    fetchGate = null;
     goldLookup = () => 1_234_567;
     buffsLookup = () => ({ hasDeflect: true, isCloaked: false, numberOfBuffs: 12 });
 });
@@ -76,7 +89,7 @@ test('AC-MON-002: a new bounty is sent with deflect/cloak flags, buff count, gol
     assert.match(text, /Deflect\? true/);
     assert.match(text, /Cloaked\? false/);
     assert.match(text, /Buffs: 12/);
-    assert.deepEqual(JSON.parse(await db.getContent('processed_bounty_ids')), [1]);
+    assert.deepEqual(await processed('processed_bounty_ids'), [1]);
 });
 
 test('AC-MON-002: target lookups ask for the bounty buff summary of the target player', async (t) => {
@@ -145,27 +158,171 @@ test('AC-MON-006: a restarted process loads processed IDs from SQLite and does n
     // A fresh module instance stands in for a restarted process; only SQLite state carries over.
     const restarted = await import(`../../app_modules/BountyBoard.js?restart=${Date.now()}`);
     await restarted.checkBounties();
+    sent = await storedAlerts(db);
     assert.equal(sent.length, 1);
     routes[BOARD] = board(bounty(8), bounty(9));
     await restarted.checkBounties();
+    sent = await storedAlerts(db);
     assert.equal(sent.length, 2);
     assert.match(sent[1].args[0], /Target9/);
 });
 
 test('AC-MON-006: with no prior record a module starts fresh and records new IDs', async (t) => {
     quiet(t);
-    assert.equal(await db.getContent('processed_se_kill_ids'), null);
+    assert.equal(await processed('processed_se_kill_ids'), null);
     const SERVER_TS = 1_790_000_000;
     const kill = { time: 60, creature: 999_101, item: 0, player: { id: 1, name: 'Hunter' }, realm: { realm: 5, x: 1, y: 2 } };
     const fixture = { s: true, t: `x ${SERVER_TS}`, r: { 0: kill } };
     routes = { [apiEndpoints.game.superEliteArchive]: fixture };
     await checkSuperElites();
     assert.equal(sent.length, 1);
-    assert.equal(JSON.parse(await db.getContent('processed_se_kill_ids')).length, 1);
+    assert.equal((await processed('processed_se_kill_ids')).length, 1);
 
     const restarted = await import(`../../app_modules/SuperElite.js?restart=${Date.now()}`);
     await restarted.checkSuperElites();
+    sent = await storedAlerts(db);
     assert.equal(sent.length, 1, 'the restarted monitor remembers the kill');
+});
+
+// --- outbox AC-1: claim-and-enqueue in monitors ------------------------------------------------------
+
+test('outbox AC-1: alerts are stored oldest first with their webhook setting and account; a failed build stays unclaimed', async (t) => {
+    const lines = quiet(t);
+    const { claimAlerts, alertFor } = await import('../../app_modules/notify.js');
+    const events = [{ id: 'e1' }, { id: 'e2' }, { id: 'e3' }];
+    const claimed = await claimAlerts('bounty', { storageKey: 'processed_bounty_ids', historyLimit: 100 }, events, {
+        idOf: e => e.id,
+        build: async e => {
+            if (e.id === 'e2') throw new Error('lookup failed');
+            return [alertFor('GG_BOUNTY_WEBHOOK', { content: '', embeds: [{ description: e.id }] }), alertFor('GG_LADDER_RANKING_WEBHOOK', {}) /* not configured: not stored */];
+        },
+    });
+    assert.deepEqual(claimed.map(e => e.id), ['e1', 'e3'], 'later events are still claimed');
+    assert.deepEqual(await processed('processed_bounty_ids'), ['e1', 'e3'], 'e2 is not marked processed');
+    sent = await storedAlerts(db);
+    assert.deepEqual(sent.map(a => [a.row.event_id, a.row.setting_key, a.row.account_scope]), [['e1', 'GG_BOUNTY_WEBHOOK', 'env'], ['e3', 'GG_BOUNTY_WEBHOOK', 'env']]);
+    assert.ok(lines.some(l => l.includes('event e2') && l.includes('retried on the next run')));
+
+    const retried = await claimAlerts('bounty', { storageKey: 'processed_bounty_ids', historyLimit: 100 }, [{ id: 'e2' }], {
+        idOf: e => e.id,
+        build: async e => [alertFor('GG_BOUNTY_WEBHOOK', { content: '', embeds: [{ description: e.id }] })],
+    });
+    assert.deepEqual(retried.map(e => e.id), ['e2']);
+    assert.deepEqual((await storedAlerts(db)).map(a => a.row.event_id), ['e1', 'e3', 'e2']);
+
+    const empty = await claimAlerts('bounty', { storageKey: 'processed_bounty_ids', historyLimit: 100 }, [{ id: 'e4' }], {
+        idOf: e => e.id,
+        build: async () => [alertFor('GG_LADDER_RANKING_WEBHOOK', {})], // built, but its webhook is not configured
+    });
+    assert.deepEqual(empty.map(e => e.id), ['e4'], 'an event that intentionally yields no alert is still claimed');
+    assert.equal((await storedAlerts(db)).length, 3);
+});
+
+test('outbox AC-1 (O2): a Super Elite kill whose creature lookup fails once is claimed with its alert on the next run', async (t) => {
+    const lines = quiet(t);
+    const SERVER_TS = 1_790_100_000;
+    const kill = { time: 120, creature: 999_202, item: 0, player: { id: 2, name: 'Retry' }, realm: { realm: 5, x: 3, y: 4 } };
+    routes = { [apiEndpoints.game.superEliteArchive]: { s: true, t: `x ${SERVER_TS}`, r: { 0: kill } } };
+    const client = await db.getConnection();
+
+    // A transient database failure during enrichment: the creature table cannot be read for one run.
+    await client.query('ALTER TABLE creatures RENAME TO creatures_offline');
+    try {
+        await checkSuperElites();
+    } finally {
+        await client.query('ALTER TABLE creatures_offline RENAME TO creatures');
+    }
+    assert.equal(sent.length, 0, 'no alert was stored');
+    assert.equal(await processed('processed_se_kill_ids'), null, 'the kill was not marked processed');
+    assert.ok(lines.some(l => /retried on the next run/.test(l)));
+
+    await checkSuperElites();
+    assert.equal(sent.length, 1, 'the next run builds and claims it');
+    assert.equal(sent[0].row.state, 'pending');
+    assert.equal((await processed('processed_se_kill_ids')).length, 1);
+    await checkSuperElites();
+    assert.equal(sent.length, 1, 'and only once');
+});
+
+// --- outbox review counter-plan O4: a run claims only for the account it started under -------------
+
+/** A promise the test resolves later, plus a signal that the monitor reached it. */
+function hold() {
+    let release, reached;
+    const released = new Promise(r => { release = r; });
+    const arrived = new Promise(r => { reached = r; });
+    return { release, arrived, wait: async () => { reached(); await released; } };
+}
+const bountyList = async scope => JSON.parse((await db.getContent(db.processedListKey('processed_bounty_ids', scope))) ?? '[]');
+const outboxRows = async () => (await storedAlerts(db)).map(a => [a.row.event_id, a.row.account_scope, a.args[0].includes('Target4242')]);
+const switchTo = scope => { setAccountScope(null); setAccountScope(scope); }; // the switcher clears the scope first
+const resetScopes = async () => {
+    for (const scope of ['profile:a', 'profile:b']) await db.deleteContent(db.processedListKey('processed_bounty_ids', scope));
+    setAccountScope('env');
+};
+
+for (const [where, holdAt] of [
+    ['alert build', gate => { goldLookup = async () => { await gate.wait(); return 4242; }; }],
+    ['board fetch', gate => { fetchGate = async url => { if (url.includes(BOARD)) await gate.wait(); }; }],
+]) {
+    test(`outbox O4: an A run held in its ${where} through a switch to B claims nothing; A and B later claim their own`, async (t) => {
+        const lines = quiet(t);
+        t.after(resetScopes);
+        await resetScopes();
+        routes[BOARD] = board(bounty(4242));
+        setAccountScope('profile:a');
+
+        const gate = hold();
+        holdAt(gate);
+        const aRun = checkBounties();
+        await gate.arrived;
+        switchTo('profile:b');           // the 30-second pause gave up on the in-flight A run
+        gate.release();
+        await aRun;
+
+        assert.deepEqual(sent, [], 'no A alert entered the outbox');
+        assert.deepEqual(await bountyList('profile:b'), [], "B's processed list is untouched");
+        assert.deepEqual(await bountyList('profile:a'), [], 'the event stays unclaimed for a later A run');
+        assert.ok(lines.some(l => l.startsWith('warn') && l.includes('account changed')));
+
+        fetchGate = null;
+        goldLookup = () => 1_234_567;
+        await checkBounties();           // a fresh B run claims the same game ID for B
+        assert.deepEqual(await outboxRows(), [['4242', 'profile:b', true]]);
+        assert.deepEqual(await bountyList('profile:b'), [4242]);
+
+        switchTo('profile:a');
+        await checkBounties();           // a later A run claims it for A
+        assert.deepEqual(await outboxRows(), [['4242', 'profile:b', true], ['4242', 'profile:a', true]]);
+        assert.deepEqual(await bountyList('profile:a'), [4242]);
+    });
+}
+
+test('outbox O4: follow-up parts are queued only while the claiming run\'s account is still active', async (t) => {
+    const lines = quiet(t);
+    t.after(resetScopes);
+    await resetScopes();
+    const { claimAlerts, appendAlerts, alertFor, bindAccount } = await import('../../app_modules/notify.js');
+    const part = n => [alertFor('GG_BOUNTY_WEBHOOK', { content: '', embeds: [{ description: `from A: part ${n}` }] })];
+    const rows = async () => (await storedAlerts(db)).map(a => [a.row.event_id, a.row.part, a.row.account_scope]);
+
+    setAccountScope('profile:a');
+    const account = bindAccount();
+    await claimAlerts('bounty', { storageKey: 'processed_bounty_ids', historyLimit: 100, account }, [{ id: 'r1' }], {
+        idOf: e => e.id, build: () => part(0),
+    });
+    assert.equal(await appendAlerts('bounty', account, 'r1', 1, part(1)), 1, 'appended while A is active');
+
+    switchTo('profile:b');
+    assert.equal(await appendAlerts('bounty', account, 'r1', 2, part(2)), 0, 'not appended under B');
+    switchTo('profile:a');
+    assert.equal(await appendAlerts('bounty', account, 'r1', 3, part(3)), 0, 'A again, but a new session: the old run stays stopped');
+    assert.deepEqual(await rows(), [['r1', 0, 'profile:a'], ['r1', 1, 'profile:a']]);
+    assert.equal(lines.filter(l => l.startsWith('warn') && l.includes('is not queued')).length, 2);
+
+    const fresh = bindAccount();
+    assert.equal(await appendAlerts('bounty', fresh, 'r1', 2, part(2)), 1);
+    assert.deepEqual((await rows()).map(r => r.slice(1)), [[0, 'profile:a'], [1, 'profile:a'], [2, 'profile:a']]);
 });
 
 // --- AC-MON-004: group auto-join ---------------------------------------------------------------------

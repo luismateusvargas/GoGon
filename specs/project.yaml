@@ -1,0 +1,79 @@
+project:
+  id: gogon
+  status: draft
+  version: "0.1.0"
+  constitution_ref: specs/constitution.yaml
+  purpose: Run owner-controlled FallenSword game monitors, send event alerts and slash-command responses through Discord, and maintain a reference catalog.
+  users:
+    - Deployment owner manages settings, modules, account profiles, and catalog from the private dashboard.
+    - Discord guild members receive alerts and use the registered commands.
+  services:
+    - name: gogon
+      responsibility: Node 22 application containing scheduler, game session, Discord client and webhook queue, private HTTP control plane, catalog worker, and health probe.
+      owner: GoGon owner
+      path: app.mjs
+    - name: mysql
+      responsibility: Persistent application and catalog state in MySQL 8.4.
+      owner: GoGon owner
+      path: compose.yaml
+  environments:
+    - name: production
+      deploy_target: Single VPS Docker Compose deployment with gogon and private mysql services.
+      owner: GoGon owner
+    - name: ci
+      deploy_target: GitHub Actions Node 22 tests, MySQL 8.4 service tests, and Docker build.
+      owner: GoGon owner
+  identity: "One configured owner logs into the loopback control plane with a scrypt password hash; signed HttpOnly SameSite session cookies and CSRF protect changes. FallenSword SSO identifies the active game profile. Discord guild interactions use Discord identity; command-specific authorization follows specs/discord-integration.spec.yaml."
+  tenant_model: "Single deployment and single active game account; no tenant-scoped HTTP API or cross-tenant data isolation. Discord guild activity is attached to the configured guild."
+  data_stores:
+    - name: mysql
+      owner: gogon
+      data_scope: Persistent settings, encrypted account profiles, dedupe state, the notification outbox, audit, catalog, and game reference data.
+    - name: process memory
+      owner: gogon
+      data_scope: Session cookie jar, scheduler state, Discord batch and delivery queues, in-process counters, and dashboard sessions; reset on restart.
+  interfaces:
+    - name: FallenSword and HuntedCow SSO
+      kind: outbound HTTP
+      producer: gogon
+      consumers: FallenSword and HuntedCow
+      contract_ref: specs/auth-session.spec.yaml
+    - name: Discord gateway and webhooks
+      kind: outbound and inbound Discord API
+      producer: gogon
+      consumers: Discord guild
+      contract_ref: specs/discord-integration.spec.yaml
+    - name: Owner dashboard API
+      kind: private HTTP and SSE
+      producer: gogon
+      consumers: deployment owner
+      contract_ref: specs/control-plane.spec.yaml
+    - name: Health probe
+      kind: loopback HTTP
+      producer: gogon
+      consumers: Docker healthcheck
+      contract_ref: specs/health-metrics.spec.yaml
+    - name: MySQL state
+      kind: mysql2 queries and ordered migrations
+      producer: gogon
+      consumers: mysql
+      contract_ref: specs/data-storage.spec.yaml
+  domains:
+    - { id: auth-session, spec_ref: specs/auth-session.spec.yaml }
+    - { id: task-engine, spec_ref: specs/task-engine.spec.yaml }
+    - { id: game-monitors, spec_ref: specs/game-monitors.spec.yaml }
+    - { id: discord-integration, spec_ref: specs/discord-integration.spec.yaml }
+    - { id: data-storage, spec_ref: specs/data-storage.spec.yaml }
+    - { id: control-plane, spec_ref: specs/control-plane.spec.yaml }
+    - { id: catalog-sync, spec_ref: specs/catalog-sync.spec.yaml }
+    - { id: health-metrics, spec_ref: specs/health-metrics.spec.yaml }
+    - { id: backup-reconciliation, spec_ref: specs/backup-reconciliation.spec.yaml }
+  evidence:
+    - package.json (Node ESM dependencies and test command)
+    - Dockerfile (Node 22 runtime)
+    - compose.yaml (service topology and private deployment)
+    - app.mjs (boot and service ownership)
+    - control-plane/server.mjs (owner identity and private API)
+    - .github/workflows/ci.yml (CI environment)
+    - specs/*.spec.yaml (established domain contracts)
+  open_decisions: []

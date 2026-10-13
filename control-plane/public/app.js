@@ -262,6 +262,38 @@ function renderAudit() {
         el('td', { class: e.outcome === 'success' ? '' : 'error' }, e.outcome))));
 }
 
+// --- notification outbox (specs/tasks/2026-10-notification-outbox.md) -------------------------------
+// Rows carry no payload or webhook URL; failed rows can be retried or discarded.
+async function loadOutbox() {
+    let view;
+    try {
+        view = await api('GET', '/api/notifications');
+    } catch (e) { showBanner(fieldMessage(e)); return; }
+    const c = view.counts;
+    document.getElementById('outbox-counts').textContent =
+        `${c.pending - c.held} pending, ${c.held} held, ${c.failed} failed, ${c.delivered} delivered (kept 7 days)` +
+        (view.oldestPendingAt ? `; oldest pending since ${fmtTime(view.oldestPendingAt)}` : '') +
+        `; sending for ${view.activeAccount ?? 'no account'}`;
+    const action = (row, what) => el('button', { type: 'button', class: 'ghost', onclick: async () => {
+        try { await api('POST', `/api/notifications/${row.id}/${what}`); showBanner(`Notification ${row.id}: ${what} done.`, 'ok'); }
+        catch (e) { showBanner(fieldMessage(e)); }
+        loadOutbox();
+    } }, what === 'retry' ? 'Retry' : 'Discard');
+    const stateCell = row => row.state === 'failed' ? el('span', { class: 'pill pill-bad' }, 'failed')
+        : el('span', { class: 'pill pill-warn' }, row.held ? 'held' : 'retrying');
+    document.getElementById('outbox-body').replaceChildren(...view.rows.map(row => el('tr', {},
+        el('td', {}, row.id),
+        el('td', {}, row.source),
+        el('td', {}, `${row.eventId}${row.part ? ` #${row.part}` : ''}`),
+        el('td', {}, row.account),
+        el('td', {}, row.settingKey),
+        el('td', {}, stateCell(row)),
+        el('td', {}, row.attempts),
+        el('td', {}, row.lastError ?? '-'),
+        el('td', {}, row.state === 'pending' ? fmtTime(row.nextAttemptAt) : '-'),
+        el('td', { class: 'actions' }, ...(row.state === 'failed' ? [action(row, 'retry'), action(row, 'discard')] : [])))));
+}
+
 // --- catalog (CAT-TASK-006 / AC-CAT-007, AC-CAT-008, AC-CAT-009) --------------------------------------
 // Every catalog value is data from the game or guide: it is rendered with textContent (el()), never as
 // markup. Destructive actions show the server's plan and need its exact confirmation phrase.
@@ -564,6 +596,7 @@ document.querySelectorAll('.tabs button').forEach(button => button.addEventListe
     document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b === button));
     document.querySelectorAll('.tab').forEach(t => { t.hidden = t.id !== `tab-${button.dataset.tab}`; });
     if (button.dataset.tab === 'catalog') { loadCatalogSummary(); loadEntities(); }
+    if (button.dataset.tab === 'notifications') loadOutbox();
 }));
 
 document.querySelectorAll('.subtabs button').forEach(button => button.addEventListener('click', () => openCatalogTab(button.dataset.subtab)));
@@ -595,6 +628,8 @@ document.getElementById('sync-now').addEventListener('click', async () => {
     try { const r = await api('POST', '/api/catalog/sync-now'); showBanner(`Ran ${r.ran.length} game job(s).`, 'ok'); }
     catch (e) { showBanner(fieldMessage(e)); }
 });
+
+document.getElementById('outbox-refresh').addEventListener('click', loadOutbox);
 
 document.getElementById('logout').addEventListener('click', async () => {
     try { await api('POST', '/api/logout'); } catch { /* already signed out */ }

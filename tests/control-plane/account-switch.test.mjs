@@ -36,7 +36,11 @@ async function setup() {
         },
         isLoggedIn: async () => { steps.push('validate'); return Boolean(loggedInAs); },
     };
-    switcher = createAccountSwitcher({ store, engine, drainQueue: async () => { steps.push('flush'); return true; }, session });
+    switcher = createAccountSwitcher({
+        store, engine, session,
+        drainQueue: async () => { steps.push('flush'); return true; },
+        onAccountChange: id => steps.push(`account:${id === undefined ? 'none' : id ?? 'env'}`),
+    });
 }
 beforeEach(setup);
 after(closeClients);
@@ -44,8 +48,8 @@ after(closeClients);
 test('AC-CTRL-004: pause -> flush -> invalidate -> authenticate -> validate -> resume the prior modules', async () => {
     const result = await switcher.switchTo(profiles.alt, 'owner');
     assert.deepEqual(steps, [
-        'pause', 'flush', 'credentials:none', 'reset-cookies',
-        'login:alt@example.test:bootstrap=false', 'validate', 'credentials:profile', 'resume:SuperElites,Crates',
+        'pause', 'flush', 'account:none', 'credentials:none', 'reset-cookies',
+        'login:alt@example.test:bootstrap=false', 'validate', 'credentials:profile', `account:${profiles.alt}`, 'resume:SuperElites,Crates',
     ]);
     assert.deepEqual(result, { activeLabel: 'Alt', resumed: ['SuperElites', 'Crates'] });
     assert.deepEqual(provider(), { email: 'alt@example.test', password: 'alt-password-fixture' });
@@ -106,4 +110,23 @@ test('boot applies the stored active profile, so GoGon logs in as the selected a
     assert.equal(await fresh.applyStoredActiveProfile(), 'Alt');
     assert.equal(provider().email, 'alt@example.test');
     assert.equal(fresh.status().activeLabel, 'Alt');
+});
+
+test('outbox AC-4: alerts are flushed under the old account, then no account is active until the new one signs in', async () => {
+    await switcher.switchTo(profiles.main, 'owner');
+    steps.length = 0;
+    loginResult = () => new Error('Invalid credentials');
+    await assert.rejects(switcher.switchTo(profiles.alt, 'owner'));
+    assert.deepEqual(steps.slice(0, 3), ['pause', 'flush', 'account:none'], 'the old account is cleared only after its queue is flushed');
+    assert.ok(!steps.some(s => s.startsWith(`account:${profiles.alt}`)), 'a failed login never activates the new account');
+});
+
+test('outbox AC-4: boot reports the stored profile, or the .env account when none is active', async () => {
+    steps.length = 0;
+    await switcher.applyStoredActiveProfile();
+    assert.deepEqual(steps.filter(s => s.startsWith('account:')), ['account:env']);
+    await store.setActiveProfile(profiles.alt);
+    steps.length = 0;
+    await switcher.applyStoredActiveProfile();
+    assert.deepEqual(steps.filter(s => s.startsWith('account:')), [`account:${profiles.alt}`]);
 });

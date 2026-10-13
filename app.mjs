@@ -68,7 +68,10 @@ import { validateAndExit, getConfigSummary } from './configValidator.mjs';
 // Private control plane (CTRL-TASK-003/004/005)
 import { isControlPlaneEnabled, prepareControlPlane, startControlPlane } from './control-plane/index.mjs';
 import { getMetrics } from './metrics.mjs';
+import { deliveryMonitor } from './deliveryHealth.mjs';
 import { initDatabase } from './_gg_data/handler/gg_database.js';
+import { startNotificationOutbox, notificationOutbox } from './notificationDispatcher.js';
+import { loginBeforeDelivery } from './bootLogin.mjs';
 
 
 // Main function that executes the application's boot sequence.
@@ -113,15 +116,10 @@ async function main() {
     }
     console.log('[GoGon] Credentials loaded successfully.');
 
-    // 4. Login Sequence
+    // 4. Login Sequence, then the notification outbox: pending alerts of the active account are
+    // replayed only after its login is validated (bootLogin.mjs).
     try {
-        console.log('[GoGon] Performing initial login...');
-        const loginStatus = await login(email, pass);
-        console.log(`[GoGon] Login successful: ${loginStatus}`);
-
-        console.log('[GoGon] Verifying and ensuring login session...');
-        await ensureLogin();
-        console.log('[GoGon] Login session validated.');
+        await loginBeforeDelivery({ email, password: pass, login, ensureLogin, startOutbox: startNotificationOutbox });
     } catch (e) {
         console.error('[GoGon_FATAL] Critical failure during the login process. Check your credentials and connection.', e?.stack || e);
         process.exit(1);
@@ -157,14 +155,18 @@ async function main() {
                     if (subsystem !== 'discord') throw new Error(`Unknown subsystem ${subsystem}`);
                     await restartDiscord(getSetting('GG_DISCORD_TOKEN'), getSetting('GG_DISCORD_APP_ID'), getSetting('GG_DISCORD_GUILD_ID'));
                 },
-                healthReport: () => healthReport(),
+                healthReport: () => healthReport({ detail: true }),
                 metrics: () => getMetrics(),
                 validation: () => getConfigSummary(),
+                notifications: notificationOutbox(),
             });
         } catch (e) {
             console.error(`[GoGon_ERROR] Control plane failed to start: ${e.message}`);
         }
     }
+
+    // 7b. Delivery progress: log a stall and its recovery even when nothing polls health
+    deliveryMonitor.start();
 
     // 8. Loopback health probe
     if (getSetting('GG_HEALTH_CHECK_ENABLED') !== '0') {

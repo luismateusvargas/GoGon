@@ -5,6 +5,7 @@
 import { EventEmitter } from 'node:events';
 import { LOG, WARN, ERR } from './app_modules/core.js';
 import { MODULE_INTERVAL_BOUNDS } from './config/registry.mjs';
+import { overdueBy } from './app_modules/taskHealth.js';
 import { flushAllBatches } from './utils.js';
 import { getSetting } from './config/runtime.mjs';
 
@@ -125,6 +126,7 @@ let transitions = Promise.resolve();    // serializes lifecycle transitions requ
 for (const task of tasks.values()) {
     task.defaultInterval = task.interval;
     task.lastRun = null;                // { startedAt, durationMs, outcome, error }
+    task.nextRunAt = null;              // when the scheduled next run is due (ms), while one is scheduled
 }
 
 const emitTask = name => engineEvents.emit('task', name);
@@ -151,6 +153,7 @@ async function scheduleNextRun(taskName, generation) {
     const controller = new AbortController();
     task.abortController = controller;
     task.running = true;
+    task.nextRunAt = null;
     const startedAt = Date.now();
     let outcome = 'ok', error = null;
     let finishRun;
@@ -171,6 +174,7 @@ async function scheduleNextRun(taskName, generation) {
         // This prevents task overlap.
         if (task.timerId !== null && task.generation === generation) { // Not stopped while it was running
             task.timerId = setTimeout(() => scheduleNextRun(taskName, generation), task.interval);
+            task.nextRunAt = Date.now() + task.interval;
         }
         emitTask(taskName);
     }
@@ -231,6 +235,7 @@ export function stopTask(taskName) {
 
     clearTimeout(task.timerId); // Use clearTimeout instead of clearInterval
     task.timerId = null;
+    task.nextRunAt = null;
     task.generation = (task.generation ?? 0) + 1;
     task.abortController?.abort();
     LOG('Engine', `Task "${taskName}" has been stopped.`);
@@ -393,8 +398,9 @@ export function initEngine({ preferences } = {}) {
 
 export function getTasksStatus() {
     const status = [];
+    const now = Date.now();
     tasks.forEach((task, name) => {
-        status.push({
+        const entry = {
             name: name,
             isActive: !!task.timerId,
             isRunning: !!task.running, // A run is in flight right now
@@ -402,7 +408,11 @@ export function getTasksStatus() {
             interval: task.interval,
             defaultInterval: task.defaultInterval,
             lastRun: task.lastRun ? { ...task.lastRun } : null,
-        });
+            nextRunAt: task.nextRunAt,
+        };
+        entry.overdueMs = overdueBy(entry, { now, paused }); // AC-3, rule in app_modules/taskHealth.js
+        entry.overdue = entry.overdueMs > 0;
+        status.push(entry);
     });
     return status;
 };

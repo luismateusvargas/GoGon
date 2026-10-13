@@ -1,13 +1,10 @@
 // app_modules/GameUpdates.js - Refactored for JSON API and SQLite integration
 
 import { LOG, WARN, ERR } from './core.js';
-import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
-import { newsWebhook } from '../webhooks.js';
+import { secureFetch } from '../utils.js';
+import { extraDiscordPayload } from './discordPayload.js';
+import { claimAlerts, alertFor, processedContent, bindAccount } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
-import {
-    getContent,
-    setContent
-} from '../_gg_data/handler/gg_database.js';
 import * as cheerio from 'cheerio';
 
 // --- CONFIGURATION & STATE ---
@@ -19,9 +16,9 @@ const DISCORD_CHAR_LIMIT = 2000;
  * Loads the set of processed update news IDs from the SQLite key-value store.
  * @returns {Set<number>} A Set containing the unique IDs of processed news items.
  */
-async function loadProcessedUpdates() {
+async function loadProcessedUpdates(account) {
     try {
-        const storedIdsJson = (await getContent(UPDATES_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(UPDATES_STORAGE_KEY, account)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('updates', `Loaded ${storedIdsArray.length} processed update news IDs from database.`);
         return new Set(storedIdsArray);
@@ -91,7 +88,8 @@ function splitMessage(title, content) {
 export async function checkForUpdatesArchive() {
     LOG('updates', 'Checking for new game updates...');
     try {
-        const processedUpdateIds = await loadProcessedUpdates();
+        const account = bindAccount(); // this run reads and claims only for the account active now (O4)
+        const processedUpdateIds = await loadProcessedUpdates(account);
 
         const response = await secureFetch(apiEndpoints.game.updateArchive);
         if (!response.ok) throw new Error(`Failed to fetch update archive data. Status: ${response.status}`);
@@ -111,17 +109,12 @@ export async function checkForUpdatesArchive() {
             return;
         }
 
-        // 2. IMMEDIATELY claim and save the new IDs
+        // 2. Build each update's messages (one outbox part per chunk, sent in order), then claim
+        // the ID and enqueue them in one transaction
         LOG('updates', `Found ${newUpdates.length} new game updates. Claiming them now...`);
-        for (const news of newUpdates) {
-            await setContent(UPDATES_STORAGE_KEY, news.id, UPDATES_HISTORY_LIMIT);
-        }
-        LOG('updates', `Claimed and saved ${newUpdates.length} new update news IDs.`);
-
-        // 3. Now, safely process all notifications concurrently
-        const notificationPromises = newUpdates.map(async (news) => {
-            try {
-                const newsId = news.id;
+        await claimAlerts('updates', { storageKey: UPDATES_STORAGE_KEY, historyLimit: UPDATES_HISTORY_LIMIT, account }, newUpdates, {
+            idOf: news => news.id,
+            build: news => {
                 const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
                 const title = `:loudspeaker: **${news.subject}**`;
                 
@@ -135,26 +128,13 @@ export async function checkForUpdatesArchive() {
                     fullMessageBody += '\n\n:link: **Related Links:**\n' + formattedContent.links.join('\n');
                 }
                 
-                const messageChunks = splitMessage(title, fullMessageBody);
-
-                // This inner loop is correct; it sends chunks of a single update in order.
-                for (const chunk of messageChunks) {
-                    await sendExtraDiscordMessage(
-                        chunk, "Game Update & Events", "5763719",
-                        `Posted at ${dateTime}`, "", newsWebhook
-                    );
-                    if (messageChunks.length > 1) {
-                        await new Promise(resolve => setTimeout(resolve, 500));
-                    }
-                }
-                LOG('updates', `Notified: "${news.subject}" (ID: ${newsId})`);
-            } catch (e) {
-                ERR('updates', `Failed to process update ID ${news.id}`, e);
-            }
+                LOG('updates', `Notifying: "${news.subject}" (ID: ${news.id})`);
+                return splitMessage(title, fullMessageBody).map(chunk => alertFor('GG_NEWS_WEBHOOK', extraDiscordPayload(
+                    chunk, "Game Update & Events", "5763719",
+                    `Posted at ${dateTime}`, ""
+                )));
+            },
         });
-
-        // 4. Wait for all separate update notifications to be sent
-        await Promise.allSettled(notificationPromises);
 
     } catch (error) {
         ERR('updates', 'Error occurred while checking for game updates', error);
