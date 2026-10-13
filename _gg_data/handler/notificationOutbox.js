@@ -17,7 +17,8 @@ const VIEW_COLUMNS = 'id, source, event_id AS eventId, part, account_scope AS ac
     + 'next_attempt_at AS nextAttemptAt, last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt';
 
 /**
- * Inserts an event's notification rows in the caller's transaction.
+ * Inserts an event's notification rows in the caller's transaction. An event is identified per account
+ * (source, account_scope, event_id; migration 015): two accounts may each hold rows for one game ID.
  * Without ignoreExisting (a new claim), an event that already has rows is not inserted again and
  * false is returned; the caller's list lock serializes claims of the same event. With
  * ignoreExisting, parts that already exist are skipped and the number inserted is returned.
@@ -28,7 +29,7 @@ export async function insertOutboxRows(tx, { source, eventId, accountScope, noti
     if (!source || source.length > MAX_SOURCE) throw new Error('[GG_DB] Invalid outbox source.');
     if (!event || event.length > MAX_EVENT_ID) throw new Error(`[GG_DB] Invalid outbox event ID for ${source}.`);
     if (!ignoreExisting) {
-        const existing = await tx.query('SELECT id FROM notification_outbox WHERE source = ? AND event_id = ? LIMIT 1', [source, event]);
+        const existing = await tx.query('SELECT id FROM notification_outbox WHERE source = ? AND account_scope = ? AND event_id = ? LIMIT 1', [source, accountScope, event]);
         if (existing.length) return false;
     }
     const now = nowIso();

@@ -4,10 +4,9 @@ import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { TitanGroup } from '../webhooks.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor } from './notify.js';
+import { claimAlerts, alertFor, processedContent } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
-    getContent,
     getCreatureById
 } from '../_gg_data/handler/gg_database.js';
 
@@ -21,7 +20,7 @@ const TITAN_HISTORY_LIMIT = 100; // Standard history limit of 100
  */
 async function loadProcessedTitanNews() {
     try {
-        const storedIdsJson = (await getContent(TITAN_NEWS_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(TITAN_NEWS_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('titans', `Loaded ${storedIdsArray.length} processed titan news IDs from database.`);
         return new Set(storedIdsArray);

@@ -3,11 +3,8 @@
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor } from './notify.js';
+import { claimAlerts, alertFor, processedContent } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
-import {
-    getContent
-} from '../_gg_data/handler/gg_database.js';
 
 // --- CONFIGURATION & STATE ---
 const GUILD_MSG_STORAGE_KEY = 'processed_guild_message_ids';
@@ -19,7 +16,7 @@ const GUILD_MSG_HISTORY_LIMIT = 100;
  */
 async function loadProcessedGuildMessages() {
     try {
-        const storedIdsJson = (await getContent(GUILD_MSG_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(GUILD_MSG_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('guildmsg', `Loaded ${storedIdsArray.length} processed guild message IDs from database.`);
         return new Set(storedIdsArray);

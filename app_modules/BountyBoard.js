@@ -4,9 +4,8 @@ import { LOG, WARN, ERR } from './core.js';
 import { secureFetch, getGoldInHand, getBuffs } from '../utils.js';
 import { BountyGroup } from '../webhooks.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor } from './notify.js';
+import { claimAlerts, alertFor, processedContent } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
-import { getContent } from '../_gg_data/handler/gg_database.js';
 
 // --- CONFIGURATION & STATE ---
 const BOUNTY_ID_STORAGE_KEY = 'processed_bounty_ids';
@@ -58,7 +57,7 @@ async function lookupOrUnknown(what, bounty, fn) {
  */
 async function loadProcessedBounties() {
     try {
-        const storedIdsJson = (await getContent(BOUNTY_ID_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(BOUNTY_ID_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('bounty', `Loaded ${storedIdsArray.length} processed bounty IDs from database.`);
         return new Set(storedIdsArray);

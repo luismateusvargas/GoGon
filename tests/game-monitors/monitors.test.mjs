@@ -38,6 +38,8 @@ const checkBounties = async () => { await bountyBoard.checkBounties(); sent = aw
 const checkSuperElites = async () => { await superElite.checkSuperElites(); sent = await storedAlerts(db); };
 const { autoJoinAllGroups } = await import('../../app_modules/QoL.js');
 const { apiEndpoints } = await import('../../game_modules/API.js');
+// The active account is 'env' here; each account keeps its own processed list (outbox AC-4).
+const processed = async key => JSON.parse((await db.getContent(db.processedListKey(key, 'env'))) ?? 'null');
 
 after(() => db.closeDatabase());
 
@@ -48,7 +50,10 @@ function quiet(t) {
 }
 
 beforeEach(async () => {
-    for (const k of ['processed_bounty_ids', 'processed_se_kill_ids']) await db.deleteContent(k);
+    for (const k of ['processed_bounty_ids', 'processed_se_kill_ids']) {
+        await db.deleteContent(k);
+        await db.deleteContent(db.processedListKey(k, 'env'));
+    }
     await clearOutbox(db);
     sent = [];
     fetched.length = 0;
@@ -81,7 +86,7 @@ test('AC-MON-002: a new bounty is sent with deflect/cloak flags, buff count, gol
     assert.match(text, /Deflect\? true/);
     assert.match(text, /Cloaked\? false/);
     assert.match(text, /Buffs: 12/);
-    assert.deepEqual(JSON.parse(await db.getContent('processed_bounty_ids')), [1]);
+    assert.deepEqual(await processed('processed_bounty_ids'), [1]);
 });
 
 test('AC-MON-002: target lookups ask for the bounty buff summary of the target player', async (t) => {
@@ -161,14 +166,14 @@ test('AC-MON-006: a restarted process loads processed IDs from SQLite and does n
 
 test('AC-MON-006: with no prior record a module starts fresh and records new IDs', async (t) => {
     quiet(t);
-    assert.equal(await db.getContent('processed_se_kill_ids'), null);
+    assert.equal(await processed('processed_se_kill_ids'), null);
     const SERVER_TS = 1_790_000_000;
     const kill = { time: 60, creature: 999_101, item: 0, player: { id: 1, name: 'Hunter' }, realm: { realm: 5, x: 1, y: 2 } };
     const fixture = { s: true, t: `x ${SERVER_TS}`, r: { 0: kill } };
     routes = { [apiEndpoints.game.superEliteArchive]: fixture };
     await checkSuperElites();
     assert.equal(sent.length, 1);
-    assert.equal(JSON.parse(await db.getContent('processed_se_kill_ids')).length, 1);
+    assert.equal((await processed('processed_se_kill_ids')).length, 1);
 
     const restarted = await import(`../../app_modules/SuperElite.js?restart=${Date.now()}`);
     await restarted.checkSuperElites();
@@ -178,7 +183,7 @@ test('AC-MON-006: with no prior record a module starts fresh and records new IDs
 
 // --- outbox AC-1: claim-and-enqueue in monitors ------------------------------------------------------
 
-test('outbox AC-1: alerts are stored oldest first with their webhook setting and account; a failed build is claimed without an alert', async (t) => {
+test('outbox AC-1: alerts are stored oldest first with their webhook setting and account; a failed build stays unclaimed', async (t) => {
     const lines = quiet(t);
     const { claimAlerts, alertFor } = await import('../../app_modules/notify.js');
     const events = [{ id: 'e1' }, { id: 'e2' }, { id: 'e3' }];
@@ -189,11 +194,51 @@ test('outbox AC-1: alerts are stored oldest first with their webhook setting and
             return [alertFor('GG_BOUNTY_WEBHOOK', { content: '', embeds: [{ description: e.id }] }), alertFor('GG_LADDER_RANKING_WEBHOOK', {}) /* not configured: not stored */];
         },
     });
-    assert.deepEqual(claimed.map(e => e.id), ['e1', 'e2', 'e3']);
-    assert.deepEqual(JSON.parse(await db.getContent('processed_bounty_ids')), ['e1', 'e2', 'e3']);
+    assert.deepEqual(claimed.map(e => e.id), ['e1', 'e3'], 'later events are still claimed');
+    assert.deepEqual(await processed('processed_bounty_ids'), ['e1', 'e3'], 'e2 is not marked processed');
     sent = await storedAlerts(db);
     assert.deepEqual(sent.map(a => [a.row.event_id, a.row.setting_key, a.row.account_scope]), [['e1', 'GG_BOUNTY_WEBHOOK', 'env'], ['e3', 'GG_BOUNTY_WEBHOOK', 'env']]);
-    assert.ok(lines.some(l => l.includes('event e2') && l.includes('without an alert')));
+    assert.ok(lines.some(l => l.includes('event e2') && l.includes('retried on the next run')));
+
+    const retried = await claimAlerts('bounty', { storageKey: 'processed_bounty_ids', historyLimit: 100 }, [{ id: 'e2' }], {
+        idOf: e => e.id,
+        build: async e => [alertFor('GG_BOUNTY_WEBHOOK', { content: '', embeds: [{ description: e.id }] })],
+    });
+    assert.deepEqual(retried.map(e => e.id), ['e2']);
+    assert.deepEqual((await storedAlerts(db)).map(a => a.row.event_id), ['e1', 'e3', 'e2']);
+
+    const empty = await claimAlerts('bounty', { storageKey: 'processed_bounty_ids', historyLimit: 100 }, [{ id: 'e4' }], {
+        idOf: e => e.id,
+        build: async () => [alertFor('GG_LADDER_RANKING_WEBHOOK', {})], // built, but its webhook is not configured
+    });
+    assert.deepEqual(empty.map(e => e.id), ['e4'], 'an event that intentionally yields no alert is still claimed');
+    assert.equal((await storedAlerts(db)).length, 3);
+});
+
+test('outbox AC-1 (O2): a Super Elite kill whose creature lookup fails once is claimed with its alert on the next run', async (t) => {
+    const lines = quiet(t);
+    const SERVER_TS = 1_790_100_000;
+    const kill = { time: 120, creature: 999_202, item: 0, player: { id: 2, name: 'Retry' }, realm: { realm: 5, x: 3, y: 4 } };
+    routes = { [apiEndpoints.game.superEliteArchive]: { s: true, t: `x ${SERVER_TS}`, r: { 0: kill } } };
+    const client = await db.getConnection();
+
+    // A transient database failure during enrichment: the creature table cannot be read for one run.
+    await client.query('ALTER TABLE creatures RENAME TO creatures_offline');
+    try {
+        await checkSuperElites();
+    } finally {
+        await client.query('ALTER TABLE creatures_offline RENAME TO creatures');
+    }
+    assert.equal(sent.length, 0, 'no alert was stored');
+    assert.equal(await processed('processed_se_kill_ids'), null, 'the kill was not marked processed');
+    assert.ok(lines.some(l => /retried on the next run/.test(l)));
+
+    await checkSuperElites();
+    assert.equal(sent.length, 1, 'the next run builds and claims it');
+    assert.equal(sent[0].row.state, 'pending');
+    assert.equal((await processed('processed_se_kill_ids')).length, 1);
+    await checkSuperElites();
+    assert.equal(sent.length, 1, 'and only once');
 });
 
 // --- AC-MON-004: group auto-join ---------------------------------------------------------------------

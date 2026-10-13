@@ -32,6 +32,7 @@ const fixture = (...kills) => ({ s: true, t: `x ${SERVER_TS}`, r: Object.fromEnt
 
 beforeEach(async () => {
     await db.deleteContent('processed_se_kill_ids');
+    await db.deleteContent(db.processedListKey('processed_se_kill_ids', 'env')); // the active account's own list
     await clearOutbox(db);
     sent = [];
 });

@@ -3,11 +3,8 @@
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor } from './notify.js';
+import { claimAlerts, alertFor, processedContent } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
-import {
-    getContent
-} from '../_gg_data/handler/gg_database.js';
 
 // --- CONFIGURATION & STATE ---
 const SHOUTBOX_STORAGE_KEY = 'processed_shoutbox_ids';
@@ -19,7 +16,7 @@ const SHOUTBOX_HISTORY_LIMIT = 100; // Standard history limit
  */
 async function loadProcessedShouts() {
     try {
-        const storedIdsJson = (await getContent(SHOUTBOX_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(SHOUTBOX_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('shoutbox', `Loaded ${storedIdsArray.length} processed shoutbox message IDs from database.`);
         return new Set(storedIdsArray);

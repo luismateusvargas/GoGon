@@ -3,10 +3,9 @@
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor } from './notify.js';
+import { claimAlerts, alertFor, processedContent } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
-    getContent,
     getItemById,
     getRealmById
 } from '../_gg_data/handler/gg_database.js';
@@ -21,7 +20,7 @@ const CRATES_HISTORY_LIMIT = 100;
  */
 async function loadProcessedCrates() {
     try {
-        const storedIdsJson = (await getContent(CRATES_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(CRATES_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('crates', `Loaded ${storedIdsArray.length} processed crate IDs from database.`);
         return new Set(storedIdsArray);

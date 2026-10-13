@@ -2,7 +2,7 @@
 
 Original task spec: specs/tasks/2026-10-notification-outbox.md
 Review evidence: 2026-10-13 independent review of 8244aac..42cb44f and fake-MySQL reproductions
-Status: ready
+Status: implemented (pending review)
 
 ## Confirmed failures
 
@@ -29,3 +29,12 @@ Completion means O1–O3 are fixed, focused monitor/outbox/account-switch tests 
 ## Blockers
 
 The ownership of IDs in the old shared processed lists is not recoverable for installations that switched profiles before this migration. The correction must document and test its deterministic compatibility rule; it must not assign old rows to a guessed profile or bulk replay them.
+
+## Corrections (2026-10-13)
+
+- O1: Migration `015_outbox_account_identity.mjs` adds the unique key `notification_outbox_account_event (source, account_scope, event_id, part)` and then drops `notification_outbox_event`. Each step tolerates having run before. `insertOutboxRows()` checks for existing rows per account. Dedupe history moves to per-account lists (`gg_database.processedListKey`: `<key>@<scope>`). Monitors read them through `notify.js processedContent()`.
+- **Compatibility rule** (blocker resolved): nothing writes to the legacy shared list anymore, and it stays readable. On an account's first claim, its own list is created as a copy of the legacy list, capped at the monitor's limit. Until then the monitor reads the legacy list. Every account therefore treats a legacy ID as already processed. No ID is assigned to a guessed account and none is bulk replayed. The copied IDs age out under the existing FIFO cap. Cost: an account that never saw a legacy ID cannot claim that same ID until it ages out of that account's list.
+- O2: `claimAlerts()` leaves an event unclaimed when its build rejects, and still claims later events. A successful build with no configured alert is still claimed without a row.
+- O3: `bootLogin.mjs loginBeforeDelivery()` clears the account scope while `login()`/`ensureLogin()` run. It restores the scope and starts the outbox only after both succeed. `app.mjs` no longer starts the outbox before login.
+- Tests: `tests/discord-integration/outbox.test.mjs` (same ID under two profiles, scoped rows and dispatch, legacy seeding and age-out, 015 re-run, and the boot login/ensureLogin failure and success cases), `tests/game-monitors/monitors.test.mjs` (helper retry, and a SuperElite build that fails once while the creatures table is unreadable, then is claimed once), and `tests/auth-session/login-recovery.test.mjs` (app.mjs does not start the outbox before login).
+- Not verified locally: the MySQL 8.4 run, which needs `ER_DUP_KEYNAME`/`ER_CANT_DROP_FIELD_OR_KEY` handling in 015 and the `RENAME TABLE` test on InnoDB.

@@ -4,12 +4,9 @@ import { LOG, WARN, ERR, sleep } from './core.js';
 import { secureFetch } from '../utils.js';
 import { LadderGroup } from '../webhooks.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, appendAlerts, alertFor } from './notify.js';
+import { claimAlerts, appendAlerts, alertFor, processedContent } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import { EMOJIS, DELAYS, EMBED_COLORS } from './constants.js';
-import {
-    getContent
-} from '../_gg_data/handler/gg_database.js';
 
 // --- CONFIGURATION & STATE ---
 const LADDER_NEWS_STORAGE_KEY = 'processed_ladder_news_ids';
@@ -21,7 +18,7 @@ const LADDER_HISTORY_LIMIT = 100;
  */
 async function loadProcessedLadderNews() {
     try {
-        const storedIdsJson = (await getContent(LADDER_NEWS_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(LADDER_NEWS_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('ladder', `Loaded ${storedIdsArray.length} processed ladder news IDs from database.`);
         return new Set(storedIdsArray);

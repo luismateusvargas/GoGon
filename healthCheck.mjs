@@ -3,7 +3,8 @@
 // state name. It sends no CORS headers and exposes no configuration, cache, or metrics data; those moved
 // behind the authenticated control plane (/api/health, /api/metrics, /api/state).
 // Delivery progress (specs/tasks/2026-10-notification-progress-health.md): the probe answers 503 only
-// after due notifications made no progress for DELIVERY_UNHEALTHY_AFTER; an empty queue is healthy.
+// after due notifications made no progress for DELIVERY_UNHEALTHY_AFTER, or when delivery progress cannot
+// be read at all; an empty queue is healthy.
 // Project: GoGon (GG)
 
 import http from 'node:http';
@@ -53,6 +54,7 @@ export async function checkDatabase() {
  * Health summary shared by the probe and the authenticated /api/health (AC-HLTH-001).
  * The probe gets only the delivery state name; with detail (owner API) the delivery progress report and
  * the overdue module names are included. Overdue modules are reported but do not make the probe unhealthy.
+ * An unreadable delivery snapshot is unhealthy ('delivery unavailable'); a database failure overrides it.
  * @returns {Promise<{ status: 'ok'|'unhealthy', uptime: string, timestamp: string, tasks: object, delivery: string|object, error?: string }>}
  */
 export async function healthReport({ tasksStatus = getTasksStatus, database = checkDatabase, delivery = () => deliveryMonitor.check(), detail = false, startedAt = serverStartTime, now = Date.now } = {}) {
@@ -74,7 +76,11 @@ export async function healthReport({ tasksStatus = getTasksStatus, database = ch
             report.error = 'delivery stalled';
         }
     } catch {
-        report.delivery = 'unknown'; // the outbox read failed; the database check below reports the cause
+        // Delivery progress cannot be assessed, so the probe cannot report healthy. SELECT 1 alone does not
+        // show that the outbox query or dispatcher is usable; a later successful read restores 'ok'.
+        report.delivery = 'unknown';
+        report.status = 'unhealthy';
+        report.error = 'delivery unavailable';
     }
     try {
         await database();

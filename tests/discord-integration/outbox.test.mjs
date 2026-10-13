@@ -26,6 +26,7 @@ const { createNotificationDispatcher, outboxBackoff } = await import('../../noti
 const { getAccountScope, setAccountScope } = await import('../../config/accountScope.mjs');
 const { OUTBOX_MAX_ROUNDS, OUTBOX_RETRY_BASE, OUTBOX_RETRY_CAP } = await import('../../webhooks.js');
 const utils = await import('../../utils.js');
+const { loginBeforeDelivery } = await import('../../bootLogin.mjs');
 
 const client = await db.getConnection();
 const store = createNotificationOutboxStore(client);
@@ -38,13 +39,14 @@ const claim = (eventId, over = {}) => db.claimNotification({
     notifications: [{ settingKey: 'GG_CRATES_WEBHOOK', payload: payload(eventId) }], ...over,
 });
 const rows = () => client.query('SELECT id, source, event_id, part, account_scope, state, attempts, next_attempt_at, last_error, payload FROM notification_outbox ORDER BY id');
-const list = async () => JSON.parse((await db.getContent(LIST.storageKey)) ?? '[]');
+/** The processed list of one account (env by default); the legacy shared list is LIST.storageKey itself. */
+const list = async (scope = 'env') => JSON.parse((await db.getContent(db.processedListKey(LIST.storageKey, scope))) ?? '[]');
 const flush = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r)); };
 
 let logs = [];
 beforeEach(async (t) => {
     await client.query('DELETE FROM notification_outbox');
-    await db.deleteContent(LIST.storageKey);
+    await client.query('DELETE FROM key_value_store WHERE `key` LIKE ?', [`${LIST.storageKey}%`]);
     setAccountScope('env');
     posts.length = responses.length = 0;
     logs = [];
@@ -117,16 +119,104 @@ test('AC-1: restart between claim and Discord acceptance replays the one pending
 });
 
 test('AC-4 (migration): existing processed ID history stays readable and is not replayed', async () => {
-    for (const id of [7, 8]) await db.setContent(LIST.storageKey, id, 3);   // history written before the outbox
+    for (const id of [7, 8]) await db.setContent(LIST.storageKey, id, 3);   // shared history written before account scoping
+    assert.deepEqual(JSON.parse(await db.getProcessedContent(LIST.storageKey, 'env')), [7, 8], 'monitors read the legacy list until the account has its own');
     assert.equal(await claim(8), false, 'a legacy processed ID is not claimed or bulk replayed');
     assert.equal(await claim(9), true);
-    assert.deepEqual(await list(), [7, 8, 9]);
+    assert.deepEqual(await list(), [7, 8, 9], 'the account list starts as a copy of the legacy list');
+    assert.deepEqual(JSON.parse(await db.getContent(LIST.storageKey)), [7, 8], 'the legacy list is kept and no longer written');
     assert.deepEqual((await rows()).map(r => r.event_id), ['9']);
+
+    // Compatibility rule: the owner of a legacy ID is unknown, so every account treats it as processed.
+    assert.equal(await claim(7, { accountScope: 'profile:2' }), false, 'not replayed for another account either');
+    assert.equal(await claim(10, { accountScope: 'profile:2' }), true);
+    assert.deepEqual(await list('profile:2'), [7, 8, 10]);
+    for (const id of [11, 12]) await claim(id, { accountScope: 'profile:2' });
+    assert.deepEqual(await list('profile:2'), [10, 11, 12], 'the copied legacy IDs age out under the FIFO cap');
+    assert.deepEqual(JSON.parse(await db.getProcessedContent(LIST.storageKey, 'profile:2')), [10, 11, 12]);
+});
+
+test('AC-4: the same game event ID is claimed once per account, each with its own scoped row', async () => {
+    assert.equal(await claim(4242, { accountScope: 'profile:1' }), true);
+    assert.equal(await claim(4242, { accountScope: 'profile:2' }), true, "B's alert is not suppressed by A's claim");
+    assert.equal(await claim(4242, { accountScope: 'profile:2' }), false, 'B still claims it only once');
+    assert.deepEqual((await rows()).map(r => [r.event_id, r.account_scope, r.state]), [['4242', 'profile:1', 'pending'], ['4242', 'profile:2', 'pending']]);
+    assert.deepEqual(await list('profile:1'), [4242]);
+    assert.deepEqual(await list('profile:2'), [4242]);
+
+    // Only the active account's row is dispatched.
+    setAccountScope('profile:2');
+    const { dispatcher, queued } = scripted();
+    await dispatcher.pump();
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].meta.accountScope, 'profile:2');
+    queued[0].meta.onSettled({ ok: true, batchSize: 1 });
+    await flush();
+    assert.deepEqual((await rows()).map(r => [r.account_scope, r.state]), [['profile:1', 'pending'], ['profile:2', 'delivered']]);
+
+    // A's follow-up parts go to A's row only.
+    assert.equal(await db.appendNotifications({ source: 'crates', eventId: 4242, accountScope: 'profile:1', firstPart: 1, notifications: [{ settingKey: 'GG_CRATES_WEBHOOK', payload: payload('4242-1') }] }), 1);
+    assert.equal((await rows()).filter(r => r.account_scope === 'profile:1').length, 2);
+});
+
+test('AC-4 (migration 015): the account-scoped identity is re-runnable and replaces the old unique key', async () => {
+    const { up } = await import('../../_gg_data/migrations/015_outbox_account_identity.mjs');
+    await up(client); // already applied at startup: both steps are no-ops
+    await up(client);
+    await claim(77, { accountScope: 'profile:1' });
+    await claim(77, { accountScope: 'profile:2' });
+    await assert.rejects(client.query(
+        "INSERT INTO notification_outbox (source, event_id, part, account_scope, setting_key, payload, state, attempts, next_attempt_at, created_at, updated_at) "
+        + "VALUES ('crates', '77', 0, 'profile:1', 'GG_CRATES_WEBHOOK', '{}', 'pending', 0, 'x', 'x', 'x')"), { code: 'ER_DUP_ENTRY' }, 'still unique per account');
 });
 
 test('AC-4: nothing can be claimed while no account is signed in', async () => {
     await assert.rejects(claim(105, { accountScope: null }), /No active account/);
     assert.deepEqual(await list(), []);
+});
+
+for (const failing of ['login', 'ensureLogin']) {
+    test(`AC-4 (O3): boot with a stored profile whose ${failing} fails sends no pending alert`, async () => {
+        await claim(501, { accountScope: 'profile:7' });
+        setAccountScope('profile:7'); // prepareControlPlane selected the stored profile
+        const { dispatcher, queued } = scripted();
+        let started = 0;
+        const boom = async () => { throw new Error('Connection failure'); };
+        await assert.rejects(loginBeforeDelivery({
+            email: 'owner@example.test', password: 'pw', log: () => {},
+            login: failing === 'login' ? boom : async () => 'ok',
+            ensureLogin: failing === 'ensureLogin' ? boom : async () => {},
+            startOutbox: () => { started++; return dispatcher.start(); },
+        }), /Connection failure/);
+        assert.equal(started, 0, 'the outbox is not started');
+        assert.equal(getAccountScope(), null, 'the unvalidated profile is not dispatch-eligible');
+        await dispatcher.pump(); // even a dispatcher woken by other means sends nothing
+        await assert.rejects(claim(502, { accountScope: getAccountScope() }), /No active account/);
+        dispatcher.stop();
+        assert.equal(queued.length, 0);
+        assert.equal(posts.length, 0, 'no webhook POST');
+        assert.deepEqual((await rows()).map(r => [r.event_id, r.state]), [['501', 'pending']], 'the row waits for a validated login');
+    });
+}
+
+test('AC-4 (O3): boot with a stored profile replays its pending rows once, after the login is validated', async () => {
+    await claim(503, { accountScope: 'profile:7' });
+    setAccountScope('profile:7');
+    const { dispatcher, queued } = scripted();
+    const during = [];
+    await loginBeforeDelivery({
+        email: 'owner@example.test', password: 'pw', log: () => {},
+        login: async () => { await dispatcher.pump(); during.push(getAccountScope(), queued.length); return 'ok'; },
+        ensureLogin: async () => { during.push(getAccountScope()); },
+        startOutbox: () => dispatcher.start(),
+    });
+    assert.deepEqual(during, [null, 0, null], 'nothing is eligible while the login runs');
+    assert.equal(getAccountScope(), 'profile:7');
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].meta.accountScope, 'profile:7');
+    await dispatcher.pump();
+    assert.equal(queued.length, 1, 'replayed once');
+    dispatcher.stop();
 });
 
 // --- AC-2: retryable and permanent failures ----------------------------------------------------------

@@ -208,6 +208,28 @@ test('AC-2: a rate-limited webhook waits while other webhooks progress with 2000
     assertSanitized();
 });
 
+test('AC-2: sustained fresh traffic for another webhook cannot starve an eligible rate-limit retry', async () => {
+    responses.push(rateLimited(5)); // 5000ms + 500ms buffer
+    queueDiscordMessage(HOOK_A, { embeds: [embed('a')] });
+    await advance(100);
+    const t0 = startOffset();
+    // A new B alert arrives every second, so a fresh item is always waiting when A becomes eligible.
+    for (let i = 0; i < 12; i++) {
+        queueDiscordMessage(HOOK_B, { embeds: [embed(`b${i}`)] });
+        await elapse(1000);
+    }
+
+    const retry = posts.findIndex((p, i) => i > 0 && p.url === HOOK_A);
+    assert.ok(retry !== -1, `A is retried: ${posts.map(p => p.body.embeds[0].title).join(', ')}`);
+    assert.ok(retry <= 3, `A is retried within a bounded number of dispatches (index ${retry})`);
+    assert.ok(posts[retry].at - t0 >= 5500, 'retry is no earlier than retry_after');
+    assert.ok(posts.slice(retry + 1).some(p => p.url === HOOK_B), 'B keeps moving after the retry');
+    for (let i = 1; i < posts.length; i++) {
+        assert.ok(posts[i].at - posts[i - 1].at >= DELAY_BETWEEN_MESSAGES, `POST ${i} keeps the global gap`);
+    }
+    assertSanitized();
+});
+
 test('AC-2: new work wakes a dispatcher sleeping on a long rate limit', async () => {
     responses.push(rateLimited(30));
     queueDiscordMessage(HOOK_A, { embeds: [embed('a')] });
@@ -247,13 +269,14 @@ test('AC-2: a huge retry_after is capped instead of sleeping indefinitely', asyn
 });
 
 test('AC-3: 5xx retries are bounded, then the item fails and the queue continues', async () => {
-    // Responses are consumed in POST order: A, B, A, A.
-    responses.push(json(503, { message: 'payload-secret' }), new Response(null, { status: 204 }), json(502, {}), json(500, {}));
+    // Responses are consumed in POST order. A's retry is due when the 2000ms gap ends, and A was queued
+    // first, so it keeps its place until its attempts are exhausted: A, A, A, B.
+    responses.push(json(503, { message: 'payload-secret' }), json(502, {}), json(500, {}), new Response(null, { status: 204 }));
     queueDiscordMessage(HOOK_A, { embeds: [embed('a')] });
     queueDiscordMessage(HOOK_B, { embeds: [embed('b')] });
     await elapse(30_000);
 
-    assert.deepEqual(posts.map(p => p.url), [HOOK_A, HOOK_B, HOOK_A, HOOK_A]);
+    assert.deepEqual(posts.map(p => p.url), [HOOK_A, HOOK_A, HOOK_A, HOOK_B]);
     assert.match(logText(), /server \(HTTP 503\), attempt 1\/3/);
     assert.match(logText(), /Dropped message for hook#[0-9a-f]{8}: server \(HTTP 500\) after 3 attempt\(s\)/);
     assertSanitized();

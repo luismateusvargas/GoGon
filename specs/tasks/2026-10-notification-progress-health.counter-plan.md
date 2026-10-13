@@ -2,7 +2,7 @@
 
 Original task spec: specs/tasks/2026-10-notification-progress-health.md
 Review evidence: 2026-10-13 independent review of 198c040..42cb44f and injected health-report failure
-Status: ready
+Status: implemented (pending review)
 
 ## Confirmed failures
 
@@ -23,3 +23,9 @@ Completion means H1 is fixed and health, metrics, and control-plane regression t
 ## Blockers
 
 None.
+
+## Corrections (2026-10-13)
+
+- H1: `healthReport()` reports `status: 'unhealthy'`, `error: 'delivery unavailable'` and `delivery: 'unknown'` when the delivery snapshot cannot be read, so `/health` answers 503. A database failure still overrides the error with `'database unavailable'`. The report is stateless, so the next successful read restores 200. No error text reaches the probe or the owner detail.
+- Test: `tests/health-metrics/delivery-progress.test.mjs` "an unreadable delivery snapshot makes the probe unhealthy even though SELECT 1 succeeds" covers 503 with a sanitized minimal body, the owner report, and recovery to 200 `idle`. It replaces the earlier assertion of `status: 'ok'`.
+- Known gap, out of scope: if `startNotificationOutbox()` itself fails at boot, the snapshot reports zero due outbox rows, which reads as healthy.

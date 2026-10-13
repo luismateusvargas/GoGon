@@ -2,10 +2,9 @@
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { extraDiscordPayload, noDropDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor } from './notify.js';
+import { claimAlerts, alertFor, processedContent } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
-    getContent,
     getCreatureById,
     getItemById,
     getRealmById
@@ -23,7 +22,7 @@ export const UNINDEXED_ITEM_TEXT = 'New Item';
  */
 async function loadProcessedSeKills() {
     try {
-        const storedIdsJson = (await getContent(SE_KILLS_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(SE_KILLS_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('superelites', `Loaded ${storedIdsArray.length} processed SE kill IDs from database.`);
         return new Set(storedIdsArray);

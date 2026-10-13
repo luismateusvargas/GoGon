@@ -273,18 +273,18 @@ function dispatcherWait(ms) {
 }
 
 /**
- * The eligible item that has waited longest. Only the oldest pending item of each webhook is a candidate,
- * so a delayed item keeps later items for the same webhook behind it.
+ * The eligible item that was queued first. Only the oldest pending item of each webhook is a candidate,
+ * so a delayed item keeps later items for the same webhook behind it. notBefore is only an eligibility
+ * gate: a retried item keeps its queue position, so fresh traffic for other webhooks cannot starve it.
  */
 function nextEligibleItem(now) {
     const seen = new Set();
-    let best = null;
     for (const item of messageQueue) {
         if (seen.has(item.webhook)) continue;
         seen.add(item.webhook);
-        if (item.notBefore <= now && (!best || item.notBefore < best.notBefore)) best = item;
+        if (item.notBefore <= now) return item;
     }
-    return best;
+    return null;
 }
 
 function removeItem(item) {

@@ -71,6 +71,7 @@ import { getMetrics } from './metrics.mjs';
 import { deliveryMonitor } from './deliveryHealth.mjs';
 import { initDatabase } from './_gg_data/handler/gg_database.js';
 import { startNotificationOutbox, notificationOutbox } from './notificationDispatcher.js';
+import { loginBeforeDelivery } from './bootLogin.mjs';
 
 
 // Main function that executes the application's boot sequence.
@@ -105,14 +106,6 @@ async function main() {
         }
     }
 
-    // 2c. Notification outbox: replay alerts claimed before the last stop for the active account
-    // (the control plane has set it). New claims wake the dispatcher.
-    try {
-        await startNotificationOutbox();
-    } catch (e) {
-        console.error(`[GoGon_ERROR] Notification outbox could not start: ${e.message}`);
-    }
-
     // 3. Loading Credentials
     // The active account profile wins; otherwise GG_ names, then legacy SWS_/FS_ (AUTH-TASK-001, REC-TASK-002)
     const { email, password: pass } = currentCredentials();
@@ -123,15 +116,10 @@ async function main() {
     }
     console.log('[GoGon] Credentials loaded successfully.');
 
-    // 4. Login Sequence
+    // 4. Login Sequence, then the notification outbox: pending alerts of the active account are
+    // replayed only after its login is validated (bootLogin.mjs).
     try {
-        console.log('[GoGon] Performing initial login...');
-        const loginStatus = await login(email, pass);
-        console.log(`[GoGon] Login successful: ${loginStatus}`);
-
-        console.log('[GoGon] Verifying and ensuring login session...');
-        await ensureLogin();
-        console.log('[GoGon] Login session validated.');
+        await loginBeforeDelivery({ email, password: pass, login, ensureLogin, startOutbox: startNotificationOutbox });
     } catch (e) {
         console.error('[GoGon_FATAL] Critical failure during the login process. Check your credentials and connection.', e?.stack || e);
         process.exit(1);

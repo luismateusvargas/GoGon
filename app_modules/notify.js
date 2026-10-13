@@ -3,7 +3,7 @@
 // are committed together (gg_database.claimNotification), and notificationDispatcher.js delivers it.
 // A crash or webhook failure after the claim leaves a pending outbox row instead of a lost alert.
 import { LOG, ERR } from './core.js';
-import { claimNotification, appendNotifications } from '../_gg_data/handler/gg_database.js';
+import { claimNotification, appendNotifications, getProcessedContent } from '../_gg_data/handler/gg_database.js';
 import { getSetting } from '../config/runtime.mjs';
 import { getAccountScope } from '../config/accountScope.mjs';
 
@@ -11,11 +11,18 @@ import { getAccountScope } from '../config/accountScope.mjs';
 export const alertFor = (settingKey, payload) => ({ settingKey, payload });
 
 /**
+ * The monitor's processed IDs for the active game account, as stored JSON or null (AC-4): each
+ * account has its own list, so another account's claim of the same game ID does not hide this event.
+ */
+export const processedContent = storageKey => getProcessedContent(storageKey, getAccountScope());
+
+/**
  * Builds the alerts of new events concurrently, then claims the events oldest first.
- * An event whose alert cannot be built is still claimed without an alert (the existing dedupe
- * behavior: a failing event is not retried on every run). Alerts for a webhook that is not
- * configured are not stored, as such modules send nothing. A failed claim stops the run so later
- * events are not claimed ahead of it; the next run retries from there.
+ * An event whose alert cannot be built (e.g. a transient database lookup failure) is left unclaimed,
+ * so the next run builds and claims it; later events are still claimed (AC-1: an event is handled
+ * only with its pending alert). An event that builds no alert, or only alerts for a webhook that is
+ * not configured, is claimed without a row, as such modules send nothing. A failed claim stops the run
+ * so later events are not claimed ahead of it; the next run retries from there.
  *
  * @param {string} source - Monitor name used in logs and as the outbox source.
  * @param {{ storageKey: string, historyLimit: number }} list - The monitor's processed-ID list.
@@ -28,12 +35,11 @@ export async function claimAlerts(source, { storageKey, historyLimit }, events, 
     const claimed = [];
     for (const [i, event] of events.entries()) {
         const eventId = idOf(event);
-        let notifications = [];
-        if (built[i].status === 'fulfilled') {
-            notifications = (built[i].value || []).filter(n => getSetting(n.settingKey));
-        } else {
-            ERR(source, `Failed to build the alert for event ${eventId}; claiming it without an alert.`, built[i].reason);
+        if (built[i].status === 'rejected') {
+            ERR(source, `Failed to build the alert for event ${eventId}; it stays unclaimed and is retried on the next run.`, built[i].reason);
+            continue;
         }
+        const notifications = (built[i].value || []).filter(n => getSetting(n.settingKey));
         try {
             const ok = await claimNotification({
                 source, storageKey, historyLimit, eventId, accountScope: getAccountScope(), notifications,

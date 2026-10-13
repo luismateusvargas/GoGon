@@ -3,11 +3,8 @@
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor } from './notify.js';
+import { claimAlerts, alertFor, processedContent } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
-import {
-    getContent
-} from '../_gg_data/handler/gg_database.js';
 
 // --- CONFIGURATION & STATE ---
 const RELIC_LOG_STORAGE_KEY = 'processed_relic_log_ids';
@@ -19,7 +16,7 @@ const RELIC_HISTORY_LIMIT = 500;
  */
 async function loadProcessedRelicLogs() {
     try {
-        const storedIdsJson = (await getContent(RELIC_LOG_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(RELIC_LOG_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('relics', `Loaded ${storedIdsArray.length} processed relic log IDs from database.`);
         return new Set(storedIdsArray);

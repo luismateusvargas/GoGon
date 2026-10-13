@@ -2,7 +2,7 @@
 
 Original task spec: specs/tasks/2026-10-discord-delivery-recovery.md
 Review evidence: 2026-10-13 independent review of f007f55..42cb44f
-Status: ready
+Status: implemented (pending review)
 
 ## Confirmed failures
 
@@ -23,3 +23,8 @@ Completion means R1 is fixed, the targeted test and existing delivery suite pass
 ## Blockers
 
 None.
+
+## Corrections (2026-10-13)
+
+- R1: `nextEligibleItem()` returns the first eligible webhook head in queue order. Items keep their queue position across retries, so `notBefore` is only the eligibility gate. Per-webhook order and the global two-second gap are unchanged.
+- Test: `tests/discord-integration/delivery.test.mjs` "sustained fresh traffic for another webhook cannot starve an eligible rate-limit retry" (fails before the fix with A, B0..B5 and no retry). With the fix, A is retried as the third POST, at least 5.5 s after the 429, and every gap is at least 2 s. The 5xx test now expects A, A, A, B: A's retry is due exactly when the gap ends, and A was queued first. It stays bounded at 3 attempts, then B is sent.

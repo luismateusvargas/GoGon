@@ -160,18 +160,22 @@ export async function getContent(key) {
  * Runs fn(tx, list) inside one transaction that holds the row lock on a stored list, retrying on
  * InnoDB deadlock. fn returns the list to write back, or undefined to leave the row unchanged.
  * A corrupt or non-list value is reset to a fresh list (with a warning). AC-DATA-002
+ * seed() gives the initial value of a list that does not exist yet (default '[]').
  */
-async function updateLockedList(key, fn) {
+async function updateLockedList(key, fn, seed = async () => '[]') {
     const client = await db();
     const maxAttempts = 5;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
             // Materialize the row outside the read transaction. Locking a missing key takes a
             // gap lock, which can deadlock when several callers append to a new list at once.
-            try {
-                await client.query('INSERT INTO key_value_store (`key`, `value`) VALUES (?, ?)', [key, '[]']);
-            } catch (error) {
-                if (error?.code !== 'ER_DUP_ENTRY') throw error;
+            const exists = await client.query('SELECT 1 FROM key_value_store WHERE `key` = ?', [key]);
+            if (!exists.length) {
+                try {
+                    await client.query('INSERT INTO key_value_store (`key`, `value`) VALUES (?, ?)', [key, await seed()]);
+                } catch (error) {
+                    if (error?.code !== 'ER_DUP_ENTRY') throw error;
+                }
             }
             return await client.transaction(async tx => {
                 // Lock the row for the whole read-modify-write.
@@ -230,14 +234,49 @@ export async function setContent(key, newItem, maxSize = 100) {
 }
 
 /**
+ * The processed-ID list of one game account (outbox AC-4): '<storageKey>@<accountScope>', e.g.
+ * 'processed_crate_ids@profile:7'. Two accounts can see the same game event ID; each claims it once.
+ */
+export const processedListKey = (storageKey, accountScope) => `${storageKey}@${accountScope}`;
+
+/**
+ * The legacy shared list (storageKey alone) as a JSON list, capped at historyLimit. It was written
+ * for whichever account was active, so who saw which ID is not recoverable. Compatibility rule: it is
+ * no longer written; an account's own list starts as a copy of it, so every account treats those IDs
+ * as already processed (none is replayed or assigned to a guessed account), and the copy ages out
+ * under the list's FIFO cap as that account claims new events.
+ */
+async function legacyListSeed(storageKey, historyLimit) {
+    try {
+        const list = JSON.parse((await getContent(storageKey)) ?? '[]');
+        if (Array.isArray(list)) return JSON.stringify(historyLimit ? list.slice(-historyLimit) : list);
+    } catch { /* a corrupt legacy value seeds an empty list */ }
+    return '[]';
+}
+
+/**
+ * A monitor's processed IDs for one account, as stored JSON (like getContent): the account's own
+ * list, or the legacy shared list until the account claims its first event. Null when neither exists.
+ */
+export async function getProcessedContent(storageKey, accountScope) {
+    if (accountScope) {
+        const own = await getContent(processedListKey(storageKey, accountScope));
+        if (own !== null) return own;
+    }
+    return getContent(storageKey);
+}
+
+/**
  * Claims a monitor event and enqueues its Discord notifications in one transaction
- * (specs/tasks/2026-10-notification-outbox.md AC-1). The event ID is appended to the monitor's
- * processed list exactly as setContent does, and one notification_outbox row is inserted per
- * notification. An event already in the list or already in the outbox is not claimed again.
+ * (specs/tasks/2026-10-notification-outbox.md AC-1). The event ID is appended to the account's
+ * processed list (processedListKey) exactly as setContent does, and one notification_outbox row is
+ * inserted per notification. An event already in that list or in that account's outbox is not
+ * claimed again; another account's claim of the same ID does not block it (AC-4).
  *
  * @param {object} claim
  * @param {string} claim.source - Short monitor name (e.g. 'crates'); with eventId, the outbox identity.
- * @param {string} claim.storageKey - The monitor's processed list key (e.g. 'processed_crate_ids').
+ * @param {string} claim.storageKey - The monitor's processed list key (e.g. 'processed_crate_ids'),
+ *   without the account suffix.
  * @param {number} claim.historyLimit - The list's FIFO cap.
  * @param {string|number} claim.eventId - The stable event ID, stored in the list as given.
  * @param {string} claim.accountScope - From config/accountScope.mjs; required.
@@ -247,12 +286,12 @@ export async function setContent(key, newItem, maxSize = 100) {
  */
 export async function claimNotification({ source, storageKey, historyLimit, eventId, accountScope, notifications = [] }) {
     if (!accountScope) throw new Error('[GG_DB] No active account: notifications cannot be claimed.');
-    const claimed = await updateLockedList(storageKey, async (tx, list) => {
+    const claimed = await updateLockedList(processedListKey(storageKey, accountScope), async (tx, list) => {
         if (list.some(id => String(id) === String(eventId))) return { result: false };
         const inserted = await insertOutboxRows(tx, { source, eventId, accountScope, notifications });
         if (inserted === false) return { result: false };
         return { list: appendCapped(list, eventId, historyLimit), result: true };
-    });
+    }, () => legacyListSeed(storageKey, historyLimit));
     if (claimed && notifications.length) outboxEvents.emit('enqueued');
     return claimed;
 }

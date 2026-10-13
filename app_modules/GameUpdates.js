@@ -3,11 +3,8 @@
 import { LOG, WARN, ERR } from './core.js';
 import { secureFetch } from '../utils.js';
 import { extraDiscordPayload } from './discordPayload.js';
-import { claimAlerts, alertFor } from './notify.js';
+import { claimAlerts, alertFor, processedContent } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
-import {
-    getContent
-} from '../_gg_data/handler/gg_database.js';
 import * as cheerio from 'cheerio';
 
 // --- CONFIGURATION & STATE ---
@@ -21,7 +18,7 @@ const DISCORD_CHAR_LIMIT = 2000;
  */
 async function loadProcessedUpdates() {
     try {
-        const storedIdsJson = (await getContent(UPDATES_STORAGE_KEY)) || '[]';
+        const storedIdsJson = (await processedContent(UPDATES_STORAGE_KEY)) || '[]';
         const storedIdsArray = JSON.parse(storedIdsJson);
         LOG('updates', `Loaded ${storedIdsArray.length} processed update news IDs from database.`);
         return new Set(storedIdsArray);

@@ -108,17 +108,43 @@ test('AC-1: the probe answers 503 for a sustained stall with only the state name
     } finally { await close(); }
 });
 
-test('AC-1: the owner report carries the delivery detail; an unreadable outbox leaves the database check to decide', async () => {
+test('AC-1: the owner report carries the delivery detail', async () => {
     const progress = classifyDelivery(snap(T0, { queue: { queued: 2, dueSince: T0 - 6 * MIN } }));
     const owner = await healthReport({ database: ok, detail: true, delivery: async () => progress });
     assert.equal(owner.status, 'ok');
     assert.equal(owner.delivery.state, 'stalled');
     assert.equal(owner.delivery.pending, 2);
     assert.deepEqual(owner.tasks, { active: 1, total: 1, overdue: 0, overdueModules: [] });
+});
 
-    const unreadable = await healthReport({ database: ok, delivery: async () => { throw new Error('outbox read failed'); } });
-    assert.equal(unreadable.status, 'ok');
-    assert.equal(unreadable.delivery, 'unknown');
+test('AC-1: an unreadable delivery snapshot makes the probe unhealthy even though SELECT 1 succeeds', async () => {
+    let fail = true;
+    const delivery = async () => {
+        if (fail) throw new Error('outbox query failed: SELECT payload FROM notification_outbox');
+        return classifyDelivery(snap(T0));
+    };
+    const report = await healthReport({ tasksStatus: () => [], database: ok, delivery });
+    assert.equal(report.status, 'unhealthy');
+    assert.equal(report.delivery, 'unknown');
+    assert.equal(report.error, 'delivery unavailable');
+
+    const owner = await healthReport({ database: ok, detail: true, delivery });
+    assert.equal(owner.status, 'unhealthy');
+    assert.equal(owner.delivery, 'unknown', 'no error text in the owner detail either');
+
+    const { base, close } = await serve(createProbeHandler({ report: () => healthReport({ database: ok, delivery }) }));
+    try {
+        let res = await fetch(`${base}/health`);
+        assert.equal(res.status, 503);
+        const text = await res.text();
+        assert.ok(!/SELECT|notification_outbox|payload|outbox query/.test(text), `probe body is sanitized: ${text}`);
+        assert.deepEqual(Object.keys(JSON.parse(text)).sort(), ['delivery', 'error', 'status', 'tasks', 'timestamp', 'uptime']);
+
+        fail = false; // a later successful read with an empty queue restores 200
+        res = await fetch(`${base}/health`);
+        assert.equal(res.status, 200);
+        assert.deepEqual(await res.json().then(b => [b.status, b.delivery]), ['ok', 'idle']);
+    } finally { await close(); }
 });
 
 test('AC-4: repeated polls log one stall WARN and one recovery INFO, both redacted; recovered then returns to idle', async () => {
