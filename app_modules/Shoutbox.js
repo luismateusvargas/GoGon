@@ -1,12 +1,12 @@
 // app_modules/Shoutbox.js - Refactored for JSON API and SQLite integration
 
 import { LOG, WARN, ERR } from './core.js';
-import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
-import { shoutboxWebhook } from '../webhooks.js';
+import { secureFetch } from '../utils.js';
+import { extraDiscordPayload } from './discordPayload.js';
+import { claimAlerts, alertFor } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
-    getContent,
-    setContent
+    getContent
 } from '../_gg_data/handler/gg_database.js';
 
 // --- CONFIGURATION & STATE ---
@@ -58,17 +58,11 @@ export async function checkForShoutbox() {
             return;
         }
 
-        // 2. IMMEDIATELY claim and save the new IDs to prevent race conditions
+        // 2. Build each alert, then claim the ID and enqueue the alert in one transaction
         LOG('shoutbox', `Found ${newShouts.length} new shoutbox messages. Claiming them now...`);
-        for (const shout of newShouts) {
-            await setContent(SHOUTBOX_STORAGE_KEY, shout.id, SHOUTBOX_HISTORY_LIMIT);
-        }
-        LOG('shoutbox', `Claimed and saved ${newShouts.length} new shoutbox message IDs.`);
-
-        // 3. Now, safely process all notifications concurrently
-        const notificationPromises = newShouts.map(shout => {
-            try {
-                const shoutId = shout.id;
+        await claimAlerts('shoutbox', { storageKey: SHOUTBOX_STORAGE_KEY, historyLimit: SHOUTBOX_HISTORY_LIMIT }, newShouts, {
+            idOf: shout => shout.id,
+            build: shout => {
                 const dateTime = new Date(shout.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
                 const playerProfileImage = apiEndpoints.player.profileImg(shout.player.id);
 
@@ -76,18 +70,13 @@ export async function checkForShoutbox() {
 :left_speech_bubble: **${shout.player.name}** (Lvl ${shout.player.level}):
 > ${shout.msg.text}`.trim();
 
-                sendExtraDiscordMessage(
+                LOG('shoutbox', `Notifying: Message from ${shout.player.name} (ID: ${shout.id})`);
+                return [alertFor('GG_SHOUTBOX_WEBHOOK', extraDiscordPayload(
                     message, "Shoutbox", "10494192", `Posted at ${dateTime}`,
-                    "", shoutboxWebhook, "", playerProfileImage
-                );
-                LOG('shoutbox', `Notified: Message from ${shout.player.name} (ID: ${shoutId})`);
-            } catch (e) {
-                ERR('shoutbox', `Failed to process shout ID ${shout.id}`, e);
-            }
+                    "", "", playerProfileImage
+                ))];
+            },
         });
-
-        // 4. Wait for all notifications to be sent
-        await Promise.allSettled(notificationPromises);
 
     } catch (error) {
         ERR('shoutbox', 'Error occurred while checking the shoutbox', error);

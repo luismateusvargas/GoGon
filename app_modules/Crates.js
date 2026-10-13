@@ -1,12 +1,12 @@
 // app_modules/Crates.js - Refactored for JSON API and SQLite integration
 
 import { LOG, WARN, ERR } from './core.js';
-import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
-import { cratesWebhook } from '../webhooks.js';
+import { secureFetch } from '../utils.js';
+import { extraDiscordPayload } from './discordPayload.js';
+import { claimAlerts, alertFor } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
     getContent,
-    setContent,
     getItemById,
     getRealmById
 } from '../_gg_data/handler/gg_database.js';
@@ -57,16 +57,11 @@ LOG('crates', 'Checking for new crates...');
             return;
         }
 
-        // 2. IMMEDIATELY claim and save the new IDs
+        // 2. Build each alert, then claim the ID and enqueue the alert in one transaction
         LOG('crates', `Found ${newCrates.length} new crates. Claiming them now...`);
-        for (const crate of newCrates) {
-            await setContent(CRATES_STORAGE_KEY, crate.id, CRATES_HISTORY_LIMIT);
-        }
-        LOG('crates', `Claimed and saved ${newCrates.length} new crate IDs.`);
-
-        // 3. Now, safely process all notifications concurrently
-        const notificationPromises = newCrates.map(async crate => {
-            try {
+        await claimAlerts('crates', { storageKey: CRATES_STORAGE_KEY, historyLimit: CRATES_HISTORY_LIMIT }, newCrates, {
+            idOf: crate => crate.id,
+            build: async crate => {
                 const actualTimestamp = serverTimestamp - crate.time;
                 const dateTime = new Date(actualTimestamp * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
 
@@ -96,18 +91,13 @@ LOG('crates', 'Checking for new crates...');
 :map: at **${realmName}** (${crate.realm.x}, ${crate.realm.y})
 :gift: Contains: ${itemDrops.length > 0 ? itemDrops.join(', ') : 'Nothing of value'}`.trim();
 
-                sendExtraDiscordMessage(
+                LOG('crates', `Notifying: ${crate.name} found by ${crate.player.name}`);
+                return [alertFor('GG_CRATES_WEBHOOK', extraDiscordPayload(
                     message, "Chest Found!", "15466240", "A new chest has been discovered!",
-                    "", cratesWebhook, "", firstItemImage
-                );
-                LOG('crates', `Notified: ${crate.name} found by ${crate.player.name}`);
-            } catch (e) {
-                ERR('crates', `Failed to process crate ID ${crate.id}`, e);
-            }
+                    "", "", firstItemImage
+                ))];
+            },
         });
-
-        // 4. Wait for all notifications to be sent
-        await Promise.allSettled(notificationPromises);
 
     } catch (error) {
         ERR('crates', 'Error occurred while checking for crates', error);

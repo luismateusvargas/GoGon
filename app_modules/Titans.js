@@ -1,12 +1,13 @@
 // app_modules/Titans.js - Refactored for JSON API and SQLite integration
 
 import { LOG, WARN, ERR } from './core.js';
-import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
-import { titanWebhook, TitanGroup } from '../webhooks.js';
+import { secureFetch } from '../utils.js';
+import { TitanGroup } from '../webhooks.js';
+import { extraDiscordPayload } from './discordPayload.js';
+import { claimAlerts, alertFor } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
     getContent,
-    setContent,
     getCreatureById
 } from '../_gg_data/handler/gg_database.js';
 
@@ -59,64 +60,50 @@ export async function checkForTitanNotifications() {
             return; // No new titans found
         }
 
-        // 2. IMMEDIATELY claim and save the new IDs to prevent race conditions
+        // 2. Build each alert, then claim the ID and enqueue the alert in one transaction
         LOG('titans', `Found ${newTitanNews.length} new titan sightings. Claiming them now...`);
-        for (const news of newTitanNews) {
-            await setContent(TITAN_NEWS_STORAGE_KEY, news.id, TITAN_HISTORY_LIMIT);
-        }
-        LOG('titans', `Claimed and saved ${newTitanNews.length} new titan news IDs.`);
-
-        // 3. Now, safely process all notifications concurrently
-        const notificationPromises = newTitanNews.map(async (news) => {
-            try {
+        await claimAlerts('titans', { storageKey: TITAN_NEWS_STORAGE_KEY, historyLimit: TITAN_HISTORY_LIMIT }, newTitanNews, {
+            idOf: news => news.id,
+            build: async news => {
                 const newsId = news.id;
                 const titanId = news.content.attachments?.[0]?.data;
                 if (!titanId) {
                     WARN('titans', `Found titan news (ID: ${newsId}) but missing creature ID.`);
-                    return;
+                    return []; // claimed without an alert, as before
                 }
+
+                const locationMatch = news.content.text.match(/in (.*?)\!/);
+                const location = locationMatch ? locationMatch[1] : 'an unknown location';
+                const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
 
                 const titan = await getCreatureById(titanId);
                 if (!titan) {
-                    WARN('titans', `Could not find titan with ID ${titanId} in DB. Skipping news ID: ${newsId}.`);
-					const locationMatch = news.content.text.match(/in (.*?)\!/);
-					const location = locationMatch ? locationMatch[1] : 'an unknown location';
-					const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
-					const message = `
+                    WARN('titans', `Could not find titan with ID ${titanId} in DB. Announcing news ID ${newsId} as unreleased.`);
+                    const message = `
 **NOT IN DATABASE (UNRELEASED)**
 :calendar_spiral: ${dateTime}
 :map: Spotted at: **${location}**`.trim();
 
-					sendExtraDiscordMessage(
-						message, "Titan Spotted!", "1127128", 
-						"A new titan has appeared in the realm!",
-						TitanGroup, titanWebhook, "", ""
-					);
-                    return;
+                    return [alertFor('GG_TITAN_WEBHOOK', extraDiscordPayload(
+                        message, "Titan Spotted!", "1127128",
+                        "A new titan has appeared in the realm!",
+                        TitanGroup, "", ""
+                    ))];
                 }
-                
-                const locationMatch = news.content.text.match(/in (.*?)\!/);
-                const location = locationMatch ? locationMatch[1] : 'an unknown location';
-                const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
 
                 const message = `
 :boar: **${titan.name}**
 :calendar_spiral: ${dateTime}
 :map: Spotted at: **${location}**`.trim();
 
-                sendExtraDiscordMessage(
+                LOG('titans', `Notifying: ${titan.name} spotted at ${location}`);
+                return [alertFor('GG_TITAN_WEBHOOK', extraDiscordPayload(
                     message, "Titan Spotted!", "1127128", 
                     "A new titan has appeared in the realm!",
-                    TitanGroup, titanWebhook, "", titan.imageUrl || ""
-                );
-                LOG('titans', `Notified: ${titan.name} spotted at ${location}`);
-            } catch (e) {
-                ERR('titans', `Failed to process titan news ID ${news.id}`, e);
-            }
+                    TitanGroup, "", titan.imageUrl || ""
+                ))];
+            },
         });
-
-        // 4. Wait for all notifications to be sent
-        await Promise.allSettled(notificationPromises);
 
     } catch (error) {
         ERR('titans', 'Error occurred while checking for titan notifications', error);

@@ -69,6 +69,7 @@ import { validateAndExit, getConfigSummary } from './configValidator.mjs';
 import { isControlPlaneEnabled, prepareControlPlane, startControlPlane } from './control-plane/index.mjs';
 import { getMetrics } from './metrics.mjs';
 import { initDatabase } from './_gg_data/handler/gg_database.js';
+import { startNotificationOutbox, notificationOutbox } from './notificationDispatcher.js';
 
 
 // Main function that executes the application's boot sequence.
@@ -101,6 +102,14 @@ async function main() {
             console.error(`[GoGon_FATAL] ${e.message}`);
             process.exit(1);
         }
+    }
+
+    // 2c. Notification outbox: replay alerts claimed before the last stop for the active account
+    // (the control plane has set it). New claims wake the dispatcher.
+    try {
+        await startNotificationOutbox();
+    } catch (e) {
+        console.error(`[GoGon_ERROR] Notification outbox could not start: ${e.message}`);
     }
 
     // 3. Loading Credentials
@@ -160,6 +169,7 @@ async function main() {
                 healthReport: () => healthReport(),
                 metrics: () => getMetrics(),
                 validation: () => getConfigSummary(),
+                notifications: notificationOutbox(),
             });
         } catch (e) {
             console.error(`[GoGon_ERROR] Control plane failed to start: ${e.message}`);

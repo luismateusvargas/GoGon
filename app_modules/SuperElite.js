@@ -1,11 +1,11 @@
 // --- MODULE IMPORTS ---
 import { LOG, WARN, ERR } from './core.js';
-import { secureFetch, sendExtraDiscordMessage, sendExtraDiscordMessageNODROP } from '../utils.js';
-import { SuperEliteWebhook } from '../webhooks.js';
+import { secureFetch } from '../utils.js';
+import { extraDiscordPayload, noDropDiscordPayload } from './discordPayload.js';
+import { claimAlerts, alertFor } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import {
     getContent,
-    setContent,
     getCreatureById,
     getItemById,
     getRealmById
@@ -67,17 +67,11 @@ export async function checkSuperElites() {
             return;
         }
 
-        // 2. IMMEDIATELY claim and save the new IDs
+        // 2. Build each alert, then claim the ID and enqueue the alert in one transaction
         console.log(`Found ${newKills.length} new SE kills. Claiming them now...`);
-        for (const kill of newKills) {
-            await setContent(SE_KILLS_STORAGE_KEY, kill.uniqueKillId, SE_KILL_HISTORY_LIMIT);
-        }
-        LOG('superelites', `Claimed and saved ${newKills.length} new SE kill IDs.`);
-        
-        
-        // 3. Now, safely process all notifications concurrently
-        const notificationPromises = newKills.map(async kill => {
-            try {
+        await claimAlerts('superelites', { storageKey: SE_KILLS_STORAGE_KEY, historyLimit: SE_KILL_HISTORY_LIMIT }, newKills, {
+            idOf: kill => kill.uniqueKillId,
+            build: async kill => {
                 // AC-MON-001: an unindexed creature is still announced with a fallback name (MON-TASK-001)
                 const creature = await getCreatureById(kill.creature);
                 if (!creature) {
@@ -114,18 +108,12 @@ export async function checkSuperElites() {
                 }
 
                 const messageBody = `${killInfo.dateTime}\n${killInfo.superElite.name}\n${killInfo.player.name}\n${killInfo.player.location}`;
-                if (killInfo.drop.startsWith('http')) {
-                    sendExtraDiscordMessage(messageBody, "Super Elite", "15466240", killInfo.textInfo || "It Dropped!", "", SuperEliteWebhook, killInfo.superElite.image, killInfo.drop);
-                } else {
-                    sendExtraDiscordMessageNODROP(messageBody, "Super Elite", "15466240", killInfo.textInfo || killInfo.drop, "", SuperEliteWebhook, killInfo.superElite.image);
-                }
-            } catch (e) {
-                ERR('superelites', `Failed to process SE kill ${kill.uniqueKillId}`, e);
-            }
+                const payload = killInfo.drop.startsWith('http')
+                    ? extraDiscordPayload(messageBody, "Super Elite", "15466240", killInfo.textInfo || "It Dropped!", "", killInfo.superElite.image, killInfo.drop)
+                    : noDropDiscordPayload(messageBody, "Super Elite", "15466240", killInfo.textInfo || killInfo.drop, "", killInfo.superElite.image);
+                return [alertFor('GG_SUPER_ELITE_WEBHOOK', payload)];
+            },
         });
-
-        // 4. Wait for all notifications to be sent
-        await Promise.allSettled(notificationPromises);
 
     } catch (error) {
         ERR('superelites', 'Error occurred while checking Super Elites', error);

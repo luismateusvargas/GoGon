@@ -11,6 +11,8 @@ import * as cheerio from 'cheerio';
 // Session management imports
 import { FS_BASE, authedFetch, ensureLogin, isLoggedIn, DEFAULT_UA, DEFAULT_LANG } from './session.mjs';
 import { getSetting } from './config/runtime.mjs';
+import { getAccountScope } from './config/accountScope.mjs';
+import { extraDiscordPayload, noDropDiscordPayload, basicDiscordPayload } from './app_modules/discordPayload.js';
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -45,14 +47,14 @@ function __swsDumpHtml(tag, url, html) {
   }
 }*/
 
-const messageQueue = []; // { webhook, payload, attempts, rateLimits, notBefore }
+const messageQueue = []; // { webhook, payload, attempts, rateLimits, notBefore, accountScope, settle[] }
 let processingQueue = false;
 let lastPostAt = -Infinity; // start of the latest webhook POST; enforces DELAY_BETWEEN_MESSAGES
 let globalBlockedUntil = 0; // set by a 429 with global: true
 let wakeDispatcher = null;  // resolves the dispatcher's current wait when new work arrives
 
 // v1.8.0: Batch queue for combining multiple messages
-const batchQueue = new Map(); // webhook -> { messages: [], timeout: null, totalChars: 0 }
+const batchQueue = new Map(); // batch key -> { webhook, accountScope, messages: [], settle: [], timeout: null, totalChars: 0 }
 const BATCH_SIZE = 10; // Max 10 embeds per Discord message
 const BATCH_IDLE_TIMEOUT = 100; // 100ms idle before sending partial batch
 const MAX_DISCORD_CHARS = 5800; // Safety limit (actual is 6000) for title+desc+fields+footer+author
@@ -85,18 +87,32 @@ function getEmbedSize(embed) {
  * Automatically splits batches if size exceeds Discord limits (6000 chars).
  * @param {string} webhook - The webhook URL.
  * @param {object} payload - The message payload with embeds.
+ * @param {object} [meta] - Outbox delivery (specs/tasks/2026-10-notification-outbox.md):
+ * @param {string} [meta.accountScope] - Only sent while this account is active; otherwise released unsent.
+ * @param {(outcome: { ok: boolean, held?: boolean, error?: Error, batchSize?: number }) => void} [meta.onSettled]
+ *   Called once with the final outcome: Discord accepted it, it was dropped after bounded retries, or it was held.
+ * @param {boolean} [meta.solo] - Send as its own Discord message, never merged into a batch.
  */
-export function queueDiscordMessage(webhook, payload) {
-    // Get or create batch for this webhook
-    if (!batchQueue.has(webhook)) {
-        batchQueue.set(webhook, {
+export function queueDiscordMessage(webhook, payload, meta = {}) {
+    const { accountScope, onSettled, solo = false } = meta;
+    if (solo) {
+        enqueueSend({ webhook, payload, accountScope, settle: onSettled ? [onSettled] : [] });
+        return;
+    }
+    const key = batchKey(webhook, accountScope);
+    // Get or create batch for this webhook and account
+    if (!batchQueue.has(key)) {
+        batchQueue.set(key, {
+            webhook,
+            accountScope,
             messages: [],
+            settle: [],
             timeout: null,
             totalChars: 0
         });
     }
 
-    const batch = batchQueue.get(webhook);
+    const batch = batchQueue.get(key);
     
     // Calculate new message size
     let msgSize = (payload.content || '').length;
@@ -120,14 +136,15 @@ export function queueDiscordMessage(webhook, payload) {
         if (wouldExceedSize) {
              LOG('BatchQueue', `Batch size limit reached (${batch.totalChars} + ${msgSize} > ${MAX_DISCORD_CHARS}). Sending partial batch.`);
         }
-        sendBatch(webhook);
+        sendBatch(key);
         
         // Re-get new (empty) batch
-        return queueDiscordMessage(webhook, payload);
+        return queueDiscordMessage(webhook, payload, meta);
     }
     
     // Add message to batch
     batch.messages.push(payload);
+    if (onSettled) batch.settle.push(onSettled);
     batch.totalChars += msgSize;
 
     // Clear existing timeout
@@ -138,24 +155,41 @@ export function queueDiscordMessage(webhook, payload) {
 
     // If batch is full (count limit), send immediately
     if (batch.messages.length >= BATCH_SIZE) {
-        sendBatch(webhook);
+        sendBatch(key);
     } else {
         // Schedule batch send after idle timeout
         batch.timeout = setTimeout(() => {
-            sendBatch(webhook);
+            sendBatch(key);
         }, BATCH_IDLE_TIMEOUT);
+    }
+}
+
+/** Batches never mix accounts, so a batch is released or sent as a whole. */
+function batchKey(webhook, accountScope) {
+    return accountScope === undefined ? webhook : `${accountScope}\u0000${webhook}`;
+}
+
+/** Adds one Discord message to the send queue and starts or wakes the dispatcher. */
+function enqueueSend({ webhook, payload, accountScope, settle }) {
+    messageQueue.push({ webhook, payload, attempts: 0, rateLimits: 0, notBefore: 0, accountScope, settle });
+
+    // Start processing, or wake a dispatcher that is waiting on a retry delay
+    if (!processingQueue) {
+        processQueue();
+    } else if (wakeDispatcher) {
+        wakeDispatcher();
     }
 }
 
 /**
  * Sends a batch of messages for a specific webhook.
  * Merges multiple payloads into a single Discord message with multiple embeds.
- * @param {string} webhook - The webhook URL to send the batch to.
+ * @param {string} key - The batch key (see batchKey).
  */
-function sendBatch(webhook) {
-    if (!batchQueue.has(webhook)) return;
+function sendBatch(key) {
+    if (!batchQueue.has(key)) return;
 
-    const batch = batchQueue.get(webhook);
+    const batch = batchQueue.get(key);
     
     // Clear timeout
     if (batch.timeout) {
@@ -165,7 +199,7 @@ function sendBatch(webhook) {
 
     // Nothing to send
     if (batch.messages.length === 0) {
-        batchQueue.delete(webhook);
+        batchQueue.delete(key);
         return;
     }
 
@@ -182,18 +216,11 @@ function sendBatch(webhook) {
     // Log batch efficiency
     LOG('BatchQueue', `Sending batch: ${batch.messages.length} messages, 1 API call (saved ${(batch.messages.length - 1) * 2}s)`);
 
-    // Add to processing queue
-    messageQueue.push({ webhook, payload: mergedPayload, attempts: 0, rateLimits: 0, notBefore: 0 });
-    
     // Clear this batch
-    batchQueue.delete(webhook);
+    batchQueue.delete(key);
 
-    // Start processing, or wake a dispatcher that is waiting on a retry delay
-    if (!processingQueue) {
-        processQueue();
-    } else if (wakeDispatcher) {
-        wakeDispatcher();
-    }
+    // Add to processing queue
+    enqueueSend({ webhook: batch.webhook, payload: mergedPayload, accountScope: batch.accountScope, settle: batch.settle });
 }
 
 /**
@@ -202,9 +229,8 @@ function sendBatch(webhook) {
  */
 export function flushAllBatches() {
     LOG('BatchQueue', `Flushing ${batchQueue.size} pending batches...`);
-    const webhooks = Array.from(batchQueue.keys());
-    for (const webhook of webhooks) {
-        sendBatch(webhook);
+    for (const key of Array.from(batchQueue.keys())) {
+        sendBatch(key);
     }
 }
 
@@ -259,6 +285,29 @@ function removeItem(item) {
     if (i !== -1) messageQueue.splice(i, 1);
 }
 
+/** Reports an item's final outcome to its outbox callbacks; a callback error never stops the queue. */
+function settleItem(item, outcome) {
+    for (const fn of item.settle || []) {
+        try {
+            Promise.resolve(fn({ ...outcome, batchSize: item.settle.length })).catch(err => ERR('DiscordQueue', 'Delivery outcome handler failed', err));
+        } catch (err) {
+            ERR('DiscordQueue', 'Delivery outcome handler failed', err);
+        }
+    }
+}
+
+/**
+ * Releases queued items that belong to an account other than the active one, unsent: an alert is
+ * never posted while a different account (or none) is active. Their outbox rows stay pending.
+ */
+function releaseForeignItems() {
+    const active = getAccountScope();
+    for (const item of messageQueue.filter(i => i.accountScope !== undefined && i.accountScope !== active)) {
+        removeItem(item);
+        settleItem(item, { ok: false, held: true });
+    }
+}
+
 /** Applies a failed attempt to a queued item: schedules a bounded retry or drops it with an explicit outcome. */
 function handleQueueFailure(item, err, now) {
     const dest = destinationKey(item.webhook);
@@ -282,6 +331,7 @@ function handleQueueFailure(item, err, now) {
     }
     removeItem(item);
     ERR('DiscordQueue', `Dropped message for ${dest}: ${category}${status} after ${item.attempts + item.rateLimits} attempt(s), ${item.rateLimits} rate limited.`);
+    settleItem(item, { ok: false, error: err });
 }
 
 /**
@@ -294,6 +344,8 @@ export async function processQueue() {
     processingQueue = true;
     try {
         while (messageQueue.length > 0) {
+            releaseForeignItems();
+            if (messageQueue.length === 0) break;
             const now = Date.now();
             const item = now >= globalBlockedUntil ? nextEligibleItem(now) : null;
             if (!item) {
@@ -310,6 +362,7 @@ export async function processQueue() {
             try {
                 await securePostDiscord(item.webhook, item.payload, { retries: 1 });
                 removeItem(item);
+                settleItem(item, { ok: true });
             } catch (err) {
                 handleQueueFailure(item, err, Date.now());
             }
@@ -606,16 +659,7 @@ export async function securePostDiscord(url, payload, opts = {}) {
 }
 
 export function sendDiscordMessage(message, wTitle, colorCode, footerText, group, webhook) {
-  const embed = {
-    title: wTitle,
-    description: message,
-    color: colorCode,
-    footer: {
-      text: footerText
-    }
-  };
-
-  queueDiscordMessage(webhook, { content: group, embeds: [embed] });
+  queueDiscordMessage(webhook, basicDiscordPayload(message, wTitle, colorCode, footerText, group));
 }
 
 export function sendExtraDiscordMessage(
@@ -628,22 +672,7 @@ export function sendExtraDiscordMessage(
   thumbUrl,
   thumb
 ) {
-  const embed = {
-    title: wTitle,
-    description: message,
-    image: {
-      url: thumbUrl
-    },
-    thumbnail: {
-      url: thumb
-    },
-    color: colorCode,
-    footer: {
-      text: footerText
-    }
-  };
-
-  queueDiscordMessage(webhook, { content: group, embeds: [embed] });
+  queueDiscordMessage(webhook, extraDiscordPayload(message, wTitle, colorCode, footerText, group, thumbUrl, thumb));
 }
 
 export function sendExtraDiscordMessageNODROP(
@@ -655,19 +684,7 @@ export function sendExtraDiscordMessageNODROP(
   webhook,
   thumbUrl
 ) {
-  const embed = {
-    title: wTitle,
-    description: message,
-    image: {
-      url: thumbUrl
-    },
-    color: colorCode,
-    footer: {
-      text: footerText
-    }
-  };
-
-  queueDiscordMessage(webhook, { content: group, embeds: [embed] });
+  queueDiscordMessage(webhook, noDropDiscordPayload(message, wTitle, colorCode, footerText, group, thumbUrl));
 }
 
 // --- DUPLICATED FUNCTIONS (NOW CENTRALIZED) ---

@@ -10,6 +10,7 @@ import { canonicalImageUrl } from './mediaUrl.js';
 import { runMigrations } from './migrationRunner.js';
 import { createMysqlClient } from './mysqlClient.js';
 import { getBooleanSetting } from '../../config/runtime.mjs';
+import { insertOutboxRows, outboxEvents } from './notificationOutbox.js';
 
 // --- DATABASE SETUP ---
 
@@ -156,15 +157,11 @@ export async function getContent(key) {
 }
 
 /**
-* Adds a new item to a key's stored list, maintaining a configurable max size (FIFO).
-* When the list is full, it removes the oldest item before adding the new one.
-* The row is locked for the read-modify-write, so concurrent calls lose nothing. AC-DATA-002
-*
-* @param {string} key - The key for the list (e.g., 'processed_se_kill_ids').
-* @param {any} newItem - The new item/value to add to the list. It will be JSON serialized.
-* @param {number} [maxSize=100] - The maximum number of items to store in the list.
-*/
-export async function setContent(key, newItem, maxSize = 100) {
+ * Runs fn(tx, list) inside one transaction that holds the row lock on a stored list, retrying on
+ * InnoDB deadlock. fn returns the list to write back, or undefined to leave the row unchanged.
+ * A corrupt or non-list value is reset to a fresh list (with a warning). AC-DATA-002
+ */
+async function updateLockedList(key, fn) {
     const client = await db();
     const maxAttempts = 5;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -176,7 +173,7 @@ export async function setContent(key, newItem, maxSize = 100) {
             } catch (error) {
                 if (error?.code !== 'ER_DUP_ENTRY') throw error;
             }
-            await client.transaction(async tx => {
+            return await client.transaction(async tx => {
                 // Lock the row for the whole read-modify-write.
                 const rows = await tx.query('SELECT `value` FROM key_value_store WHERE `key` = ? FOR UPDATE', [key]);
                 const existingJson = rows.length ? rows[0].value : null;
@@ -195,22 +192,81 @@ export async function setContent(key, newItem, maxSize = 100) {
                     }
                 }
 
-                currentList.push(newItem);
-                while (currentList.length > maxSize) currentList.shift();
+                const { list, result } = await fn(tx, currentList);
+                if (list === undefined) return result;
 
                 // A concurrent delete can remove the materialized row before this transaction.
                 if (rows.length) {
-                    await tx.query('UPDATE key_value_store SET `value` = ? WHERE `key` = ?', [JSON.stringify(currentList), key]);
+                    await tx.query('UPDATE key_value_store SET `value` = ? WHERE `key` = ?', [JSON.stringify(list), key]);
                 } else {
-                    await tx.query('REPLACE INTO key_value_store (`key`, `value`) VALUES (?, ?)', [key, JSON.stringify(currentList)]);
+                    await tx.query('REPLACE INTO key_value_store (`key`, `value`) VALUES (?, ?)', [key, JSON.stringify(list)]);
                 }
+                return result;
             });
-            return;
         } catch (error) {
             if (error?.code !== 'ER_LOCK_DEADLOCK' || attempt === maxAttempts - 1) throw error;
             await new Promise(resolve => setTimeout(resolve, 5 * 2 ** attempt));
         }
     }
+}
+
+function appendCapped(list, item, maxSize) {
+    list.push(item);
+    while (list.length > maxSize) list.shift();
+    return list;
+}
+
+/**
+* Adds a new item to a key's stored list, maintaining a configurable max size (FIFO).
+* When the list is full, it removes the oldest item before adding the new one.
+* The row is locked for the read-modify-write, so concurrent calls lose nothing. AC-DATA-002
+*
+* @param {string} key - The key for the list (e.g., 'processed_se_kill_ids').
+* @param {any} newItem - The new item/value to add to the list. It will be JSON serialized.
+* @param {number} [maxSize=100] - The maximum number of items to store in the list.
+*/
+export async function setContent(key, newItem, maxSize = 100) {
+    await updateLockedList(key, async (_tx, list) => ({ list: appendCapped(list, newItem, maxSize) }));
+}
+
+/**
+ * Claims a monitor event and enqueues its Discord notifications in one transaction
+ * (specs/tasks/2026-10-notification-outbox.md AC-1). The event ID is appended to the monitor's
+ * processed list exactly as setContent does, and one notification_outbox row is inserted per
+ * notification. An event already in the list or already in the outbox is not claimed again.
+ *
+ * @param {object} claim
+ * @param {string} claim.source - Short monitor name (e.g. 'crates'); with eventId, the outbox identity.
+ * @param {string} claim.storageKey - The monitor's processed list key (e.g. 'processed_crate_ids').
+ * @param {number} claim.historyLimit - The list's FIFO cap.
+ * @param {string|number} claim.eventId - The stable event ID, stored in the list as given.
+ * @param {string} claim.accountScope - From config/accountScope.mjs; required.
+ * @param {Array<{ settingKey: string, payload: object }>} [claim.notifications] - May be empty: the
+ *   event is still claimed (an event that produced no alert keeps its dedupe behavior).
+ * @returns {Promise<boolean>} True when this call claimed the event.
+ */
+export async function claimNotification({ source, storageKey, historyLimit, eventId, accountScope, notifications = [] }) {
+    if (!accountScope) throw new Error('[GG_DB] No active account: notifications cannot be claimed.');
+    const claimed = await updateLockedList(storageKey, async (tx, list) => {
+        if (list.some(id => String(id) === String(eventId))) return { result: false };
+        const inserted = await insertOutboxRows(tx, { source, eventId, accountScope, notifications });
+        if (inserted === false) return { result: false };
+        return { list: appendCapped(list, eventId, historyLimit), result: true };
+    });
+    if (claimed && notifications.length) outboxEvents.emit('enqueued');
+    return claimed;
+}
+
+/**
+ * Adds notifications to an event that is already claimed (e.g. ladder band results fetched after
+ * the reset alert). Parts that already exist are skipped. Returns the number of rows inserted.
+ */
+export async function appendNotifications({ source, eventId, accountScope, firstPart, notifications }) {
+    if (!accountScope) throw new Error('[GG_DB] No active account: notifications cannot be enqueued.');
+    const inserted = await (await db()).transaction(tx =>
+        insertOutboxRows(tx, { source, eventId, accountScope, notifications, firstPart, ignoreExisting: true }));
+    if (inserted) outboxEvents.emit('enqueued');
+    return inserted || 0;
 }
 
 /**

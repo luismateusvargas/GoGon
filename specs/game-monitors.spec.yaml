@@ -4,7 +4,7 @@
 spec:
   id: "game-monitors-v1"
   status: draft
-  version: "1.6.0"
+  version: "1.7.0"
   created: "2026-09-22"
   updated: "2026-10-13"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: ["data-model", "security"]
 
   changelog:
+    - version: "1.7.0"
+      date: "2026-10-13"
+      changes:
+        - "Notification outbox (specs/tasks/2026-10-notification-outbox.md): BountyBoard, Crates, GameUpdates, GuildMessages, Ladder, Relics, Shoutbox, SuperElite and Titans build each alert first, then claim the ID and store the alert together (app_modules/notify.js claimAlerts), oldest first; a failed claim stops the run so later events are not claimed ahead of it. Dedupe keys, FIFO caps and alert text are unchanged (payload builders in app_modules/discordPayload.js). An event whose alert cannot be built is still claimed without an alert, as before; alerts for an unconfigured webhook are not stored. Ladder band results are appended to the reset event once fetched; a crash between the reset claim and that fetch still loses them. GuildConflicts (live counter via message ID and edits) and QoL (no alerts) are not outbox-backed. Multi-part game updates and alerts replayed together may share one Discord message, as concurrent alerts already could."
     - version: "1.6.0"
       date: "2026-10-13"
       changes:

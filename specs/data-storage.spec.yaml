@@ -4,7 +4,7 @@
 spec:
   id: "data-storage-v1"
   status: locked
-  version: "2.2.0"
+  version: "2.3.0"
   created: "2026-09-22"
   updated: "2026-10-13"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: []
 
   changelog:
+    - version: "2.3.0"
+      date: "2026-10-13"
+      changes:
+        - "Notification outbox (specs/tasks/2026-10-notification-outbox.md): migration 014 adds notification_outbox (additive, idempotent; unique source/event_id/part; webhook setting key, never the URL). claimNotification() appends the event ID to the monitor's FIFO list and inserts its outbox rows in one transaction under the list's row lock, so a crash leaves both or neither; an ID already in the list or the outbox is not claimed again. setContent and claimNotification share one locked-list helper with the same deadlock retry. appendNotifications() adds follow-up parts to a claimed event. Store queries live in _gg_data/handler/notificationOutbox.js."
     - version: "2.2.0"
       date: "2026-10-13"
       changes:

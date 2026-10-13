@@ -1,6 +1,6 @@
 # Preserve claimed game alerts until Discord accepts them
 
-Status: ready
+Status: implemented (pending review)
 Project: specs/project.yaml
 Constitution: specs/constitution.yaml
 Related domains: specs/game-monitors.spec.yaml, specs/discord-integration.spec.yaml, specs/data-storage.spec.yaml
@@ -45,3 +45,41 @@ Migration is additive; do not delete old dedupe keys. Deploy schema before monit
 ## Open decisions and sources
 
 None blocks design; implementation inventory may reveal monitors with no stable event identity and should record them as scoped follow-up decisions. Depends on `2026-10-discord-delivery-recovery.md`. Sources: `app_modules/Crates.js`, `app_modules/GuildMessages.js`, `app_modules/BountyBoard.js`, `utils.js`, `_gg_data/migrations/`, `specs/game-monitors.spec.yaml`.
+
+## Implementation notes (2026-10-13)
+
+Branch `fix/notification-outbox`, stacked on `fix/discord-delivery-recovery` (c8226f4).
+
+### Monitor inventory (step 1)
+
+| Monitor | Dedupe key (cap) | Event ID | Outbox |
+| --- | --- | --- | --- |
+| BountyBoard | `processed_bounty_ids` (100) | bounty `id` | yes, `GG_BOUNTY_WEBHOOK` |
+| Crates | `processed_crate_ids` (100) | crate `id` | yes, `GG_CRATES_WEBHOOK` |
+| GameUpdates | `processed_update_archive_ids` (100) | news `id`; one part per 2000-char chunk | yes, `GG_NEWS_WEBHOOK` |
+| GuildMessages | `processed_guild_message_ids` (100) | message `id` | yes, `GG_GUILD_MESSAGE_WEBHOOK` |
+| Ladder | `processed_ladder_news_ids` (100) | news `id`; reset is part 0, band results parts 1..n | yes, `GG_LADDER_WEBHOOK` |
+| Relics | `processed_relic_log_ids` (500) | guild log `id` | yes, `GG_RELIC_WEBHOOK` |
+| Shoutbox | `processed_shoutbox_ids` (100) | shout `id` | yes, `GG_SHOUTBOX_WEBHOOK` |
+| SuperElite | `processed_se_kill_ids` (200) | derived `minute-player-creature` | yes, `GG_SUPER_ELITE_WEBHOOK` |
+| Titans | `processed_titan_news_ids` (100) | news `id` | yes, `GG_TITAN_WEBHOOK` |
+| GuildConflicts | `active_guild_conflicts` / `gvg_cooldowns` state objects | conflict state key | no: a live counter that posts then edits by message ID |
+| QoL | `current_gear_state` | none | no: sends no Discord alert |
+
+Scoped follow-ups (not blocking): (1) SuperElite's event ID is derived, not a game ID; a kill whose server-relative time shifts across a minute boundary between polls can still be announced twice, as before. (2) Ladder band results are fetched after the reset claim; a crash between the claim and that fetch loses them. (3) GuildConflicts' live counter still uses direct `sendAndGetMessageId`/`editDiscordMessage` without durability.
+
+### Decisions
+
+- **Claim:** `claimNotification()` locks the monitor's existing processed list row, appends the ID with its existing FIFO cap, and inserts the outbox rows in one transaction. An ID found in the list or the outbox is not claimed. An event whose alert cannot be built is claimed without a row (previous behavior). An alert for an unconfigured webhook is not stored (the module sent nothing before).
+- **Account scope:** each row carries `env` or `profile:<id>`. Only rows of the active account are dispatched; the queue rechecks the scope before each POST and releases items from another account unsent. During a switch, the old account's due rows are queued and drained first; the scope is then cleared (no claims, no sends) until the new login succeeds. Rows of an inactive account stay pending ("held") until it is active again.
+- **Retries:** one round is a full in-memory attempt from the recovery spec. Retryable outcomes (timeout, network, 5xx, rate limits exhausted) back off 60 s doubling to 30 min, for at most 12 rounds (about 3.5 h), then become `failed`. A 4xx is `failed` at once; when Discord rejects a merged batch, each row is first retried as its own message. A webhook setting removed after the claim fails the row as `unconfigured`.
+- **Owner action:** `GET /api/notifications` (counts and failed/held/retrying rows, account shown by profile label, no payload or URL) and audited `POST /api/notifications/:id/retry|discard` behind session and CSRF; shown on the dashboard Notifications tab. Discarding keeps the dedupe ID.
+- **Retention:** delivered rows are pruned after 7 days; pending and failed rows are kept.
+
+### Duplicate window (AC-3)
+
+Exactly-once delivery to Discord is not promised. An alert can be sent twice only when Discord accepts it and the process stops before the `delivered` update commits; on restart that row is still pending and is replayed once. If the update fails while the process keeps running, the row is not re-sent: the acknowledgement is retried on the next lookup. Rows claimed before this change have no outbox row, and historical processed IDs are never replayed.
+
+### Remaining release checks
+
+Node 22.20 `npm test`, the MySQL 8.4 CI job (now including `tests/discord-integration/outbox.test.mjs`), the Docker build and `docker compose config`, deploying migration 014 together with the image, and checking for held or failed rows on the dashboard after the first production run.

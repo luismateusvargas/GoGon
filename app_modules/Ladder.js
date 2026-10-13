@@ -1,13 +1,14 @@
 // app_modules/Ladder.js - Refactored for JSON API and SQLite integration
 
 import { LOG, WARN, ERR, sleep } from './core.js';
-import { secureFetch, sendExtraDiscordMessage } from '../utils.js';
-import { ladderWebhook, LadderGroup } from '../webhooks.js';
+import { secureFetch } from '../utils.js';
+import { LadderGroup } from '../webhooks.js';
+import { extraDiscordPayload } from './discordPayload.js';
+import { claimAlerts, appendAlerts, alertFor } from './notify.js';
 import { apiEndpoints } from '../game_modules/API.js';
 import { EMOJIS, DELAYS, EMBED_COLORS } from './constants.js';
 import {
-    getContent,
-    setContent
+    getContent
 } from '../_gg_data/handler/gg_database.js';
 
 // --- CONFIGURATION & STATE ---
@@ -33,8 +34,10 @@ async function loadProcessedLadderNews() {
 /**
  * Fetches the results of the previous ladder for all bands with controlled concurrency.
  * Processes bands in batches of 3 to avoid overloading the server.
+ * Each band's result is added to the reset event's outbox rows (parts 1..n) once fetched.
+ * @param {number|string} resetEventId - The claimed ladder reset news ID.
  */
-async function fetchAndAnnounceAllPreviousRankings() {
+async function fetchAndAnnounceAllPreviousRankings(resetEventId) {
     LOG('ladder', 'Fetching previous ladder rankings for all bands...');
     try {
         const initialResponse = await secureFetch(apiEndpoints.game.ladderResetScoreboard(1));
@@ -83,8 +86,9 @@ async function fetchAndAnnounceAllPreviousRankings() {
             }
         }
 
-        // 2. Sequentially send messages to avoid Discord rate-limiting
+        // 2. Sequentially enqueue messages to avoid Discord rate-limiting
         LOG('ladder', `Announcing ${allResults.length} band results to Discord...`);
+        let part = 1;
         for (const result of allResults) {
             if (!result.data.s || !result.data.r.previous || result.data.r.previous.length === 0) {
                 continue; // Skip bands with no data
@@ -99,14 +103,13 @@ async function fetchAndAnnounceAllPreviousRankings() {
 
             const message = `**Band ${band.id} (Levels ${band.level_start}-${band.level_end})**\n${playerLines}`.trim();
 
-            sendExtraDiscordMessage(
+            await appendAlerts('ladder', resetEventId, part++, [alertFor('GG_LADDER_WEBHOOK', extraDiscordPayload(
                 message, 
                 "Previous PvP Ladder Results", 
                 EMBED_COLORS.LADDER_RANKING.toString(), 
                 `Top players for Band ${band.id}`, 
-                "", 
-                ladderWebhook
-            );
+                ""
+            ))]);
 
             await sleep(DELAYS.LADDER_BETWEEN_BANDS); // Use constant
         }
@@ -145,38 +148,31 @@ export async function checkLadderReset() {
             return;
         }
 
-        // 2. IMMEDIATELY claim and save the new IDs
+        // 2. Build each reset alert, then claim the ID and enqueue the alert in one transaction
         LOG('ladder', `Found ${newResetEvents.length} new ladder reset event(s). Claiming...`);
-        for (const news of newResetEvents) {
-            await setContent(LADDER_NEWS_STORAGE_KEY, news.id, LADDER_HISTORY_LIMIT);
-        }
-        LOG('ladder', `Claimed and saved ${newResetEvents.length} new ladder reset news IDs.`);
-
-        // 3. Process each reset event (usually only one)
-        for (const news of newResetEvents) {
-            try {
+        const claimed = await claimAlerts('ladder', { storageKey: LADDER_NEWS_STORAGE_KEY, historyLimit: LADDER_HISTORY_LIMIT }, newResetEvents, {
+            idOf: news => news.id,
+            build: news => {
                 const dateTime = new Date(news.time * 1000).toLocaleString('pt-BR', { timeZone: 'Europe/London' });
                 const message = `
 :crossed_swords: **The PvP Ladder has been reset!**
 :calendar_spiral: ${dateTime}
 :trophy: Tokens have been allocated. Fetching previous ladder results...`.trim();
 
-                sendExtraDiscordMessage(
+                LOG('ladder', `Notifying PvP Ladder Reset (ID: ${news.id})`);
+                return [alertFor('GG_LADDER_WEBHOOK', extraDiscordPayload(
                     message, 
                     "PvP Ladder Reset", 
                     EMBED_COLORS.LADDER_RESET.toString(), 
                     "The battle begins anew!", 
-                    LadderGroup, 
-                    ladderWebhook
-                );
-                LOG('ladder', `Notified PvP Ladder Reset (ID: ${news.id})`);
+                    LadderGroup
+                ))];
+            },
+        });
 
-                // After announcing, fetch and post the results
-                await fetchAndAnnounceAllPreviousRankings();
-
-            } catch (e) {
-                ERR('ladder', `Failed to process ladder reset ID ${news.id}`, e);
-            }
+        // 3. After announcing, fetch and post the results (usually only one reset)
+        for (const news of claimed) {
+            await fetchAndAnnounceAllPreviousRankings(news.id);
         }
     } catch (error) {
         ERR('ladder', 'Error occurred while checking for ladder resets', error);

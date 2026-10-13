@@ -3,7 +3,8 @@
 # supplied here. Reconciliation is an opt-in local diagnostic, not a release gate;
 # no reconciliation comparison or preflight runs in CI.
 #   test   - the whole suite on Node 22 with the in-process MySQL fake and the no-network guard
-#   mysql  - the data-layer, catalog, and control-plane tests again, against a real MySQL 8.4
+#   mysql  - the data-layer, catalog, control-plane, monitor, and notification outbox tests again,
+#            against a real MySQL 8.4
 #            (includes the catalog migration upgrade tests that only run on MySQL)
 #   docker - the production image builds, compose.yaml is valid, and the bundled mysql becomes healthy
 name: CI
@@ -68,6 +69,7 @@ jobs:
           "tests/control-plane/*.test.mjs"
           "tests/game-monitors/*.test.mjs"
           "tests/discord-integration/gvg.test.mjs"
+          "tests/discord-integration/outbox.test.mjs"
           "tests/health-metrics/*.test.mjs"
 
   docker:

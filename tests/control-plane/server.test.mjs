@@ -21,6 +21,18 @@ const SECRET_WEBHOOK = 'https://discord.com/api/webhooks/123456789012345678/serv
 
 let cp, base, origin, store, engine, rebinds, clock;
 
+// The notification outbox as the dashboard sees it (notificationDispatcher describe/retry/discard).
+const outbox = {
+    actions: [],
+    activeScope: 'env',
+    rows: [],
+    async describe() {
+        return { activeScope: this.activeScope, counts: { pending: 2, held: 1, failed: 1, delivered: 5 }, oldestPendingAt: null, rows: this.rows };
+    },
+    async retry(id) { this.actions.push(['retry', id]); return id === 7; },
+    async discard(id) { this.actions.push(['discard', id]); return id === 7; },
+};
+
 function makeEngine() {
     const modules = new Map([
         ['SuperElites', { name: 'SuperElites', enabled: true, isActive: true, isRunning: false, interval: 15000, defaultInterval: 15000, lastRun: { startedAt: 1, durationMs: 20, outcome: 'ok', error: null } }],
@@ -44,7 +56,7 @@ before(async () => {
     clock = { t: Date.now() };
     const switcher = { events: new EventEmitter(), status: () => ({ state: 'idle', activeLabel: null, lastError: null }), switchTo: async () => ({ activeLabel: 'X', resumed: [] }) };
     const config = { username: ADMIN, passwordHash: HASH, sessionSecret: 'x'.repeat(48), host: '127.0.0.1', port: 0, cookieSecure: false };
-    cp = createControlPlane({ config, store, engine, switcher, rebind: async s => { rebinds.push(s); }, now: () => clock.t, healthReport: () => ({ status: 'ok' }), metrics: () => ({ system: { uptime: 1 } }) });
+    cp = createControlPlane({ config, store, engine, switcher, rebind: async s => { rebinds.push(s); }, now: () => clock.t, healthReport: () => ({ status: 'ok' }), metrics: () => ({ system: { uptime: 1 } }), notifications: outbox });
     const { port } = await cp.listen(0, '127.0.0.1');
     cp.allowHost(`127.0.0.1:${port}`);
     base = `http://127.0.0.1:${port}`;
@@ -313,4 +325,30 @@ test('AC-CTRL-005: loadControlPlaneConfig fails closed and names variables, neve
         GG_CONTROL_ENCRYPTION_KEY: crypto.randomBytes(32).toString('base64'),
     });
     assert.deepEqual([ok.host, ok.port, ok.cookieSecure], ['127.0.0.1', 8787, false]);
+});
+
+test('outbox AC-2: the owner sees failed and held alerts by account label, without payloads or scopes', async () => {
+    assert.equal((await req('GET', '/api/notifications')).status, 401);
+    const { cookie } = await login();
+    const profileId = await store.createProfile({ label: 'Outbox Alt', email: 'outbox@example.test', password: 'outbox-password-fixture' }, ADMIN);
+    outbox.rows = [
+        { id: 7, source: 'crates', eventId: '55', part: 0, accountScope: 'env', settingKey: 'GG_CRATES_WEBHOOK', state: 'failed', attempts: 1, lastError: 'client (HTTP 404)' },
+        { id: 8, source: 'relics', eventId: '56', part: 0, accountScope: `profile:${profileId}`, settingKey: 'GG_RELIC_WEBHOOK', state: 'pending', attempts: 0, lastError: null },
+    ];
+    const r = await req('GET', '/api/notifications', { cookie });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.activeAccount, '.env account');
+    assert.deepEqual(r.json.rows.map(x => [x.id, x.account, x.held]), [[7, '.env account', false], [8, 'Outbox Alt', true]]);
+    assert.ok(!('activeScope' in r.json) && r.json.rows.every(x => !('accountScope' in x) && !('payload' in x)));
+});
+
+test('outbox AC-2: retry and discard need CSRF, are audited, and 404 for anything but a failed alert', async () => {
+    const { cookie, csrf } = await login();
+    assert.equal((await req('POST', '/api/notifications/7/retry', { cookie })).status, 403);
+    assert.equal((await req('POST', '/api/notifications/7/retry', { cookie, csrf })).status, 200);
+    assert.equal((await req('POST', '/api/notifications/9/discard', { cookie, csrf })).status, 404);
+    assert.equal((await req('POST', '/api/notifications/abc/discard', { cookie, csrf })).status, 404);
+    assert.deepEqual(outbox.actions, [['retry', 7], ['discard', 9]]);
+    const audit = (await store.listAudit(10)).filter(e => e.action.startsWith('notification.'));
+    assert.deepEqual(audit.map(e => [e.action, e.subject]), [['notification.retry', '7']]);
 });

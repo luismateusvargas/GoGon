@@ -45,6 +45,15 @@
       <h2>Notifications</h2>
       <p class="muted">Webhooks, role mentions, and the guild-conflict attack ping. Changes apply to the next notification.</p>
       <div id="notifications-settings" class="settings-grid"></div>
+      <h3>Delivery</h3>
+      <p class="muted">Alerts are stored until Discord accepts them. Held alerts belong to another account and wait for it. Failed alerts need you to retry or discard them.</p>
+      <div class="toolbar"><span id="outbox-counts" class="muted"></span><button type="button" class="ghost" id="outbox-refresh">Refresh</button></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Monitor</th><th>Event</th><th>Account</th><th>Webhook setting</th><th>State</th><th>Rounds</th><th>Last error</th><th>Next attempt</th><th></th></tr></thead>
+          <tbody id="outbox-body"></tbody>
+        </table>
+      </div>
     </section>
 
     <section id="tab-settings" class="tab" hidden>

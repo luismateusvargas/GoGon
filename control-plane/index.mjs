@@ -10,6 +10,8 @@ import { getConnection } from '../_gg_data/handler/gg_database.js';
 import { getSetting, loadOverrides } from '../config/runtime.mjs';
 import * as engine from '../engine.js';
 import { drainDiscordQueue } from '../utils.js';
+import { notificationOutbox } from '../notificationDispatcher.js';
+import { setAccountScope, profileScope } from '../config/accountScope.mjs';
 import { resetSession, setCredentialProvider, login, isLoggedIn, authedFetch } from '../session.mjs';
 import { createCatalogStore } from '../_gg_data/handler/catalogStore.js';
 import { createGuideDiscoveryStore } from '../_gg_data/handler/guideDiscoveryStore.js';
@@ -61,8 +63,13 @@ export async function prepareControlPlane(env = process.env) {
     const switcher = createAccountSwitcher({
         store,
         engine: { pauseAll: engine.pauseAll, resumeAll: engine.resumeAll },
-        drainQueue: () => drainDiscordQueue(),
+        // The old account's due outbox rows are queued first, so they are sent before the switch.
+        drainQueue: async () => {
+            await notificationOutbox()?.pump();
+            return drainDiscordQueue();
+        },
         session: { resetSession, setCredentialProvider, login, isLoggedIn },
+        onAccountChange: id => setAccountScope(id === undefined ? null : profileScope(id)),
     });
     let activeLabel;
     try {

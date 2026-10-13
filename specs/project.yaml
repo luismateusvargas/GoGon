@@ -28,7 +28,7 @@ project:
   data_stores:
     - name: mysql
       owner: gogon
-      data_scope: Persistent settings, encrypted account profiles, dedupe state, audit, catalog, and game reference data.
+      data_scope: Persistent settings, encrypted account profiles, dedupe state, the notification outbox, audit, catalog, and game reference data.
     - name: process memory
       owner: gogon
       data_scope: Session cookie jar, scheduler state, Discord batch and delivery queues, in-process counters, and dashboard sessions; reset on restart.

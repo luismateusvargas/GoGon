@@ -3,9 +3,10 @@
 // Requires --experimental-test-module-mocks (set in the npm test script).
 import { test, mock, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { configureTestWebhooks, storedAlerts, clearOutbox } from '../helpers/outbox-alerts.mjs';
 
 
-const sent = [];            // Discord messages
+let sent = [];              // alerts stored in the notification outbox (see outbox-alerts.mjs)
 const fetched = [];         // secureFetch URLs
 let routes = {};            // url substring -> response body | Error | { status }
 let goldLookup, buffsLookup; // (targetId) => value | throws
@@ -22,16 +23,19 @@ function respond(url) {
 mock.module(new URL('../../utils.js', import.meta.url).href, {
     namedExports: {
         secureFetch: async (url) => respond(String(url)),
-        sendExtraDiscordMessage: (...args) => { sent.push({ kind: 'drop', args }); },
-        sendExtraDiscordMessageNODROP: (...args) => { sent.push({ kind: 'nodrop', args }); },
         getGoldInHand: async (url) => goldLookup(url),
         getBuffs: async (url, isBounty) => buffsLookup(url, isBounty),
     },
 });
 
+configureTestWebhooks();
 const db = await import('../../_gg_data/handler/gg_database.js');
-const { checkBounties, UNKNOWN } = await import('../../app_modules/BountyBoard.js');
-const { checkSuperElites } = await import('../../app_modules/SuperElite.js');
+const bountyBoard = await import('../../app_modules/BountyBoard.js');
+const superElite = await import('../../app_modules/SuperElite.js');
+const { UNKNOWN } = bountyBoard;
+// Each run is followed by reading what it stored for delivery.
+const checkBounties = async () => { await bountyBoard.checkBounties(); sent = await storedAlerts(db); };
+const checkSuperElites = async () => { await superElite.checkSuperElites(); sent = await storedAlerts(db); };
 const { autoJoinAllGroups } = await import('../../app_modules/QoL.js');
 const { apiEndpoints } = await import('../../game_modules/API.js');
 
@@ -45,7 +49,8 @@ function quiet(t) {
 
 beforeEach(async () => {
     for (const k of ['processed_bounty_ids', 'processed_se_kill_ids']) await db.deleteContent(k);
-    sent.length = 0;
+    await clearOutbox(db);
+    sent = [];
     fetched.length = 0;
     routes = {};
     goldLookup = () => 1_234_567;
@@ -145,9 +150,11 @@ test('AC-MON-006: a restarted process loads processed IDs from SQLite and does n
     // A fresh module instance stands in for a restarted process; only SQLite state carries over.
     const restarted = await import(`../../app_modules/BountyBoard.js?restart=${Date.now()}`);
     await restarted.checkBounties();
+    sent = await storedAlerts(db);
     assert.equal(sent.length, 1);
     routes[BOARD] = board(bounty(8), bounty(9));
     await restarted.checkBounties();
+    sent = await storedAlerts(db);
     assert.equal(sent.length, 2);
     assert.match(sent[1].args[0], /Target9/);
 });
@@ -165,7 +172,28 @@ test('AC-MON-006: with no prior record a module starts fresh and records new IDs
 
     const restarted = await import(`../../app_modules/SuperElite.js?restart=${Date.now()}`);
     await restarted.checkSuperElites();
+    sent = await storedAlerts(db);
     assert.equal(sent.length, 1, 'the restarted monitor remembers the kill');
+});
+
+// --- outbox AC-1: claim-and-enqueue in monitors ------------------------------------------------------
+
+test('outbox AC-1: alerts are stored oldest first with their webhook setting and account; a failed build is claimed without an alert', async (t) => {
+    const lines = quiet(t);
+    const { claimAlerts, alertFor } = await import('../../app_modules/notify.js');
+    const events = [{ id: 'e1' }, { id: 'e2' }, { id: 'e3' }];
+    const claimed = await claimAlerts('bounty', { storageKey: 'processed_bounty_ids', historyLimit: 100 }, events, {
+        idOf: e => e.id,
+        build: async e => {
+            if (e.id === 'e2') throw new Error('lookup failed');
+            return [alertFor('GG_BOUNTY_WEBHOOK', { content: '', embeds: [{ description: e.id }] }), alertFor('GG_LADDER_RANKING_WEBHOOK', {}) /* not configured: not stored */];
+        },
+    });
+    assert.deepEqual(claimed.map(e => e.id), ['e1', 'e2', 'e3']);
+    assert.deepEqual(JSON.parse(await db.getContent('processed_bounty_ids')), ['e1', 'e2', 'e3']);
+    sent = await storedAlerts(db);
+    assert.deepEqual(sent.map(a => [a.row.event_id, a.row.setting_key, a.row.account_scope]), [['e1', 'GG_BOUNTY_WEBHOOK', 'env'], ['e3', 'GG_BOUNTY_WEBHOOK', 'env']]);
+    assert.ok(lines.some(l => l.includes('event e2') && l.includes('without an alert')));
 });
 
 // --- AC-MON-004: group auto-join ---------------------------------------------------------------------

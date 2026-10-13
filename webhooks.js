@@ -49,6 +49,15 @@ export const DISCORD_MAX_RATE_LIMITS = 5; // 429 responses tolerated per message
 export const DISCORD_RATE_LIMIT_FALLBACK = 5_000; // Delay used when a 429 has no valid retry_after
 export const DISCORD_MAX_RETRY_AFTER = 60_000; // Upper bound on any single 429 pause
 
+// === Notification Outbox (specs/tasks/2026-10-notification-outbox.md) ===
+// One "round" is a full in-memory delivery attempt above (with its own bounded retries).
+export const OUTBOX_MAX_ROUNDS = 12; // Rounds before a retryable failure becomes 'failed' (about 3.5 h with the backoff below)
+export const OUTBOX_RETRY_BASE = 60_000; // Delay after the first failed round; doubles per round
+export const OUTBOX_RETRY_CAP = 30 * 60_000; // Upper bound on the delay between rounds
+export const OUTBOX_POLL_INTERVAL = 15_000; // How often due rows are looked up besides new-claim wakeups
+export const OUTBOX_BATCH_LIMIT = 50; // Rows moved into the in-memory queue per lookup
+export const OUTBOX_DELIVERED_RETENTION = 7 * 24 * 3600_000; // Delivered rows are pruned after this
+
 // === Validation ===
 // Check if critical webhooks are configured
 const requiredWebhooks = {
