@@ -1,7 +1,9 @@
-// tests/game-monitors/ladder-followups.test.mjs - specs/tasks/2026-10-notification-outbox.review-2.counter-plan.md (O5)
+// tests/game-monitors/ladder-followups.test.mjs - specs/tasks/2026-10-notification-outbox.review-2.counter-plan.md (O5),
+// review-3.counter-plan.md (O6, O7)
 // A Ladder reset is claimed before its band results are fetched. Band results interrupted by an
-// account switch (or a failed fetch) are fetched again by a later run under the account that claimed
-// the reset, each missing part is added once, and no other account stores or sends them.
+// account switch, a failed fetch or a rejected band answer are fetched again by a later run under the
+// account that claimed the reset (with backoff after repeated failures, never dropped), each missing
+// part is added once, and no other account stores or sends them.
 // utils.js network helpers are mocked with fixtures; core.js sleep() is instant.
 // Requires --experimental-test-module-mocks (set in the npm test script).
 import { test, mock, beforeEach, after } from 'node:test';
@@ -29,7 +31,7 @@ mock.module(coreUrl, { namedExports: { ...core, sleep: async ms => { await sleep
 
 configureTestWebhooks();
 const db = await import('../../_gg_data/handler/gg_database.js');
-const { checkLadderReset } = await import('../../app_modules/Ladder.js');
+const { checkLadderReset, followupRetryAt } = await import('../../app_modules/Ladder.js');
 const { apiEndpoints } = await import('../../game_modules/API.js');
 const { setAccountScope } = await import('../../config/accountScope.mjs');
 after(() => db.closeDatabase());
@@ -130,19 +132,68 @@ test('O5: a switch between band appends leaves only the missing parts to the lat
     assert.deepEqual(await followups('profile:a'), []);
 });
 
-test('O5: a band fetch that keeps failing is retried on later runs, then given up', async () => {
+test('O6: a band fetch that keeps failing stays recoverable with backoff and is added once after recovery', async () => {
     setAccountScope('profile:a');
     routes['viewing_band_id=3'] = new Error('timeout');
     await checkLadderReset();
     assert.deepEqual((await rows()).map(([, part]) => part), [0, 1, 2]);
-    assert.deepEqual(await followups('profile:a'), [{ id: RESET, attempts: 1 }]);
+    assert.deepEqual(await followups('profile:a'), [{ id: RESET, attempts: 1 }], 'retried on the next run');
 
-    for (let i = 2; i <= 5; i++) await checkLadderReset();
-    assert.deepEqual(await followups('profile:a'), [], 'given up after five failed runs');
-    assert.ok(lines.some(l => l.includes('Giving up') && l.includes(String(RESET))));
+    for (let i = 2; i <= 6; i++) await checkLadderReset();
+    const [entry] = await followups('profile:a');
+    assert.equal(entry.id, RESET, 'the unfinished reset is kept after repeated failures');
+    assert.equal(entry.attempts, 5, 'the fifth failure starts the backoff, so the sixth run fetched nothing');
+    assert.ok(entry.retryAt > Date.now(), 'the next retry waits');
+    assert.ok(lines.some(l => l.includes('still incomplete') && l.includes(String(RESET))));
     assert.deepEqual((await rows()).map(([, part]) => part), [0, 1, 2], 'no duplicate parts from the retries');
 
     routes['viewing_band_id=3'] = band(3);
+    const fetchedBands = [];
+    fetchGate = async url => { if (url.includes('viewing_band_id')) fetchedBands.push(url); };
     await checkLadderReset();
-    assert.deepEqual((await rows()).map(([, part]) => part), [0, 1, 2], 'a given-up reset is not fetched again');
+    assert.deepEqual(fetchedBands, [], 'no fetch while backing off');
+
+    switchTo('profile:b');                // B's own run never touches A's record or parts
+    await checkLadderReset();
+    assert.equal((await followups('profile:a')).length, 1);
+    assert.deepEqual((await rows()).filter(([scope]) => scope === 'profile:a').map(([, part]) => part), [0, 1, 2]);
+
+    switchTo('profile:a');
+    await db.setObject('ladder_followups@profile:a', [{ ...entry, retryAt: Date.now() - 1 }]); // the delay has passed
+    await checkLadderReset();
+    const aParts = (await rows()).filter(([scope]) => scope === 'profile:a').map(([, part]) => part);
+    assert.deepEqual(aParts, [0, 1, 2, 3], 'the missing part is added once the game answers');
+    assert.deepEqual(await followups('profile:a'), []);
+    await checkLadderReset();
+    assert.equal((await rows()).filter(([scope]) => scope === 'profile:a').length, 4, 'and only once');
+});
+
+test('O6: the retry delay doubles after the fast attempts and is capped at one day', () => {
+    const now = 1_000_000;
+    assert.equal(followupRetryAt(1, now), 0);
+    assert.equal(followupRetryAt(4, now), 0);
+    assert.equal(followupRetryAt(5, now), now + 15 * 60 * 1000);
+    assert.equal(followupRetryAt(6, now), now + 30 * 60 * 1000);
+    assert.equal(followupRetryAt(40, now), now + 24 * 60 * 60 * 1000);
+});
+
+test('O7: a rejected band answer keeps the reset unfinished; a valid empty band completes without an alert', async () => {
+    setAccountScope('profile:a');
+    routes['viewing_band_id=2'] = { s: false, e: { message: 'Not available' } };
+    routes['viewing_band_id=3'] = { s: true, r: { bands, previous: [] } };
+    await checkLadderReset();
+    assert.deepEqual(await rows(), [['profile:a', 0], ['profile:a', 1]], 'no alert for the rejected or the empty band');
+    assert.deepEqual(await followups('profile:a'), [{ id: RESET, attempts: 1 }], 'the marker stays after the rejection');
+    assert.ok(lines.some(l => l.includes('Band 2 returned no usable result')));
+
+    routes['viewing_band_id=2'] = { s: true, r: { bands, previous: 'unavailable' } }; // accepted but malformed
+    await checkLadderReset();
+    assert.deepEqual(await followups('profile:a'), [{ id: RESET, attempts: 2 }], 'a malformed answer is not a result');
+
+    routes['viewing_band_id=2'] = band(2);
+    await checkLadderReset();
+    assert.deepEqual(await rows(), [['profile:a', 0], ['profile:a', 1], ['profile:a', 2]], 'the missing part is added once; the empty band stays without one');
+    assert.deepEqual(await followups('profile:a'), []);
+    await checkLadderReset();
+    assert.equal((await rows()).length, 3);
 });

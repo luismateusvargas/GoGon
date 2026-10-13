@@ -4,7 +4,7 @@
 spec:
   id: "game-monitors-v1"
   status: draft
-  version: "1.7.0"
+  version: "1.8.0"
   created: "2026-09-22"
   updated: "2026-10-13"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: ["data-model", "security"]
 
   changelog:
+    - version: "1.8.0"
+      date: "2026-10-13"
+      changes:
+        - "Supersedes the 1.7.0 Ladder note (a crash between the reset claim and the band fetch no longer loses the band results). Notification-outbox review counter-plans O4-O8: each monitor run is bound to the account active when it starts and claims or appends nothing once another account took over. Before a Ladder reset is claimed it is recorded in that account's 'ladder_followups@<account scope>' list; each later run under that account fetches the bands of every recorded reset again and adds only the missing parts (a band's part is its position in the band list, 1..n, unique per account and event). A reset leaves the list only once every band returned a valid answer (s set; an empty ranking needs no alert) and its part was queued or already existed while the account was still active. A crash, an account switch, a failed fetch, or a rejected or malformed band answer keeps the record. An account switch does not count as a failed attempt; failed runs are retried on every poll for the first five failures, then after a delay of 15 minutes that doubles per failure up to one day. The record is never dropped for failing and stays inspectable in the key-value store; setting its retryAt to a past time retries it on the next run. Parts are never stored or sent under another account."
     - version: "1.7.0"
       date: "2026-10-13"
       changes:
@@ -133,6 +137,13 @@ domain:
     - given: Key-value store has no prior record for module
       when: Module initializes
       then: Starts fresh with empty Set and records new IDs moving forward
+    - given: A claimed Ladder reset whose band results are incomplete because of a crash, an account switch, a failed
+        fetch, or a rejected or malformed band answer
+      when: Later Ladder runs execute under the account that claimed the reset
+      then: The reset stays in that account's ladder_followups record; each run (after the first five failures, at a
+        doubling delay capped at one day) fetches the bands again and adds each missing part exactly once, and the
+        record is removed only after every band returned a valid answer and its part exists. No other account stores
+        or sends those parts.
   - id: AC-MON-007
     statement: Guild conflict incoming-attack ping (owner rule). Incoming = the enemy guild hitting us; outgoing
       = us hitting them.
@@ -324,6 +335,9 @@ acceptance_criteria:
       - given: "Key-value store has no prior record for module"
         when: "Module initializes"
         then: "Starts fresh with empty Set and records new IDs moving forward"
+      - given: "A claimed Ladder reset whose band results are incomplete because of a crash, an account switch, a failed fetch, or a rejected or malformed band answer"
+        when: "Later Ladder runs execute under the account that claimed the reset"
+        then: "The reset stays in that account's ladder_followups record; each run (after the first five failures, at a doubling delay capped at one day) fetches the bands again and adds each missing part exactly once, and the record is removed only after every band returned a valid answer and its part exists. No other account stores or sends those parts."
 
   - id: AC-MON-007
     description: "Guild conflict incoming-attack ping (owner rule). Incoming = the enemy guild hitting us; outgoing = us hitting them."
