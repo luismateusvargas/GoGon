@@ -29,7 +29,17 @@ const utils = await import('../../utils.js');
 const { loginBeforeDelivery } = await import('../../bootLogin.mjs');
 
 const client = await db.getConnection();
-const store = createNotificationOutboxStore(client);
+// Every store call is tracked, so flush() can wait for the dispatcher's own writes (a settled outcome,
+// a woken pump) to land: on MySQL 8.4 they take network round trips, not just a few event-loop turns.
+const dbCalls = new Set();
+const store = Object.fromEntries(Object.entries(createNotificationOutboxStore(client)).map(([name, fn]) => [name, (...args) => {
+    const result = fn(...args);
+    if (typeof result?.then === 'function') {
+        const done = Promise.resolve(result).catch(() => {}).finally(() => dbCalls.delete(done));
+        dbCalls.add(done);
+    }
+    return result;
+}]));
 after(() => db.closeDatabase());
 
 const LIST = { storageKey: 'processed_outbox_test_ids', historyLimit: 3 };
@@ -41,7 +51,15 @@ const claim = (eventId, over = {}) => db.claimNotification({
 const rows = () => client.query('SELECT id, source, event_id, part, account_scope, state, attempts, next_attempt_at, last_error, payload FROM notification_outbox ORDER BY id');
 /** The processed list of one account (env by default); the legacy shared list is LIST.storageKey itself. */
 const list = async (scope = 'env') => JSON.parse((await db.getContent(db.processedListKey(LIST.storageKey, scope))) ?? '[]');
-const flush = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r)); };
+/** Lets the dispatcher's pending work run until it makes no further store call. */
+async function flush() {
+    for (let round = 0; round < 100; round++) {
+        for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r));
+        if (!dbCalls.size) return;
+        await Promise.all([...dbCalls]);
+    }
+    throw new Error('the dispatcher kept calling the store');
+}
 
 let logs = [];
 beforeEach(async (t) => {
