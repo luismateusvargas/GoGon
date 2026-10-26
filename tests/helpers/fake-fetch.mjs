@@ -15,7 +15,7 @@ export function installFakeFetch(initialHandler = () => ({ status: 404, body: 'n
         const url = String(input?.url ?? input);
         const headers = new Headers(init.headers || {});
         const body = init.body == null ? '' : String(init.body);
-        const req = { url, method: (init.method || 'GET').toUpperCase(), headers, body };
+        const req = { url, method: (init.method || 'GET').toUpperCase(), headers, body, rawBody: init.body };
         calls.push(req);
         const out = await handler(req);
         const resHeaders = new Headers(out.headers || {});
@@ -28,7 +28,7 @@ export function installFakeFetch(initialHandler = () => ({ status: 404, body: 'n
         }
         const status = out.status ?? 200;
         const res = new Response([204, 301, 302, 303, 304, 307, 308].includes(status) ? null : payload, { status, headers: resHeaders });
-        Object.defineProperty(res, 'url', { value: url });
+        Object.defineProperty(res, 'url', { value: out.url || url });
         return res;
     };
 

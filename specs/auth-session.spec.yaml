@@ -4,15 +4,19 @@
 spec:
   id: "auth-session-v1"
   status: draft
-  version: "1.3.0"
+  version: "1.3.1"
   created: "2026-09-22"
-  updated: "2026-10-13"
+  updated: "2026-10-25"
 
   version_policy:
     sync_group: "security"
     depends_on: []
 
   changelog:
+    - version: "1.3.1"
+      date: "2026-10-25"
+      changes:
+        - "HuntedCow SSO now renews Cloudflare clearance through the Guide's VPS Chromium verification path, retries the challenged entry, and follows the current JSON login redirect to the game. Clearance stays process-local."
     - version: "1.3.0"
       date: "2026-10-13"
       changes:
@@ -66,6 +70,9 @@ domain:
     - given: HuntedCow SSO endpoint is unreachable or returns 5xx
       when: login() is executed
       then: Throws connection failure error without exposing password in stack trace or console
+    - given: HuntedCow challenges the SSO entry before showing the account form
+      when: login() is executed
+      then: Uses VPS Chromium verification once, retries with browser cookies and User-Agent, and reports a distinct verification error if the challenge persists
   - id: AC-AUTH-002
     statement: Validate active session proactively via ensureLogin
     scenarios:
@@ -136,7 +143,7 @@ entities:
         type: string
         constraints: [required]
         description: "HuntedCow SSO authentication endpoint."
-        example: "https://account.huntedcow.com/auth?game=6"
+        example: "https://huntedcow.com/auth?game=6"
 
   - name: CookieJarState
     description: "In-memory and file-backed cookie storage representing authenticated state."
