@@ -39,6 +39,11 @@ the game login and never opens the dashboard port. It "fails closed".
 than generating a replacement for an already configured database. Guide clearance can be entered later
 in the dashboard Settings tab; it is not a bootstrap `.env` requirement.
 
+When HuntedCow challenges game SSO, the container uses the same temporary VPS Chromium verification
+environment as Guide discovery. It keeps the resulting HuntedCow cookies and matching User-Agent only
+in the running process, then submits the account form and follows the game redirect. A verification
+failure stops boot with a HuntedCow browser error; it does not mean the account password was rejected.
+
 ## 2. Build and start
 
 ```sh

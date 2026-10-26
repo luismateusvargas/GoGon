@@ -8,6 +8,7 @@ import * as fetchCookieNS from 'fetch-cookie';
 const fetchCookie = fetchCookieNS.default ?? fetchCookieNS;
 
 import { parseHTML } from 'linkedom';
+import { renewSsoClearance, SsoClearanceError } from './ssoClearance.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -30,7 +31,7 @@ export const DEFAULT_LANG = 'en-US,en;q=0.9,pt-BR;q=0.8';
 const BASE = readEnv('GG_BASE', 'https://www.fallensword.com');
 export const GG_BASE = BASE;
 export const FS_BASE = BASE;
-export const SSO_ENTRY = readEnv('GG_SSO_URL', 'https://account.huntedcow.com/auth?game=6');
+export const SSO_ENTRY = readEnv('GG_SSO_URL', 'https://huntedcow.com/auth?game=6');
 
 // AC-AUTH-001 / constraints: each SSO step is bounded so a network partition cannot hang boot.
 export const LOGIN_STEP_TIMEOUT_MS = 15000;
@@ -58,17 +59,39 @@ export function currentCredentials() {
 
 // ---------- Cookie jar ----------
 const jar = new CookieJar();
+let ssoBrowserUserAgent = null;
 export const nativeFetch = globalThis.fetch;
 export const authedFetch = fetchCookie(nativeFetch, jar);
 
 /** Drops every game cookie, so the next request is anonymous (account switch, AC-CTRL-004). */
 export async function resetSession() {
   await jar.removeAllCookies();
+  ssoBrowserUserAgent = null;
 }
 
 // ---------- Utils ----------
 function abs(u, base = BASE) {
   try { return new URL(u, base).toString(); } catch { return String(u); }
+}
+
+function requestUserAgent(url) {
+  const host = new URL(url).hostname;
+  return (host === 'huntedcow.com' || host === 'account.huntedcow.com') && ssoBrowserUserAgent
+    ? ssoBrowserUserAgent : userAgent();
+}
+
+function safeUrl(url) {
+  const parsed = new URL(url);
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
+function hasGamePage(html) {
+  return /id\s*=\s*['"]pCC['"]/.test(html);
+}
+
+function isCloudflareChallenge(res, html) {
+  return res.headers.get('cf-mitigated') === 'challenge'
+    || (res.status === 403 && /(?:cf-chl|challenge-platform|Just a moment|Cloudflare)/i.test(html));
 }
 
 function nowTag() {
@@ -96,7 +119,7 @@ async function loginStep(url, init, tag) {
   try {
     res = await authedFetch(url, { signal: AbortSignal.timeout(LOGIN_STEP_TIMEOUT_MS), ...init });
   } catch (e) {
-    const reason = e?.name === 'TimeoutError' ? `timed out after ${LOGIN_STEP_TIMEOUT_MS}ms` : (e?.cause?.code || e?.message || 'network error');
+    const reason = e?.name === 'TimeoutError' ? `timed out after ${LOGIN_STEP_TIMEOUT_MS}ms` : (e?.cause?.code || 'network error');
     throw new Error(`Connection failure during ${tag} (${new URL(url).host}): ${reason}`);
   }
   if (res.status >= 500) {
@@ -138,7 +161,7 @@ function pickHiddenRelayForm(document) {
 
 async function getHtml(url, options = {}, tag = 'step') {
   const headers = {
-    'user-agent': userAgent(),
+    'user-agent': requestUserAgent(url),
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'accept-language': acceptLanguage(),
     'cache-control': 'no-cache',
@@ -147,7 +170,7 @@ async function getHtml(url, options = {}, tag = 'step') {
   };
   const res = await loginStep(url, { redirect: 'follow', credentials: 'include', ...options, headers }, tag);
   const html = await res.text();
-  if (isLoginDebug()) console.warn(`[login-debug] GET ${url} -> ${res.status}`);
+  if (isLoginDebug()) console.warn(`[login-debug] GET ${safeUrl(url)} -> ${res.status}`);
   await dbgDump(tag, html);
   return { res, html };
 }
@@ -155,7 +178,7 @@ async function getHtml(url, options = {}, tag = 'step') {
 async function postForm(url, body, options = {}, tag = 'post') {
   const headers = {
     'content-type': 'application/x-www-form-urlencoded',
-    'user-agent': userAgent(),
+    'user-agent': requestUserAgent(url),
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'accept-language': acceptLanguage(),
     'cache-control': 'no-cache',
@@ -164,9 +187,61 @@ async function postForm(url, body, options = {}, tag = 'post') {
   };
   const res = await loginStep(url, { method: 'POST', body, redirect: 'follow', credentials: 'include', ...options, headers }, tag);
   const html = await res.text();
-  if (isLoginDebug()) console.warn(`[login-debug] POST ${url} -> ${res.status}`);
+  if (isLoginDebug()) console.warn(`[login-debug] POST ${safeUrl(url)} -> ${res.status}`);
   await dbgDump(tag, html);
   return { res, html };
+}
+
+async function postModernSsoForm(url, form, email, password, referer) {
+  const data = new FormData();
+  const userInput = form.querySelector('input[name*="email"], input[type="email"], input[name*="user"], input[name*="login"]');
+  const passInput = form.querySelector('input[type="password"], input[name*="pass"]');
+  data.set(userInput.getAttribute('name') || 'email', email);
+  data.set(passInput.getAttribute('name') || 'password', password);
+  for (const input of form.querySelectorAll('input[type="hidden"]')) {
+    const name = input.getAttribute('name');
+    if (name) data.set(name, input.getAttribute('value') || '');
+  }
+  const res = await loginStep(url, { method: 'POST', body: data, redirect: 'follow', credentials: 'include',
+    headers: { 'user-agent': requestUserAgent(url), 'accept': 'application/json',
+      'x-requested-with': 'XMLHttpRequest', 'referer': referer, 'origin': new URL(url).origin } }, 'sso-post');
+  const html = await res.text();
+  if (isCloudflareChallenge(res, html)) throw new SsoClearanceError('HuntedCow challenged the login submission after browser verification.');
+  await dbgDump('sso-post', html);
+  return { res, html };
+}
+
+async function applySsoBrowserCookies(credentials) {
+  for (const cookie of credentials.cookies) {
+    const domain = cookie.domain.replace(/^\./, '');
+    await jar.setCookie(`${cookie.name}=${cookie.value}; Domain=${cookie.domain}; Path=${cookie.path}${cookie.secure ? '; Secure' : ''}`,
+      `https://${domain}/`);
+  }
+  ssoBrowserUserAgent = credentials.userAgent;
+}
+
+async function getSsoEntry(url, renewClearance) {
+  const options = { headers: { referer: abs('/index.php') } };
+  let entry = await getHtml(url, options, 'sso-entry');
+  if (!isCloudflareChallenge(entry.res, entry.html)) return entry;
+  const credentials = await renewClearance({ entryUrl: url });
+  await applySsoBrowserCookies(credentials);
+  entry = await getHtml(url, options, 'sso-entry-retry');
+  if (isCloudflareChallenge(entry.res, entry.html)) {
+    throw new SsoClearanceError('HuntedCow still presents a challenge after browser verification.');
+  }
+  return entry;
+}
+
+function trustedSsoRedirect(raw, base) {
+  let url;
+  try { url = new URL(raw, base); } catch {
+    throw new Error('Authentication failed: HuntedCow returned an invalid redirect.');
+  }
+  if (url.protocol !== 'https:' || !['huntedcow.com', 'account.huntedcow.com', 'www.fallensword.com'].includes(url.hostname)) {
+    throw new Error('Authentication failed: HuntedCow returned an untrusted redirect.');
+  }
+  return url.toString();
 }
 
 // ---------- Cookie bootstrap (opcional) ----------
@@ -199,7 +274,7 @@ export async function dumpDomainCookies(domainLike = 'fallensword.com') {
 // ---------- API ----------
 export async function isLoggedIn() {
   const { html } = await getHtml(abs('/index.php'), {}, 'isLoggedIn');
-  return /id\s*=\s*['"]pCC['"]/.test(html);
+  return hasGamePage(html);
 }
 
 /**
@@ -208,7 +283,7 @@ export async function isLoggedIn() {
  */
 export async function login(email = currentCredentials().email,
                             password = currentCredentials().password,
-                            { useBootstrap = true } = {}) {
+                            { useBootstrap = true, renewClearance = renewSsoClearance } = {}) {
   if (!email || !password) throw new Error('Credentials missing: define GG_EMAIL and GG_PASSWORD in .env or activate an account profile');
 
   // 0) Tenta bootstrap de cookies (se existir)
@@ -221,7 +296,7 @@ export async function login(email = currentCredentials().email,
   // 1) Abre a home
   let curUrl = abs('/index.php');
   let got = await getHtml(curUrl, {}, 'home');
-  if (/id\s*=\s*['"]pCC['"]/.test(got.html)) return true;
+  if (hasGamePage(got.html)) return true;
 
   let doc = parseHTML(got.html).document;
 
@@ -240,7 +315,7 @@ export async function login(email = currentCredentials().email,
         const n = i.getAttribute('name'); if (n) data.set(n, i.getAttribute('value') || '');
       });
       const posted = await postForm(action, data, {}, 'post-local');
-      if (/id\s*=\s*['"]pCC['"]/.test(posted.html)) return true;
+      if (hasGamePage(posted.html)) return true;
       doc = parseHTML(posted.html).document;
       const relay = pickHiddenRelayForm(doc);
       if (relay) {
@@ -250,7 +325,7 @@ export async function login(email = currentCredentials().email,
           const n = i.getAttribute('name'); if (n) relayData.set(n, i.getAttribute('value') || '');
         });
         const fin = await postForm(relayAct, relayData, {}, 'relay-local');
-        if (/id\s*=\s*['"]pCC['"]/.test(fin.html)) return true;
+        if (hasGamePage(fin.html)) return true;
       }
     }
   }
@@ -258,14 +333,32 @@ export async function login(email = currentCredentials().email,
   // 1b) Segue link para o provedor SSO (HuntedCow)
   const ssoUrl = SSO_ENTRY;
   // Referer aponta para a home do jogo, como faria um navegador
-  let sso = await getHtml(ssoUrl, { headers: { referer: abs('/index.php') } }, 'sso-entry');
+  let sso = await getSsoEntry(ssoUrl, renewClearance);
+  const providerUrl = sso.res.url || ssoUrl;
+  if (new URL(providerUrl).pathname === '/account') {
+    // The current account page calls GET /auth before presenting or submitting its sign-in
+    // panel. The captured response refreshes hcs_session_key and returns to /account.
+    const warm = await getHtml(trustedSsoRedirect('/auth', providerUrl),
+      { headers: { referer: providerUrl } }, 'sso-warm-session');
+    if (isCloudflareChallenge(warm.res, warm.html)) {
+      throw new SsoClearanceError('HuntedCow challenged the account session after browser verification.');
+    }
+    // The captured flow can resume an existing HuntedCow session after the challenge without
+    // submitting credentials again. Its game handoff sets fsId/fsSessionKey via /token.php.
+    const launch = trustedSsoRedirect('/redirect/fallen-sword', providerUrl);
+    const resumed = await getHtml(launch, { headers: { referer: providerUrl } }, 'sso-resume');
+    if (hasGamePage(resumed.html) || await isLoggedIn()) return true;
+  }
   let d2 = parseHTML(sso.html).document;
 
   // form de login no provedor
   let f2 = pickLoginForm(d2);
   if (f2) {
-    const action = abs(f2.getAttribute('action') || ssoUrl, ssoUrl);
-    const method = (f2.getAttribute('method') || 'post').toLowerCase();
+    const action = abs(f2.getAttribute('action') || providerUrl, providerUrl);
+    if (!['huntedcow.com', 'account.huntedcow.com'].includes(new URL(action).hostname)
+        || new URL(action).protocol !== 'https:') {
+      throw new Error('Authentication failed: HuntedCow returned an untrusted login form.');
+    }
     const data = new URLSearchParams();
     const userInput = f2.querySelector('input[name*="email"], input[type="email"], input[name*="user"], input[name*="login"]');
     const passInput = f2.querySelector('input[type="password"], input[name*="pass"]');
@@ -275,31 +368,57 @@ export async function login(email = currentCredentials().email,
       const n = i.getAttribute('name'); if (n) data.set(n, i.getAttribute('value') || '');
     });
 
-    const posted = await postForm(action, data, {
-      headers: { referer: ssoUrl, origin: 'https://account.huntedcow.com' }
-    }, 'sso-post');
+    const modernForm = f2.id === 'm-login-form';
+    const posted = modernForm
+      ? await postModernSsoForm(action, f2, email, password, providerUrl)
+      : await postForm(action, data, {
+        headers: { referer: providerUrl, origin: new URL(action).origin }
+      }, 'sso-post');
+
+    if (modernForm && (/application\/json/i.test(posted.res.headers.get('content-type') || '')
+        || posted.html.trimStart().startsWith('{'))) {
+      let result;
+      try { result = JSON.parse(posted.html); } catch {
+        throw new Error('Authentication failed: HuntedCow returned invalid login JSON.');
+      }
+      if (result?.auth_required === true) throw new Error('Authentication requires HuntedCow two-factor verification.');
+      if (result?.success !== true) throw new Error('Authentication failed: HuntedCow did not accept the login.');
+      let redirect = null;
+      if (typeof result.redirect === 'string') {
+        redirect = trustedSsoRedirect(result.redirect, posted.res.url || action);
+        const fin = await getHtml(redirect, { headers: { referer: providerUrl } }, 'sso-redirect');
+        if (hasGamePage(fin.html) || await isLoggedIn()) return true;
+      }
+      // The current account site can redirect to /account after signing in. Its game launch
+      // endpoint is the HAR-observed handoff through /token.php to a game session.
+      const launch = trustedSsoRedirect('/redirect/fallen-sword', providerUrl);
+      if (redirect !== launch) {
+        const fin = await getHtml(launch, { headers: { referer: providerUrl } }, 'sso-game-launch');
+        if (hasGamePage(fin.html) || await isLoggedIn()) return true;
+      }
+    }
 
     let d3 = parseHTML(posted.html).document;
     // relay de volta ao jogo
     let relay = pickHiddenRelayForm(d3);
     if (relay) {
-      const relayAct = abs(relay.getAttribute('action') || ssoUrl, ssoUrl);
+      const relayAct = abs(relay.getAttribute('action') || posted.res.url || action, posted.res.url || action);
       const relayData = new URLSearchParams();
       [...relay.querySelectorAll('input')].forEach(i => {
         const n = i.getAttribute('name'); if (n) relayData.set(n, i.getAttribute('value') || '');
       });
       const fin = await postForm(relayAct, relayData, {
-        headers: { referer: ssoUrl }
+        headers: { referer: providerUrl }
       }, 'sso-relay');
-      if (/id\s*=\s*['"]pCC['"]/.test(fin.html)) return true;
+      if (hasGamePage(fin.html)) return true;
     }
     if (await isLoggedIn()) {
       console.log('login successful');
       return true; // ✅ ADD THIS RETURN
     }
   }
-  // AC-AUTH-001: a completed SSO sequence without #pCC means the credentials were rejected.
-  throw new Error('Authentication failed: the game did not accept the configured GG_EMAIL/GG_PASSWORD (no #pCC after SSO).');
+  // A completed SSO sequence without #pCC has not established a game session.
+  throw new Error('Authentication failed: no game session (#pCC) after SSO.');
 }
 
 export async function ensureLogin(

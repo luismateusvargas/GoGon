@@ -10,7 +10,7 @@ import { installFakeFetch, formOf } from '../helpers/fake-fetch.mjs';
 const EMAIL = 'owner@example.test';
 const PASSWORD = 'correct-horse-fixture';
 const GAME = 'https://www.fallensword.com';
-const SSO = 'https://account.huntedcow.com';
+const SSO = 'https://huntedcow.com';
 
 for (const k of ['GG_BASE', 'SWS_BASE', 'FS_BASE', 'GG_SSO_URL', 'GG_LOGIN_DEBUG', 'SWS_LOGIN_DEBUG']) delete process.env[k];
 for (const k of ['EMAIL', 'PASSWORD']) for (const p of ['SWS_', 'FS_']) delete process.env[p + k];
@@ -114,6 +114,98 @@ test('AC-AUTH-001: login completes the SSO form and relay, then confirms #pCC', 
     assert.ok(fake.calls.some(c => c.url === `${GAME}/sso/relay`), 'relay form is followed back to the game');
 });
 
+test('Cloudflare-challenged SSO renews browser clearance and follows the current JSON redirect', async () => {
+    expireSession();
+    await session.resetSession();
+    let renewalCount = 0;
+    let gameSession = false;
+    let providerAuthenticated = false;
+    fake.setHandler(req => {
+        const url = new URL(req.url);
+        if (url.origin === GAME && url.pathname === '/index.php') {
+            return { body: gameSession ? loggedInPage : loggedOutPage };
+        }
+        if (url.origin === SSO && url.pathname === '/auth' && req.method === 'GET') {
+            if (!cookieOf(req, 'cf_clearance')) {
+                return { status: 403, headers: { 'cf-mitigated': 'challenge' }, body: '<p>Just a moment...</p>' };
+            }
+            assert.equal(cookieOf(req, 'cf_clearance'), 'clearance-fixture');
+            assert.equal(cookieOf(req, 'hcs_session_key'), 'session-fixture');
+            assert.equal(req.headers.get('user-agent'), 'Chromium fixture');
+            return { url: `${SSO}/account?session=fixture`, body: '<form id="m-login-form" action="/auth" method="post"><input type="email" name="email"><input type="password" name="password"></form>' };
+        }
+        if (url.origin === SSO && url.pathname === '/auth' && req.method === 'POST') {
+            assert.equal(req.headers.get('accept'), 'application/json');
+            assert.equal(req.headers.get('x-requested-with'), 'XMLHttpRequest');
+            assert.equal(req.headers.get('origin'), SSO);
+            assert.equal(req.rawBody?.get('email'), EMAIL);
+            assert.equal(req.rawBody?.get('password'), PASSWORD);
+            providerAuthenticated = true;
+            return { json: { success: true, redirect: '/account' } };
+        }
+        if (url.origin === SSO && url.pathname === '/account') return { body: '<p>Signed in to HuntedCow</p>' };
+        if (url.origin === SSO && url.pathname === '/redirect/fallen-sword') {
+            if (!providerAuthenticated) return { body: '<p>Sign in required</p>' };
+            gameSession = true;
+            return { body: '<p>Redirected to game token endpoint</p>' };
+        }
+        return { status: 404, body: 'no route' };
+    });
+
+    const { value, error } = await captureConsole(() => session.login(EMAIL, PASSWORD, {
+        renewClearance: async () => {
+            renewalCount++;
+            return { userAgent: 'Chromium fixture', cookies: [
+                { name: 'cf_clearance', value: 'clearance-fixture', domain: '.huntedcow.com', path: '/', secure: true },
+                { name: 'hcs_session_key', value: 'session-fixture', domain: 'huntedcow.com', path: '/', secure: true },
+            ] };
+        },
+    }));
+    assert.equal(error, undefined);
+    assert.equal(value, true);
+    assert.equal(renewalCount, 1);
+    assert.equal(await session.isLoggedIn(), true);
+    assert.ok(fake.calls.some(call => call.url === `${SSO}/redirect/fallen-sword`));
+    await session.resetSession();
+});
+
+test('the HuntedCow session resumed after verification can launch the game without another password POST', async () => {
+    expireSession();
+    await session.resetSession();
+    fake.setHandler(req => {
+        const url = new URL(req.url);
+        if (url.origin === GAME && url.pathname === '/index.php') {
+            return { body: cookieOf(req, 'sess') === 'signed-in-fixture' ? loggedInPage : loggedOutPage };
+        }
+        if (url.origin === GAME && url.pathname === '/token.php') {
+            return { status: 302, headers: { location: '/index.php', 'set-cookie': 'sess=signed-in-fixture; Path=/; Secure' } };
+        }
+        if (url.origin === SSO && url.pathname === '/auth' && req.method === 'GET') {
+            if (!cookieOf(req, 'cf_clearance')) {
+                return { status: 403, headers: { 'cf-mitigated': 'challenge' }, body: 'Just a moment' };
+            }
+            return { url: `${SSO}/account?session=fixture`, body: '<form id="m-login-form" action="/auth"><input type="email" name="email"><input type="password" name="password"></form>' };
+        }
+        if (url.origin === SSO && url.pathname === '/redirect/fallen-sword') {
+            return { status: 302, headers: { location: `${GAME}/token.php?token=fixture` } };
+        }
+        if (url.origin === SSO && url.pathname === '/auth' && req.method === 'POST') {
+            throw new Error('Password POST was unnecessary');
+        }
+        return { status: 404, body: 'no route' };
+    });
+    const { value, error } = await captureConsole(() => session.login(EMAIL, PASSWORD, {
+        renewClearance: async () => ({ userAgent: 'Chromium fixture', cookies: [
+            { name: 'cf_clearance', value: 'clearance-fixture', domain: '.huntedcow.com', path: '/', secure: true },
+        ] }),
+    }));
+    assert.equal(error, undefined);
+    assert.equal(value, true);
+    assert.equal(fake.calls.filter(call => call.method === 'POST').length, 0);
+    assert.equal(await session.isLoggedIn(), true);
+    await session.resetSession();
+});
+
 test('AC-AUTH-001: rejected credentials throw a descriptive error without the password', async () => {
     expireSession();
     const { error, lines } = await captureConsole(() => session.login(EMAIL, 'wrong-password-fixture'));
@@ -132,7 +224,7 @@ for (const failure of ['unreachable', 503]) {
         ssoDown = failure;
         const { error, lines } = await captureConsole(() => session.login(EMAIL, PASSWORD));
         assert.match(error?.message ?? '', /Connection failure/);
-        assert.match(error.message, /account\.huntedcow\.com/);
+        assert.match(error.message, /huntedcow\.com/);
         assert.ok(!`${error.stack}\n${lines.join('\n')}`.includes(PASSWORD));
     });
 }

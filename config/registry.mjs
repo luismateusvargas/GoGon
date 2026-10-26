@@ -107,7 +107,7 @@ export const CONFIG_DEFINITIONS = Object.freeze([
         reloadMode: 'bootstrap', validator: 'https-url', default: 'https://www.fallensword.com', owners: ['session'],
         aliases: ['GG_BASE', 'SWS_BASE', 'FS_BASE'], description: 'Game origin.' }),
     def('GG_SSO_URL', { label: 'SSO entry URL', section: 'session', type: 'string', sensitivity: 'public',
-        reloadMode: 'bootstrap', validator: 'https-url', default: 'https://account.huntedcow.com/auth?game=6', owners: ['session'],
+        reloadMode: 'bootstrap', validator: 'https-url', default: 'https://huntedcow.com/auth?game=6', owners: ['session'],
         aliases: ['GG_SSO_URL', 'SWS_SSO_URL'], description: 'HuntedCow SSO entry point.' }),
 
     // --- Guide catalog (server-owned reads with automatic browser verification) ---

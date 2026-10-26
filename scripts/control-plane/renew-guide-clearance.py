@@ -8,8 +8,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
-import cv2
 import nodriver
+from challenge_browser import click_verification
 from guide_browser_environment import prepare_browser_environment
 
 
@@ -17,8 +17,6 @@ GUIDE_URL = "https://guide.fallensword.com/index.php?cmd=items&index=0"
 GUIDE_LINK = re.compile(r'<a\b[^>]*href=["\'][^"\']*index\.php\?cmd=', re.I)
 CLEARANCE = re.compile(r"^[A-Za-z0-9._-]{1,4096}$")
 PROXY = re.compile(r"^socks5://127\.0\.0\.1:\d{1,5}$")
-LABELS = ("Verify you are human", "Confirme que \u00e9 humano")
-CHECKBOX_TEMPLATE = Path(__file__).with_name("guide-checkbox-template.png")
 
 
 async def guide_is_loaded(tab):
@@ -31,35 +29,6 @@ async def wait_for_guide(tab, seconds):
             return True
         await asyncio.sleep(2)
     return await guide_is_loaded(tab)
-
-
-async def find_verification_label(tab):
-    for label in LABELS:
-        element = await tab.find(label, timeout=10 if label == LABELS[0] else 3)
-        if element:
-            return element
-    return None
-
-
-async def click_verification(tab, profile_directory):
-    screenshot_path = profile_directory / "challenge.png"
-    await tab.save_screenshot(str(screenshot_path))
-    screenshot = cv2.imread(str(screenshot_path), cv2.IMREAD_GRAYSCALE)
-    checkbox_template = cv2.imread(str(CHECKBOX_TEMPLATE), cv2.IMREAD_GRAYSCALE)
-    if screenshot is None or checkbox_template is None:
-        raise FileNotFoundError("Guide challenge image is unavailable")
-    matches = cv2.matchTemplate(screenshot, checkbox_template, cv2.TM_CCOEFF_NORMED)
-    _, score, _, position = cv2.minMaxLoc(matches)
-    if score >= 0.75:
-        checkbox_x = position[0] + checkbox_template.shape[1] // 2
-        checkbox_y = position[1] + checkbox_template.shape[0] // 2
-        await tab.mouse_click(checkbox_x, checkbox_y)
-        return
-
-    label = await find_verification_label(tab)
-    if not label:
-        raise TimeoutError("Guide verification checkbox did not appear")
-    await label.mouse_click()
 
 
 async def renew():
