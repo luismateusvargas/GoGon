@@ -5,11 +5,12 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { freshClient, closeClients } from '../helpers/db-client.mjs';
 
 const { createCatalogStore, CatalogError } = await import('../../_gg_data/handler/catalogStore.js');
 const { createGuideDiscoveryStore } = await import('../../_gg_data/handler/guideDiscoveryStore.js');
-const { runMigrations } = await import('../../_gg_data/handler/migrationRunner.js');
+const { runMigrations, splitStatements } = await import('../../_gg_data/handler/migrationRunner.js');
 const { GUIDE_POLICY } = await import('../../catalog/contracts/policy.js');
 const REAL_MYSQL = globalThis.__GG_TEST_DATABASE__ === 'mysql';
 
@@ -32,6 +33,29 @@ async function setup() {
 
 const entity = async (db, kind, key) => (await db.query('SELECT completeness, incomplete_reason, verified_at FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [kind, String(key)]))[0];
 const guideRun = (store, observations) => store.ingest({ mode: 'guide_discovery', source: 'guide_baseline', observations });
+
+test('migration 017 preserves all completeness reasons through seed promotion on upgraded databases', async () => {
+    const { db, store } = await setup();
+    await store.ingest({ mode: 'observe_realm', source: 'game_session', observations: [
+        { kind: 'creature', payload: { id: 9001, name: 'Existing incomplete creature' } },
+    ] });
+    const previous = await entity(db, 'creature', 9001);
+    const staged = await store.recordRun({ mode: 'seed', source: 'guide_baseline', observations: [
+        { kind: 'creature', payload: { id: 9002, name: 'Seeded creature', stats: { level: 1 }, droppedItems: [{ itemId: 99999 }] } },
+    ] });
+    if (REAL_MYSQL) {
+        await db.query('ALTER TABLE catalog_entities MODIFY COLUMN incomplete_reason VARCHAR(64)');
+        await assert.rejects(store.planPromotion(staged.runId), error => error.code === 'projection_failed' && error.cause?.code === 'ER_DATA_TOO_LONG');
+    }
+    const statements = splitStatements(readFileSync(new URL('../../_gg_data/migrations/017_catalog_completeness_reason_width.sql', import.meta.url), 'utf8'));
+    for (let repeat = 0; repeat < 2; repeat++) for (const sql of statements) await db.query(sql);
+    const plan = await store.planPromotion(staged.runId);
+    await store.executePlan(plan.id, { confirmation: plan.confirmation });
+    assert.deepEqual(await entity(db, 'creature', 9002), {
+        completeness: 'incomplete', incomplete_reason: 'guide_detail_missing,required_field_missing,known_drop_unresolved', verified_at: null,
+    });
+    assert.deepEqual(await entity(db, 'creature', 9001), previous, 'widening preserves existing diagnostics');
+});
 
 test('migration 016 upgrades four-kind Guide tables without losing cursors, IDs, hashes, or serving identities', async () => {
     const { db, guide } = await setup();

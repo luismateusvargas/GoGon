@@ -4,7 +4,7 @@
 spec:
   id: "catalog-sync-v1"
   status: locked
-  version: "1.8.0"
+  version: "1.8.1"
   created: "2026-09-25"
   updated: "2026-10-30"
 
@@ -13,6 +13,10 @@ spec:
     depends_on: ["data-model", "api-surface", "security"]
 
   changelog:
+    - version: "1.8.1"
+      date: "2026-10-30"
+      changes:
+        - "Migration 017 widens catalog_entities.incomplete_reason to 128 characters: missing Guide detail, required fields, and unresolved drops combine to 65 characters and previously broke MySQL seed promotion. Regression coverage verifies the old MySQL failure, successful promotion after migration, and preservation of existing diagnostics. Migration 005 width checks are scoped to the two original catalog tables."
     - version: "1.8.0"
       date: "2026-10-30"
       changes:
@@ -504,7 +508,7 @@ entities:
       - name: incomplete_reason
         type: string
         constraints: []
-        description: "Bounded code-owned reason such as guide_detail_missing or known_drop_unresolved; NULL when complete."
+        description: "Comma-separated code-owned reasons; migration 017 allows 128 characters so the 65-character combination of missing detail, missing required fields, and unresolved drops is preserved. NULL when complete."
         example: "guide_detail_missing"
       - name: verified_at
         type: datetime
