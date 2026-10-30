@@ -88,7 +88,7 @@
     <section id="tab-catalog" class="tab" hidden>
       <h2>Catalog</h2>
       <p class="muted">Items, creatures, realms, and master realms with their source, freshness, and completeness.
-        "Complete" means the guide detail and every currently known drop were checked; it never means no other drop exists.</p>
+        "Complete" means the Guide detail, required stored fields, and known drop links were checked. Every index page is scanned on each scheduled pass, regardless of known IDs.</p>
       <nav class="subtabs" aria-label="Catalog views">
         <button type="button" data-subtab="browse" class="active">Browse</button>
         <button type="button" data-subtab="sync">Sync</button>
@@ -124,6 +124,8 @@
       <div id="catalog-sync" class="subtab" hidden>
         <h3>Guide discovery</h3>
         <p class="muted" id="guide-policy"></p>
+        <p class="muted">Configure the Guide scan interval in Settings → Catalog. Enable CatalogSync on Modules and keep the guide_discovery job running.</p>
+        <button type="button" id="guide-scan-now">Scan Guide now</button>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Kind</th><th>Status</th><th>Last complete check</th><th>Last seen ID</th><th>Sweep</th><th>Order</th><th>Details</th></tr></thead>

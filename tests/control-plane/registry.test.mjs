@@ -15,6 +15,16 @@ import { renderEnvExample } from '../../scripts/control-plane/write-env-example.
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..', '..');
 afterEach(() => loadOverrides([]));
 
+test('Guide scan interval is a persisted hot setting bounded to 1–720 whole hours', () => {
+    assert.equal(resolveSetting('GG_GUIDE_SCAN_INTERVAL_HOURS', {}).value, '24');
+    for (const value of ['1', '24', '168', '720']) assert.equal(validateSetting('GG_GUIDE_SCAN_INTERVAL_HOURS', value).ok, true, value);
+    for (const value of ['', '0', '-1', '1.5', '721', 'Infinity', 'abc']) assert.equal(validateSetting('GG_GUIDE_SCAN_INTERVAL_HOURS', value).ok, false, value);
+    applyOverride('GG_GUIDE_SCAN_INTERVAL_HOURS', '12');
+    const setting = describeSettings({}).find(def => def.key === 'GG_GUIDE_SCAN_INTERVAL_HOURS');
+    assert.equal(setting.reloadMode, 'hot');
+    assert.equal(setting.value, '12');
+});
+
 const APP_SOURCES = ['app.mjs', 'session.mjs', 'utils.js', 'engine.js', 'webhooks.js', 'discordBot.mjs', 'healthCheck.mjs', 'configValidator.mjs', 'metrics.mjs']
     .concat(fs.readdirSync(path.join(ROOT, 'app_modules')).map(f => `app_modules/${f}`))
     .concat(fs.readdirSync(path.join(ROOT, 'discord_modules')).filter(f => f.endsWith('.js')).map(f => `discord_modules/${f}`))

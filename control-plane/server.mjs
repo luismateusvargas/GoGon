@@ -294,6 +294,15 @@ export function createControlPlane({ config, store, engine, switcher, rebind = a
                     throw e;
                 }
             }
+            if (p === '/api/catalog/guide-scan') {
+                if (engine.isPaused()) throw new HttpError(409, 'The engine is paused (account switch); try again when it resumes.');
+                const body = await readJson(req);
+                allowOnly(body, []);
+                await svc.requestGuideScan();
+                await audit('catalog.guide.scan', 'guide');
+                broadcastSoon();
+                return send(res, 202, { ok: true });
+            }
             if (p === '/api/catalog/sync-now') {
                 if (engine.isPaused()) throw new HttpError(409, 'The engine is paused (account switch); try again when it resumes.');
                 const result = await catalog.runNow();

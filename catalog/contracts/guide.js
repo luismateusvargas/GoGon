@@ -4,14 +4,16 @@
 // inlined into the relay userscript (scripts/catalog/build-relay-userscript.mjs), so it has no
 // imports and only plain data and pure functions.
 //
-// New IDs can appear on any index page when a low-level item, creature, or realm is released.
-// Every active kind scans all its index pages; page counts are never fixed ceilings.
+// Entries can appear and disappear on any existing index page, including old IDs during events.
+// Every kind scans all pages and checks each encountered ID; ordering and maximum IDs never skip work.
 
 export const GUIDE_ORIGIN = 'https://guide.fallensword.com';
-export const GUIDE_KINDS = Object.freeze(['item', 'creature', 'realm', 'master_realm']);
+export const GUIDE_KINDS = Object.freeze(['item', 'creature', 'realm', 'master_realm', 'relic', 'quest']);
 
 /** Code-owned URL shapes. Only a non-negative page index or a positive ID is ever substituted. */
 export const GUIDE_URLS = Object.freeze({
+    relic: Object.freeze({ index: '/index.php?cmd=relics&index={page}', detail: '/index.php?cmd=relics&subcmd=view&relic_id={id}', idParam: 'relic_id' }),
+    quest: Object.freeze({ index: '/index.php?cmd=quests&index={page}', detail: '/index.php?cmd=quests&subcmd=view&quest_id={id}', idParam: 'quest_id' }),
     item: Object.freeze({
         index: '/index.php?cmd=items&index={page}',
         detail: '/index.php?cmd=items&subcmd=view&item_id={id}',

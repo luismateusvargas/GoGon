@@ -21,6 +21,7 @@ export const VALIDATORS = {
     boolean: v => (v === '0' || v === '1' ? null : 'Must be 0 or 1.'),
     port: v => (/^\d{1,5}$/.test(v) && +v > 0 && +v < 65536 ? null : 'Must be a TCP port (1-65535).'),
     'positive-integer': v => (/^\d{1,12}$/.test(v) && +v > 0 ? null : 'Must be a positive whole number.'),
+    'guide-scan-hours': v => (/^\d{1,3}$/.test(v) && +v >= 1 && +v <= 720 ? null : 'Must be a whole number of hours from 1 to 720.'),
     snowflake: v => (SNOWFLAKE.test(v) ? null : 'Must be a Discord ID (17-20 digits).'),
     'optional-snowflake': v => (v === '' || SNOWFLAKE.test(v) ? null : 'Must be empty or a Discord ID (17-20 digits).'),
     'conflict-mention': v => (v === 'none' || v === '@everyone' || SNOWFLAKE.test(v)
@@ -111,6 +112,9 @@ export const CONFIG_DEFINITIONS = Object.freeze([
         aliases: ['GG_SSO_URL', 'SWS_SSO_URL'], description: 'HuntedCow SSO entry point.' }),
 
     // --- Guide catalog (server-owned reads with automatic browser verification) ---
+    def('GG_GUIDE_SCAN_INTERVAL_HOURS', { label: 'Guide scan interval (hours)', section: 'catalog', type: 'integer', sensitivity: 'public',
+        reloadMode: 'hot', validator: 'guide-scan-hours', default: '24', owners: ['CatalogSync'],
+        description: 'Scan all Guide index pages, check every listed ID against stored completeness, and fill missing information. Complete entries are skipped. Applies without restarting.' }),
     def('GG_GUIDE_CLEARANCE', { label: 'Guide clearance', section: 'catalog', type: 'secret', sensitivity: 'secret',
         reloadMode: 'hot', validator: 'guide-clearance', owners: ['CatalogSync'],
         description: 'Optional existing clearance. GoGon obtains a fresh one automatically when needed.' }),

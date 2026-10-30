@@ -13,6 +13,7 @@ import { createGuideRelay, hashToken, TOKEN_PREFIX, MAX_RELAY_BODY, SERVER_WORKE
 import { createCatalogService } from '../../catalog/catalogService.js';
 import { runLease, relayCycle } from '../../catalog/relayClient.js';
 import { GUIDE_POLICY } from '../../catalog/contracts/policy.js';
+import { applyOverride } from '../../config/runtime.mjs';
 import { buildRelayUserscript, OUTPUT } from '../../scripts/catalog/build-relay-userscript.mjs';
 
 after(() => closeClients());
@@ -22,26 +23,34 @@ const CHALLENGE = fs.readFileSync('tests/catalog-sync/fixtures/cloudflare-challe
 /** A guide with newest-first indexes of PER_PAGE entries and detail pages built from `db` records. */
 function createSite() {
     const site = {
-        ids: { item: [17050, 17049, 17048, 17047, 17046, 17045, 17044], creature: [7002, 7001], realm: [1200], master_realm: [5] },
+        ids: { item: [17050, 17049, 17048, 17047, 17046, 17045, 17044], creature: [7002, 7001], realm: [1200], master_realm: [5], relic: [8], quest: [501] },
         challengeAt: null,                    // { kind, page } to answer with a Cloudflare challenge
         ascending: false,                     // serve an ascending (order-violating) index
         emptyPage: null,                      // { kind, page } to answer with an empty page
         repeatFinalPage: true,                // the live guide repeats its final page past the end
         changedLayout: null,                  // { kind, id } whose detail page is a guide page in a layout the parser does not know
         itemName: id => `Item ${id}`,
+        omitCreatureStats: false,
         requests: [],
         perPage: PER_PAGE,                    // index entries per page
     };
-    const cmd = { item: 'items', creature: 'creatures', realm: 'realms', master_realm: 'masterrealms' };
-    const param = { item: 'item_id', creature: 'creature_id', realm: 'realm_id', master_realm: 'masterrealm_id' };
+    const cmd = { item: 'items', creature: 'creatures', realm: 'realms', master_realm: 'masterrealms', relic: 'relics', quest: 'quests' };
+    const param = { item: 'item_id', creature: 'creature_id', realm: 'realm_id', master_realm: 'masterrealm_id', relic: 'relic_id', quest: 'quest_id' };
     const nav = '<div><a href="index.php?cmd=items">Items</a></div>';
     const page = body => `<html><body>${nav}<table>${body}</table></body></html>`;
     const details = {
+        relic: id => page(`<tr><td class="tHeader"><b>Stone of Echoes</b></td></tr>
+            <tr><td><a href="index.php?cmd=realms&subcmd=view&realm_id=1200">Mountain Path</a></td></tr>
+            <tr><td class="tHeader"><b>Bonuses</b></td></tr><tr><td>Attack: 5%</td></tr>`),
+        quest: id => page(`<tr><td class="tHeader"><b>The Golem's Heart (Min Level: 1)</b></td></tr>
+            <tr><td><a href="index.php?cmd=realms&subcmd=view&realm_id=1200">Mountain Path</a></td></tr>
+            <tr><td class="tHeader"><b>Description</b></td></tr><tr><td>Find the heart.</td></tr>
+            <tr><td class="tHeader"><b>Rewards</b></td></tr><tr><td>100 XP</td></tr>`),
         item: id => page(`<tr><td class="tHeader" colspan="10"><b>${site.itemName(id)}</b> (Rare)</td></tr>
             <tr><td class="tHeader" colspan="10"><b>Statistics</b></td></tr><tr><td>Level:</td><td>10</td></tr>
             <tr><td class="tHeader" colspan="10"><b>Dropped By</b></td></tr><tr><td>Creature ${id === 17048 ? 7001 : 7002} (Beast):</td><td>1%</td></tr>`),
         creature: id => page(`<tr><td class="tHeader" colspan="10"><b>Creature ${id}</b></td></tr>
-            <tr><td>Level:</td><td>5</td></tr>
+            ${site.omitCreatureStats ? '' : '<tr><td>Level:</td><td>5</td></tr>'}
             <tr><td><a href="index.php?cmd=items&subcmd=view&item_id=${id === 7001 ? 17048 : 17049}">drop</a></td></tr>
             <tr><td><a href="index.php?cmd=realms&subcmd=view&realm_id=1200">Mountain Path</a></td></tr>`),
         realm: id => page(`<tr><td class="tHeader" colspan="10"><b>Mountain Path (Min Level: 1)</b></td></tr>
@@ -124,7 +133,7 @@ test('CAT-TASK-014: existing snapshot items and creatures enter guide coverage d
 
     await guideStore.recordIndexIds('item', [17050, 17049]);
     assert.ok(Date.parse((await guideStore.getIdState('item', 17050)).nextDetailAt) <= clock.t);
-    assert.ok(Date.parse((await guideStore.getIdState('item', 17049)).nextDetailAt) > clock.t, 'a read detail waits for the next weekly check');
+    assert.ok(Date.parse((await guideStore.getIdState('item', 17049)).nextDetailAt) > clock.t, 'a fulfilled detail retains rollback bookkeeping');
 });
 
 test('server guide worker has a stable lease identity without an external bearer token', async () => {
@@ -265,7 +274,7 @@ test('CAT-TASK-013 / AC-CAT-012: level-sorted items discover a new low-level ID 
     assert.equal((await guideStore.getIdState('item', 17052)).status, 'ok', 'its detail was read in the same check');
 });
 
-test('CAT-TASK-013 / CAT-TASK-014 / AC-CAT-012: a weekly scan finds low-level creature and realm IDs and rereads known details once', async () => {
+test('AC-CAT-012: a daily scan finds low-level creature and realm IDs and skips fulfilled details', async () => {
     const { store, guideStore, site, drain, clock } = await setup();
     await enableJob(store);
     await drain();
@@ -282,54 +291,224 @@ test('CAT-TASK-013 / CAT-TASK-014 / AC-CAT-012: a weekly scan finds low-level cr
     assert.deepEqual(indexPages('realms'), [0, 1, 2]);
     assert.equal((await guideStore.getIdState('creature', 7003)).status, 'ok');
     assert.equal((await guideStore.getIdState('realm', 1201)).status, 'ok');
-    assert.equal(site.requests.filter(url => /subcmd=view&creature_id=7001$/.test(url)).length, 1);
-    assert.equal(site.requests.filter(url => /subcmd=view&realm_id=1200$/.test(url)).length, 1);
+    assert.equal(site.requests.filter(url => /subcmd=view&creature_id=7001$/.test(url)).length, 0);
+    assert.equal(site.requests.filter(url => /subcmd=view&realm_id=1200$/.test(url)).length, 0);
 });
 
-test('CAT-TASK-014 / AC-CAT-011: each weekly check reads every known detail, creatures and items first, then idles for a week', async () => {
+test('AC-CAT-011: the daily schedule scans every index while fulfilled details stay skipped', async () => {
     const { store, guideStore, site, drain, clock } = await setup();
     await enableJob(store);
     await drain();
-    assert.equal(GUIDE_POLICY.checkIntervalMs, 7 * 24 * 3600_000);
-    const known = { item: site.ids.item.length, creature: site.ids.creature.length, realm: site.ids.realm.length, master_realm: site.ids.master_realm.length };
+    assert.equal(GUIDE_POLICY.checkIntervalMs, 24 * 3600_000);
 
-    // Six days later nothing is due: no guide request at all.
+    // Before the daily interval, nothing is due.
     site.requests.length = 0;
-    clock.t += 6 * 24 * 3600_000;
+    clock.t += 23 * 3600_000;
     assert.equal((await drain()).at(-1).status, 'idle');
     assert.equal(site.requests.length, 0);
 
-    // A week after the check, every index is swept and every known detail is read exactly once.
-    clock.t += 24 * 3600_000;
+    // At the daily interval, every index is swept without rereading fulfilled details.
+    clock.t += 3600_000;
     await drain();
     const detailReads = kind => site.requests.filter(url => url.includes(`cmd=${kind}&subcmd=view`));
-    assert.equal(detailReads('items').length, known.item, 'no per-lease refresh cap');
-    assert.equal(detailReads('creatures').length, known.creature);
-    assert.equal(detailReads('realms').length, known.realm);
-    assert.equal(detailReads('masterrealms').length, known.master_realm);
-    const firstDetail = site.requests.findIndex(url => url.includes('subcmd=view'));
-    assert.ok(site.requests.slice(0, firstDetail).every(url => url.includes('&index=')), 'all indexes are swept before details');
-    const order = [...new Set(site.requests.slice(firstDetail).map(url => new URL(url).searchParams.get('cmd')))];
-    assert.deepEqual(order, ['creatures', 'items', 'masterrealms', 'realms']);
+    for (const kind of ['items', 'creatures', 'realms', 'masterrealms', 'relics', 'quests']) {
+        assert.equal(detailReads(kind).length, 0, kind);
+        assert.ok(site.requests.some(url => url.includes(`cmd=${kind}&index=0`)), `${kind} starts at page zero`);
+    }
     for (const kind of ['item', 'creature', 'realm', 'master_realm']) {
         const s = await state(guideStore, kind);
         assert.equal(s.status, 'idle', kind);
     }
 });
 
-test('AC-CAT-012 error case: an edited older record is re-read when due and staged as a new observation', async () => {
-    const { db, store, site, drain, clock } = await setup();
+test('event creatures on a later page are captured before other indexes, and survive event removal', async () => {
+    const { db, store, guideStore, site, clock, drain, cycle } = await setup();
     await enableJob(store);
     await drain();
-    const runs = await count(db, 'catalog_runs');
+    site.ids.creature.splice(1, 0, 6000); // low ID in the middle, not a new high-water mark
+    site.perPage = 1;
+    site.requests.length = 0;
+    clock.t += GUIDE_POLICY.checkIntervalMs;
+    await cycle(); // master realms
+    await cycle(); // realms
+    const discovery = await cycle();
+    assert.equal(discovery.lease.kind, 'creature');
+    assert.equal((await guideStore.getIdState('creature', 6000)).status, 'pending');
+    const detail = await cycle();
+    assert.equal(detail.lease.kind, 'creature');
+    assert.deepEqual(detail.lease.work, [{ type: 'detail', id: 6000 }]);
+    assert.equal((await guideStore.getIdState('creature', 6000)).status, 'ok');
+    assert.ok(!site.requests.some(url => /cmd=items&index=/.test(url)), 'event detail precedes item index backlog');
+    await drain();
+    site.ids.creature = site.ids.creature.filter(id => id !== 6000);
+    clock.t += GUIDE_POLICY.checkIntervalMs;
+    site.requests.length = 0;
+    await drain();
+    assert.equal((await db.query('SELECT name FROM creatures WHERE id = 6000'))[0].name, 'Creature 6000');
+    assert.ok(!site.requests.some(url => /subcmd=view&creature_id=6000$/.test(url)), 'fulfilled event detail is retained without rereading it');
+});
+
+test('every encountered ID is checked for stored completeness, including previously read IDs of all six kinds', async () => {
+    const { db, store, guideStore, site, clock, drain } = await setup();
+    await enableJob(store);
+    await drain();
+    const before = await guideStore.getIdState('creature', 7001);
+    assert.equal(before.status, 'ok');
+    // Simulate missing stored fields while the old detail hash and complete flags remain. None
+    // of these IDs is new, and none is at a new high-water mark or on a new index page.
+    await db.query('UPDATE creatures SET stats = NULL WHERE id = 7001');
+    await db.query('UPDATE items SET name = NULL WHERE id = 17048');
+    await db.query('UPDATE items SET stats = NULL, enhancements = NULL WHERE id = 17048');
+    await db.query('UPDATE realms SET min_level = NULL WHERE id = 1200');
+    await db.query('UPDATE master_realms SET connected_realms = NULL WHERE id = 5');
+    await db.query('UPDATE relics SET details = NULL WHERE name = ?', ['Stone of Echoes']);
+    await db.query('UPDATE quests SET details = NULL WHERE name = ?', ["The Golem's Heart"]);
+    clock.t += GUIDE_POLICY.checkIntervalMs;
+    site.requests.length = 0;
+    await drain();
+    for (const [kind, id, key, cmd, param] of [
+        ['creature', 7001, '7001', 'creatures', 'creature_id'], ['item', 17048, '17048', 'items', 'item_id'],
+        ['realm', 1200, '1200', 'realms', 'realm_id'], ['master_realm', 5, '5', 'masterrealms', 'masterrealm_id'],
+        ['relic', 8, '1200:Stone of Echoes', 'relics', 'relic_id'], ['quest', 501, "1200:The Golem's Heart", 'quests', 'quest_id'],
+    ]) {
+        assert.equal(site.requests.filter(url => url.includes(`cmd=${cmd}&subcmd=view&${param}=${id}`)).length, 1, `${kind} fills existing incomplete ID`);
+        assert.equal((await db.query('SELECT completeness FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [kind, key]))[0].completeness, 'complete', kind);
+    }
+    assert.equal((await guideStore.getIdState('creature', 7001)).hash, before.hash, 'unchanged source content repairs missing stored data');
+    assert.equal(site.requests.filter(url => /subcmd=view&creature_id=7002$/.test(url)).length, 0, 'complete sibling is skipped');
+    const service = createCatalogService({ db, store, guideStore });
+    assert.equal((await service.listEntities({ kind: 'relic', completeness: 'complete' })).total, 1);
+    assert.equal((await service.getEntity('quest', "1200:The Golem's Heart")).guide.status, 'ok');
+});
+
+test('a parsed detail with missing required stats stays incomplete and can be fulfilled on a later scan', async () => {
+    const { db, store, site, clock, drain } = await setup();
+    await enableJob(store);
+    await drain();
+    await db.query('UPDATE creatures SET stats = NULL WHERE id = 7001');
+    site.omitCreatureStats = true;
+    clock.t += GUIDE_POLICY.checkIntervalMs;
+    await drain();
+    let [entity] = await db.query("SELECT completeness, incomplete_reason FROM catalog_entities WHERE entity_kind = 'creature' AND entity_key = '7001'");
+    assert.equal(entity.completeness, 'incomplete');
+    assert.match(entity.incomplete_reason, /required_field_missing/);
+    site.omitCreatureStats = false;
+    clock.t += GUIDE_POLICY.checkIntervalMs;
+    await drain();
+    [entity] = await db.query("SELECT completeness FROM catalog_entities WHERE entity_kind = 'creature' AND entity_key = '7001'");
+    assert.equal(entity.completeness, 'complete');
+});
+
+test('an unrecognized quest detail leaves stored data incomplete rather than declaring success', async () => {
+    const { db, store, guideStore, site, clock, drain } = await setup();
+    await enableJob(store);
+    await drain();
+    await db.query('UPDATE quests SET details = NULL');
+    site.changedLayout = { kind: 'quest', id: 501 };
+    clock.t += GUIDE_POLICY.checkIntervalMs;
+    await drain();
+    const state = await guideStore.getIdState('quest', 501);
+    assert.equal(state.attempts, 1);
+    assert.equal((await db.query("SELECT completeness FROM catalog_entities WHERE entity_kind = 'quest'"))[0].completeness, 'incomplete');
+});
+
+test('rolling back a relic detail invalidates the Guide ID while preserving its existing serving identity', async () => {
+    const { db, store, guideStore, drain } = await setup();
+    await enableJob(store);
+    await drain();
+    const key = '1200:Stone of Echoes';
+    const [before] = await db.query('SELECT id FROM relics WHERE realm_id = ? AND name = ?', [1200, 'Stone of Echoes']);
+    const [entity] = await db.query("SELECT last_run_id FROM catalog_entities WHERE entity_kind = 'relic' AND entity_key = ?", [key]);
+    const plan = await store.planRollback(entity.last_run_id);
+    await store.executePlan(plan.id, { confirmation: plan.confirmation });
+    const [after] = await db.query('SELECT id, details FROM relics WHERE realm_id = ? AND name = ?', [1200, 'Stone of Echoes']);
+    assert.equal(after.id, before.id);
+    assert.equal(after.details, null);
+    assert.equal((await guideStore.getIdState('relic', 8)).status, 'pending');
+    assert.equal((await db.query("SELECT completeness FROM catalog_entities WHERE entity_kind = 'relic' AND entity_key = ?", [key]))[0].completeness, 'incomplete');
+});
+
+test('a returning event entry whose detail was missing becomes eligible immediately', async () => {
+    const { store, guideStore, site, relay, drain, cycle } = await setup();
+    await enableJob(store);
+    await drain();
+    await guideStore.markDetail('creature', 7001, { outcome: 'missing' }, GUIDE_POLICY);
+    await relay.requestScan();
+    site.requests.length = 0;
+    await cycle();
+    await cycle();
+    await cycle();
+    const captured = await cycle();
+    assert.deepEqual(captured.lease.work, [{ type: 'detail', id: 7001 }]);
+    assert.equal((await guideStore.getIdState('creature', 7001)).status, 'ok');
+});
+
+test('the scan interval changes live for the same worker and dashboard status', async () => {
+    const { db, store, guideStore, relay, clock, drain, site } = await setup();
+    await enableJob(store);
+    await drain();
+    const service = createCatalogService({ db, store, guideStore, relay, now: () => clock.t });
+    clock.t += 2 * 3600_000;
+    assert.equal((await service.stateSummary()).guide[0].due, false);
+    applyOverride('GG_GUIDE_SCAN_INTERVAL_HOURS', '2');
+    try {
+        assert.ok((await service.stateSummary()).guide.every(s => s.due));
+        assert.equal((await service.summary()).policy.guide.checkIntervalMs, 2 * 3600_000);
+        site.requests.length = 0;
+        await drain();
+        assert.ok(site.requests.length > 0);
+        assert.ok(site.requests.every(url => url.includes('&index=')), 'fulfilled details are skipped on the shorter schedule too');
+    } finally { applyOverride('GG_GUIDE_SCAN_INTERVAL_HOURS', null); }
+});
+
+test('a forced scan retries incomplete failures scheduled under an older, longer interval', async () => {
+    const { db, store, guideStore, relay, site, drain, clock } = await setup();
+    await enableJob(store);
+    await drain();
+    await db.query("UPDATE catalog_guide_ids SET detail_status = 'failed', next_detail_at = ? WHERE entity_kind = 'item' AND entity_id = 17048",
+        [new Date(clock.t + 7 * GUIDE_POLICY.checkIntervalMs).toISOString()]);
+    await relay.requestScan();
+    site.requests.length = 0;
+    await drain();
+    assert.equal((await guideStore.getIdState('item', 17048)).status, 'ok');
+    assert.equal(site.requests.filter(url => /subcmd=view&item_id=17048$/.test(url)).length, 1);
+    assert.equal(site.requests.filter(url => /subcmd=view&item_id=17049$/.test(url)).length, 0, 'fulfilled sibling stays skipped');
+});
+
+test('Scan Guide now schedules all indexes without duplicating a current lease or resetting its cursor', async () => {
+    const { store, guideStore, relay, tokenId, clock, cycle, drain, site } = await setup();
+    await assert.rejects(relay.requestScan(), error => error.code === 'conflict');
+    const job = await enableJob(store);
+    await drain();
+    await relay.requestScan();
+    assert.ok((await guideStore.listStates()).every(s => s.lastSuccessfulCheckAt === null));
+    const { lease } = await relay.nextLease(tokenId);
+    const before = await guideStore.getState(lease.kind);
+    await relay.requestScan();
+    assert.deepEqual(await guideStore.getState(lease.kind), before);
+    assert.equal((await relay.nextLease(tokenId)).lease.leaseId, lease.leaseId);
+    await cycle();
+    site.requests.length = 0;
+    await drain();
+    assert.ok(site.requests.every(url => url.includes('&index=')));
+    assert.ok((await guideStore.listStates()).every(s => Date.parse(s.lastSuccessfulCheckAt) === clock.t));
+    await store.transitionJob(job, 'paused');
+    await assert.rejects(relay.requestScan(), error => error.code === 'conflict');
+});
+
+test('AC-CAT-012: fulfilled details are skipped; an explicitly incomplete older record can be filled again', async () => {
+    const { db, site, drain, clock, store } = await setup();
+    await enableJob(store);
+    await drain();
     clock.t += GUIDE_POLICY.detailRefreshAfterMs;
     await drain();
-    const unchangedRuns = await count(db, 'catalog_runs');
     site.itemName = id => (id === 17044 ? 'Item 17044 (renamed)' : `Item ${id}`);
     clock.t += GUIDE_POLICY.detailRefreshAfterMs;
     await drain();
+    assert.equal((await db.query('SELECT name FROM items WHERE id = 17044'))[0].name, 'Item 17044', 'completed details stay skipped');
+    await db.query("UPDATE catalog_guide_ids SET detail_status = 'pending' WHERE entity_kind = 'item' AND entity_id = 17044");
+    await drain();
     assert.equal((await db.query('SELECT name FROM items WHERE id = 17044'))[0].name, 'Item 17044 (renamed)');
-    assert.ok(unchangedRuns - runs <= 2, 'an unchanged refresh stages little or nothing');
 });
 
 test('AC-CAT-011 error case: a Cloudflare challenge pauses the sweep at that page; the checkpoint is kept and resumes', async () => {
@@ -510,7 +689,7 @@ async function detailLeaseSetup() {
 test('AC-CAT-012 error case: a retry with different results than the lease staged checkpoints nothing; the page is read again', async () => {
     const { db, guideStore, relay, tokenId, site, clock, read, failCheckpointOnce } = await detailLeaseSetup();
     const before = await guideStore.getIdState('item', 17048);
-    await db.query("UPDATE catalog_guide_ids SET next_detail_at = ? WHERE entity_kind = 'item' AND entity_id = 17048", [new Date(clock.t).toISOString()]);
+    await db.query("UPDATE catalog_guide_ids SET detail_status = 'pending', next_detail_at = ? WHERE entity_kind = 'item' AND entity_id = 17048", [new Date(clock.t).toISOString()]);
     site.itemName = id => (id === 17048 ? 'Version A' : `Item ${id}`);
     const { lease } = await relay.nextLease(tokenId);
     assert.deepEqual(lease.work, [{ type: 'detail', id: 17048 }]);
@@ -623,7 +802,7 @@ test('AC-CAT-014 / AC-CAT-015: a lease whose pages would not fit in one submissi
     const cut = posts.find(p => p.requests > p.results);
     assert.ok(cut && cut.results < GUIDE_POLICY.maxRequestsPerExecution, 'the relay stopped before the batch would not fit');
     assert.equal(cut.requests, cut.results + 1, 'the page it read but left out is still reported');
-    assert.equal(Number((await ctx.db.query("SELECT COUNT(*) AS n FROM catalog_guide_ids WHERE entity_kind = 'item'"))[0].n), 6000);
+    assert.equal(Number((await ctx.db.query("SELECT COUNT(*) AS n FROM catalog_guide_ids WHERE entity_kind = 'item' AND last_index_seen_at IS NOT NULL"))[0].n), 6000);
     assert.equal(await ctx.guideStore.usage(), ctx.site.requests.length, 'every guide request is counted, none twice');
 });
 
@@ -671,7 +850,7 @@ test('AC-CAT-015 error case: a first page over a server limit lower than the lea
 test('AC-CAT-015 error case: after a failed submission the relay resends what it read; it never reads the lease again', async () => {
     const ctx = await detailLeaseSetup();
     const { db, guideStore, site, clock, failCheckpointOnce } = ctx;
-    await db.query("UPDATE catalog_guide_ids SET next_detail_at = ? WHERE entity_kind = 'item' AND entity_id = 17048", [new Date(clock.t).toISOString()]);
+    await db.query("UPDATE catalog_guide_ids SET detail_status = 'pending', next_detail_at = ? WHERE entity_kind = 'item' AND entity_id = 17048", [new Date(clock.t).toISOString()]);
     const deps = relayDeps(ctx);
     const usage0 = await guideStore.usage();
     const reads0 = site.requests.length;
@@ -692,7 +871,7 @@ test('AC-CAT-015 error case: after a failed submission the relay resends what it
 test('AC-CAT-015: a relay that lost its saved results and reads the lease again is charged for that read', async () => {
     const ctx = await detailLeaseSetup();
     const { db, guideStore, site, clock, failCheckpointOnce } = ctx;
-    await db.query("UPDATE catalog_guide_ids SET next_detail_at = ? WHERE entity_kind = 'item' AND entity_id = 17048", [new Date(clock.t).toISOString()]);
+    await db.query("UPDATE catalog_guide_ids SET detail_status = 'pending', next_detail_at = ? WHERE entity_kind = 'item' AND entity_id = 17048", [new Date(clock.t).toISOString()]);
     const deps = relayDeps(ctx);
     const usage0 = await guideStore.usage();
     const reads0 = site.requests.length;

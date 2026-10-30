@@ -4,7 +4,8 @@
 // strict filters. Job commands go through the store's transitions; a game job kind whose read
 // contract is unverified is refused. Destructive work is plan-preview-confirm (catalogStore).
 import { CatalogError } from '../_gg_data/handler/catalogStore.js';
-import { GUIDE_POLICY, GAME_POLICY, fullSweepEstimate } from './contracts/policy.js';
+import { GAME_POLICY, fullSweepEstimate } from './contracts/policy.js';
+import { getGuidePolicy } from './guidePolicy.js';
 import { GUIDE_ORDERING } from './contracts/guide.js';
 import { readOperations, unavailableReason } from './requestPolicy.js';
 import { describeSeedSources } from './sourceRegistry.js';
@@ -20,7 +21,7 @@ const SERVING = {
     creature: { table: 'creatures', list: ['id', 'name', 'imageUrl'], detail: ['id', 'name', 'imageUrl', 'description', 'stats', 'enhancements', 'droppedItems'], json: ['stats', 'enhancements', 'droppedItems'] },
     realm: { table: 'realms', list: ['id', 'name', 'min_level', 'master_realm_id'], detail: ['id', 'name', 'min_level', 'master_realm_id', 'shops', 'connections', 'map_objects'], json: ['shops', 'connections', 'map_objects'] },
     master_realm: { table: 'master_realms', list: ['id', 'name'], detail: ['id', 'name', 'connected_realms'], json: ['connected_realms'] },
-    relic: { table: 'relics', list: ['id', 'name', 'realm_id'], detail: ['id', 'name', 'realm_id'], json: [], natural: true },
+    relic: { table: 'relics', list: ['id', 'name', 'realm_id'], detail: ['id', 'name', 'realm_id', 'details'], json: ['details'], natural: true },
     quest: { table: 'quests', list: ['id', 'name', 'realm_id', 'min_level'], detail: ['id', 'name', 'realm_id', 'min_level', 'details'], json: ['details'], natural: true },
 };
 const INT_COLUMNS = new Set(['id', 'min_level', 'master_realm_id', 'setId', 'realm_id']);
@@ -62,20 +63,28 @@ export function createCatalogService({ db, store, guideStore, collector = null, 
     }
 
     function guideStatus(state, t, seen) {
+        const policy = getGuidePolicy();
         const last = state.lastSuccessfulCheckAt ? Date.parse(state.lastSuccessfulCheckAt) : null;
         const age = last === null ? null : t - last;
-        const due = age === null || age >= GUIDE_POLICY.checkIntervalMs;
-        const overdue = age === null ? Boolean(state.sweepStartedAt) : age >= 2 * GUIDE_POLICY.checkIntervalMs;
+        const due = age === null || age >= policy.checkIntervalMs;
+        const overdue = age === null ? Boolean(state.sweepStartedAt) : age >= 2 * policy.checkIntervalMs;
         const browserRecent = seen && t - Date.parse(seen) < 30 * 60_000;
         let display = state.status;
         if (state.status === 'idle' || state.status === 'partial') {
             if (due && !browserRecent) display = 'waiting_for_browser';
             else if (state.status === 'idle') display = due ? 'due' : 'ok';
         }
-        return { ...state, due, overdue, display };
+        return { ...state, due, overdue, display, nextCheckAt: last === null ? null : new Date(last + policy.checkIntervalMs).toISOString() };
     }
 
     return {
+        /** Schedules index discovery through the existing Guide worker; completed details stay fulfilled.
+         * @returns {Promise<void>} Rejects when Guide discovery is unavailable or paused.
+         */
+        async requestGuideScan() {
+            if (!relay) throw new CatalogError('conflict', 'Guide discovery is unavailable.');
+            await relay.requestScan();
+        },
         /** Light summary for the SSE dashboard state. */
         async stateSummary() {
             const t = now();
@@ -106,12 +115,12 @@ export function createCatalogService({ db, store, guideStore, collector = null, 
                 coverage: await guideStore.coverage(),
                 guideRequestsToday: await guideStore.usage(),
                 relayTokens: relay ? await relay.listTokens() : [],
-                policy: { game: GAME_POLICY, guide: GUIDE_POLICY, ordering: GUIDE_ORDERING, fullSweep: fullSweepEstimate() },
+                policy: { game: GAME_POLICY, guide: getGuidePolicy(), ordering: GUIDE_ORDERING, fullSweep: fullSweepEstimate() },
             };
         },
 
         /**
-         * AC-CAT-007: one page of a kind. filters: q (name substring), completeness (item/creature).
+         * AC-CAT-007: one page of a kind. filters: q (name substring), completeness (all Guide kinds).
          * @returns {Promise<{ kind, page, pageSize, total, items: object[] }>}
          */
         async listEntities({ kind, q = null, completeness = null, page = 1, pageSize = 25 }) {
@@ -119,14 +128,14 @@ export function createCatalogService({ db, store, guideStore, collector = null, 
             if (!(Number.isInteger(page) && page >= 1 && page <= MAX_PAGE)) throw invalid(`page must be 1-${MAX_PAGE}.`, 'page');
             if (!(Number.isInteger(pageSize) && pageSize >= 1 && pageSize <= MAX_PAGE_SIZE)) throw invalid(`pageSize must be 1-${MAX_PAGE_SIZE}.`, 'pageSize');
             if (q !== null && (typeof q !== 'string' || q.length < 1 || q.length > 64)) throw invalid('q must be 1-64 characters.', 'q');
-            if (completeness !== null && !(COMPLETENESS.includes(completeness) && (kind === 'item' || kind === 'creature'))) throw invalid('completeness is complete or incomplete, for items and creatures.', 'completeness');
+            if (completeness !== null && !COMPLETENESS.includes(completeness)) throw invalid('completeness is complete or incomplete.', 'completeness');
             const spec = SERVING[kind];
             const cols = spec.list.map(c => `s.\`${c}\``).join(', ');
             const where = [];
             const params = [];
             let from = `${spec.table} s`;
             if (completeness) {
-                from += ' JOIN catalog_entities e ON e.entity_kind = ? AND e.entity_key = s.id';
+                from += ` JOIN catalog_entities e ON e.entity_kind = ? AND e.entity_key = ${spec.natural ? "CONCAT(s.realm_id, ':', s.name)" : 's.id'}`;
                 params.push(kind);
                 where.push('e.completeness = ?');
                 params.push(completeness);
@@ -192,7 +201,7 @@ export function createCatalogService({ db, store, guideStore, collector = null, 
             } else if (kind === 'item') {
                 relations.droppedBy = (await db.query('SELECT c.id, c.name FROM creature_drops cd JOIN creatures c ON c.id = cd.creature_id WHERE cd.item_id = ? ORDER BY c.id LIMIT 200', [id])).map(r => ({ id: Number(r.id), name: r.name }));
             }
-            const guide = ['item', 'creature', 'realm', 'master_realm'].includes(kind) ? await guideStore.getIdState(kind, id) : null;
+            const guide = spec.natural ? await guideStore.getStateForEntityKey(kind, k) : await guideStore.getIdState(kind, id);
             return {
                 kind, key: k, fields, relations, provenance,
                 catalog: s ? {

@@ -43,6 +43,7 @@ function respond(url, init) {
     const p = u.pathname;
     if (p === '/api/session') return { csrf: 'csrf-token' };
     if (p === '/api/catalog/summary') return SUMMARY;
+    if (p === '/api/catalog/guide-scan') return { ok: true };
     if (p === '/api/catalog/entities') return { kind: u.searchParams.get('kind'), page: 1, pageSize: 25, total: 1, items: [{ key: '7001', id: 7001, name: HOSTILE, catalog: { completeness: 'incomplete', incompleteReasons: ['known_drop_unresolved'], lastSeenAt: '2026-09-28T11:00:00.000Z' } }] };
     if (p === '/api/catalog/entities/creature/7001') {
         return { kind: 'creature', key: '7001', fields: { id: 7001, name: HOSTILE, description: '<script>steal()</script>', stats: { level: 5 } }, relations: { realms: [{ id: 1200, name: '<b>Path</b>' }], drops: [] },
@@ -82,6 +83,18 @@ const click = node => node.dispatchEvent(new ui.Event('click', { bubbles: true }
 
 test('CAT-TASK-006: the dashboard script never parses markup', () => {
     for (const sink of [/\.innerHTML\b/, /\.outerHTML\b/, /insertAdjacentHTML/, /document\.write/, /\beval\(/, /new Function\(/]) assert.doesNotMatch(APP, sink);
+});
+
+test('Scan Guide now uses the existing scheduler and describes incomplete-only detail fetching', async () => {
+    click(ui.document.querySelector('.tabs button[data-tab="catalog"]'));
+    await flush();
+    assert.match($('#guide-policy').textContent, /Completed details are skipped/);
+    click($('#guide-scan-now'));
+    await flush();
+    const request = requests.find(r => r.url === '/api/catalog/guide-scan');
+    assert.equal(request.method, 'POST');
+    assert.deepEqual(JSON.parse(request.body), {});
+    assert.equal(request.headers['X-CSRF-Token'], 'csrf-token');
 });
 
 test('AC-CAT-008: guide status, overdue checks, and job availability come from the state stream', () => {

@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const OUTPUT = path.join(ROOT, 'reconciliation', 'scrappers', 'gogon_guide_relay.user.js');
 export const MODULES = ['catalog/contracts/guide.js', 'catalog/contracts/classify.js', 'catalog/guideParsers.js', 'catalog/relayClient.js'];
-export const VERSION = '1.0.2';
+export const VERSION = '1.0.3';
 
 const HEADER = `// ==UserScript==
 // @name         GoGon Guide Relay

@@ -102,7 +102,7 @@ test('AC-DATA-001: the project migrations create the expected tables, once per p
         'notification_outbox']) {
         assert.ok(await tableExists(client, t), `missing table ${t}`);
     }
-    assert.deepEqual(await versions(client), ['001_initial_schema.sql', '002_control_plane.sql', '003_catalog_sync.sql', '004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql', '011_master_realm_connections.mjs', '012_media_host.mjs', '013_guide_weekly_full_pass.sql', '014_notification_outbox.sql', '015_outbox_account_identity.mjs']);
+    assert.deepEqual(await versions(client), ['001_initial_schema.sql', '002_control_plane.sql', '003_catalog_sync.sql', '004_serving_relations.mjs', '005_catalog_key_width.sql', '006_catalog_discovery.sql', '007_catalog_discovery_columns.mjs', '008_catalog_relay.sql', '009_guide_repeated_page.mjs', '010_guide_full_index_scan.sql', '011_master_realm_connections.mjs', '012_media_host.mjs', '013_guide_weekly_full_pass.sql', '014_notification_outbox.sql', '015_outbox_account_identity.mjs', '016_guide_entity_completeness.mjs']);
 });
 
 // --- AC-DATA-002: FIFO lists -----------------------------------------------------------------------

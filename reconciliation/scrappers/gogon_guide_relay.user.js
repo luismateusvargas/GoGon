@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoGon Guide Relay
 // @namespace    gogon
-// @version      1.0.2
+// @version      1.0.3
 // @description  Reads the guide pages GoGon asks for (one at a time) and sends parsed records to your GoGon control plane over 127.0.0.1.
 // @match        https://guide.fallensword.com/*
 // @grant        GM_xmlhttpRequest
@@ -28,14 +28,16 @@
     // inlined into the relay userscript (scripts/catalog/build-relay-userscript.mjs), so it has no
     // imports and only plain data and pure functions.
     //
-    // New IDs can appear on any index page when a low-level item, creature, or realm is released.
-    // Every active kind scans all its index pages; page counts are never fixed ceilings.
+    // Entries can appear and disappear on any existing index page, including old IDs during events.
+    // Every kind scans all pages and checks each encountered ID; ordering and maximum IDs never skip work.
 
     const GUIDE_ORIGIN = 'https://guide.fallensword.com';
-    const GUIDE_KINDS = Object.freeze(['item', 'creature', 'realm', 'master_realm']);
+    const GUIDE_KINDS = Object.freeze(['item', 'creature', 'realm', 'master_realm', 'relic', 'quest']);
 
     /** Code-owned URL shapes. Only a non-negative page index or a positive ID is ever substituted. */
     const GUIDE_URLS = Object.freeze({
+        relic: Object.freeze({ index: '/index.php?cmd=relics&index={page}', detail: '/index.php?cmd=relics&subcmd=view&relic_id={id}', idParam: 'relic_id' }),
+        quest: Object.freeze({ index: '/index.php?cmd=quests&index={page}', detail: '/index.php?cmd=quests&subcmd=view&quest_id={id}', idParam: 'quest_id' }),
         item: Object.freeze({
             index: '/index.php?cmd=items&index={page}',
             detail: '/index.php?cmd=items&subcmd=view&item_id={id}',
@@ -395,7 +397,7 @@
         return {
             id, name, minLevel,
             shops: linkList(doc, 'shop_id').map(s => ({ shopId: s.id, shopName: s.name })),
-            relics: linkList(doc, 'relic_id').map(r => r.name).filter(Boolean),
+            relics: linkList(doc, 'relic_id').filter(r => r.name).map(r => ({ relicId: r.id, relicName: r.name })),
             quests: linkList(doc, 'quest_id').map(q => ({ questId: q.id, questName: q.name })).filter(q => q.questName),
             creatures: linkList(doc, 'creature_id').map(c => ({ creatureId: c.id, creatureName: c.name })),
             stairways,
@@ -416,7 +418,48 @@
         };
     }
 
-    const DETAIL_PARSERS = { item: parseItemDetail, creature: parseCreatureDetail, realm: parseRealmDetail, master_realm: parseMasterRealmDetail };
+    // Relics and quests retain structured text sections, never executable page HTML. Unknown layouts
+    // stay incomplete: a name alone or a list of links is not a successful detail read.
+    function parseLocatedDetail(doc, id) {
+        const { name, minLevel } = headerNameAndLevel(doc);
+        const realms = linkList(doc, 'realm_id');
+        if (!name || !realms.length) return null;
+        const table = doc.querySelector('.tHeader b')?.closest('table');
+        const sections = [];
+        let section = null;
+        for (const row of table?.querySelectorAll('tr') ?? []) {
+            const heading = cleanText(row.querySelector('.tHeader')?.textContent);
+            if (heading) {
+                section = /statistics|bonuses|description|requirements|rewards|details|story|tasks|steps|quest/i.test(heading)
+                    && !heading.includes(name) ? { heading, text: '' } : null;
+                if (section && sections.length < 64) sections.push(section);
+                continue;
+            }
+            if (!section) continue;
+            const text = cleanText(row.textContent, 8192);
+            if (text) section.text = cleanText(`${section.text} ${text}`, 8192);
+        }
+        const populated = sections.filter(section => section.text);
+        if (!populated.length) return null;
+        if (new TextEncoder().encode(JSON.stringify(populated)).length > 12000) return null;
+        return { id, name, minLevel, realmId: realms[0].id, realmName: realms[0].name, sections: populated };
+    }
+
+    /** Parses a located relic record; unknown layouts return null.
+     * @param {Document} doc Guide document.
+     * @param {number} id Guide ID.
+     * @returns {object|null} Structured detail.
+     */
+    function parseRelicDetail(doc, id) { return parseLocatedDetail(doc, id); }
+
+    /** Parses a located quest record; unknown layouts return null.
+     * @param {Document} doc Guide document.
+     * @param {number} id Guide ID.
+     * @returns {object|null} Structured detail.
+     */
+    function parseQuestDetail(doc, id) { return parseLocatedDetail(doc, id); }
+
+    const DETAIL_PARSERS = { item: parseItemDetail, creature: parseCreatureDetail, realm: parseRealmDetail, master_realm: parseMasterRealmDetail, relic: parseRelicDetail, quest: parseQuestDetail };
 
     // --- inlined from catalog/relayClient.js ---
     // catalog/relayClient.js - CAT-TASK-010 / AC-CAT-011, AC-CAT-014 (catalog-sync-v1 1.3.0)

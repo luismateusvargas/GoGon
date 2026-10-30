@@ -33,9 +33,36 @@ async function setup() {
 const entity = async (db, kind, key) => (await db.query('SELECT completeness, incomplete_reason, verified_at FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [kind, String(key)]))[0];
 const guideRun = (store, observations) => store.ingest({ mode: 'guide_discovery', source: 'guide_baseline', observations });
 
+test('migration 016 upgrades four-kind Guide tables without losing cursors, IDs, hashes, or serving identities', async () => {
+    const { db, guide } = await setup();
+    await guide.recordIndexIds('creature', [7001]);
+    await guide.markDetail('creature', 7001, { outcome: 'ok', hash: 'a'.repeat(64) }, GUIDE_POLICY);
+    await guide.updateState('creature', { sweepMode: 'full', nextPage: 17, sweepPagesChecked: 17, sweepMaxId: 7001 });
+    const before = await guide.getState('creature');
+    await db.query('INSERT INTO realms (id, name) VALUES (?, ?)', [1200, 'Legacy Realm']);
+    await db.query('INSERT INTO relics (id, realm_id, name) VALUES (?, ?, ?)', [909, 1200, 'Legacy Relic']);
+    // Recreate the old schema around real stored state, rather than testing an empty database only.
+    await db.query('ALTER TABLE catalog_guide_ids DROP INDEX catalog_guide_ids_entity_key');
+    await db.query('ALTER TABLE catalog_guide_ids DROP COLUMN entity_key');
+    await db.query('ALTER TABLE relics DROP COLUMN details');
+    await db.query("DELETE FROM catalog_guide_state WHERE entity_kind IN ('relic', 'quest')");
+    for (const table of ['catalog_guide_state', 'catalog_guide_ids', 'catalog_guide_leases']) await db.query(
+        `ALTER TABLE ${table} DROP CHECK \`${table}_kind_chk\`, ADD CONSTRAINT ${table}_old_kind_chk CHECK (entity_kind IN ('item', 'creature', 'realm', 'master_realm'))`);
+    await assert.rejects(db.query('INSERT INTO catalog_guide_state (entity_kind, updated_at) VALUES (?, ?)', ['quest', 'now']), error => error.code === 'ER_CHECK_CONSTRAINT_VIOLATED');
+    const { up } = await import('../../_gg_data/migrations/016_guide_entity_completeness.mjs');
+    await up(db);
+    await up(db);
+    assert.deepEqual(await guide.getState('creature'), before);
+    assert.equal((await guide.getIdState('creature', 7001)).hash, 'a'.repeat(64));
+    assert.deepEqual((await db.query('SELECT id, realm_id, name, details FROM relics'))[0], { id: 909, realm_id: 1200, name: 'Legacy Relic', details: null });
+    await guide.recordIndexIds('quest', [501]);
+    assert.equal((await guide.getIdState('quest', 501)).status, 'pending');
+    await assert.rejects(db.query('INSERT INTO catalog_guide_state (entity_kind, updated_at) VALUES (?, ?)', ['unknown', 'now']), error => error.code === 'ER_CHECK_CONSTRAINT_VIOLATED');
+});
+
 test('CAT-TASK-009: migrations 006/007 add discovery state, completeness columns, and guide_discovery; re-run is a no-op', async () => {
     const { db, store, guide } = await setup();
-    assert.deepEqual((await guide.listStates()).map(s => s.entityKind), ['creature', 'item', 'master_realm', 'realm']);
+    assert.deepEqual((await guide.listStates()).map(s => s.entityKind), ['creature', 'item', 'master_realm', 'quest', 'realm', 'relic']);
     const s = await guide.getState('item');
     assert.equal(s.lastSeenId, 0);
     assert.equal(s.lastSuccessfulCheckAt, null);
@@ -154,7 +181,7 @@ test('CAT-TASK-009 / AC-CAT-011: index IDs become pending details; details refre
     assert.deepEqual((await guide.markDetail('item', 10, { outcome: 'ok', hash: 'a'.repeat(64) }, GUIDE_POLICY)), { changed: true });
     assert.deepEqual(await guide.dueDetails('item', 10), [20, 30, 31], 'a fresh detail is not due');
     clock.t += GUIDE_POLICY.detailRefreshAfterMs;
-    assert.deepEqual((await guide.dueDetails('item', 10))[3], 10, 'refreshes come after never-read IDs');
+    assert.deepEqual(await guide.dueDetails('item', 10), [20, 30, 31, 10], 'a successful page read without a complete catalog record still needs filling');
     assert.deepEqual(await guide.markDetail('item', 10, { outcome: 'ok', hash: 'a'.repeat(64) }, GUIDE_POLICY), { changed: false }, 'same content');
     clock.t += GUIDE_POLICY.detailRefreshAfterMs;
     assert.deepEqual(await guide.markDetail('item', 10, { outcome: 'ok', hash: 'b'.repeat(64) }, GUIDE_POLICY), { changed: true }, 'an edited older record is detected (AC-CAT-012)');
@@ -193,12 +220,12 @@ test('CAT-TASK-009 / AC-CAT-013: completeness follows guide detail status and kn
     // A minimal record from an index page: incomplete until its detail is read.
     await guide.recordIndexIds('item', [17048]);
     await guideRun(store, [{ kind: 'item', payload: { id: 17048, name: 'Montmarr Helm' } }]);
-    assert.deepEqual({ ...(await entity(db, 'item', 17048)) }, { completeness: 'incomplete', incomplete_reason: 'guide_detail_missing', verified_at: null });
+    assert.deepEqual({ ...(await entity(db, 'item', 17048)) }, { completeness: 'incomplete', incomplete_reason: 'guide_detail_missing,required_field_missing', verified_at: null });
 
     // A creature whose detail lists a drop the catalog does not have yet.
     await guide.markDetail('creature', 7001, { outcome: 'ok', hash: 'c'.repeat(64) }, GUIDE_POLICY);
     const checkedAt = (await guide.getIdState('creature', 7001)).checkedAt;
-    await guideRun(store, [{ kind: 'creature', payload: { id: 7001, name: 'Montmarr the Dragon Golem', stats: { level: 1250 }, droppedItems: [{ itemId: 17048 }, { itemId: 99999 }] } }]);
+    await guideRun(store, [{ kind: 'creature', payload: { id: 7001, name: 'Montmarr the Dragon Golem', stats: { level: 1250 }, enhancements: [], droppedItems: [{ itemId: 17048 }, { itemId: 99999 }] } }]);
     assert.deepEqual({ ...(await entity(db, 'creature', 7001)) }, { completeness: 'incomplete', incomplete_reason: 'known_drop_unresolved', verified_at: checkedAt });
 
     // The missing drop arrives: the waiting creature is rechecked without being re-observed.
@@ -207,7 +234,7 @@ test('CAT-TASK-009 / AC-CAT-013: completeness follows guide detail status and kn
 
     // An item whose detail is valid and whose "Dropped By" names resolve (class suffix stripped).
     await guide.markDetail('item', 17048, { outcome: 'ok', hash: 'd'.repeat(64) }, GUIDE_POLICY);
-    await guideRun(store, [{ kind: 'item', payload: { id: 17048, name: 'Montmarr Helm', droppedBy: [{ creatureName: 'Montmarr the Dragon Golem (Dragon LE)', dropRate: 0.5 }] } }]);
+    await guideRun(store, [{ kind: 'item', payload: { id: 17048, name: 'Montmarr Helm', stats: { level: 1250 }, enhancements: [], droppedBy: [{ creatureName: 'Montmarr the Dragon Golem (Dragon LE)', dropRate: 0.5 }] } }]);
     assert.equal((await entity(db, 'item', 17048)).completeness, 'complete');
     await guideRun(store, [{ kind: 'item', payload: { id: 17048, name: 'Montmarr Helm', droppedBy: [{ creatureName: 'Unknown Wisp', dropRate: 2 }] } }]);
     assert.equal((await entity(db, 'item', 17048)).incomplete_reason, 'known_drop_unresolved');
@@ -222,14 +249,14 @@ test('CAT-TASK-009 / AC-CAT-013: completeness follows guide detail status and kn
     assert.equal((await db.query('SELECT COUNT(*) AS n FROM items WHERE id = 99999'))[0].n, 0);
     assert.equal((await entity(db, 'creature', 7001)).incomplete_reason, 'known_drop_unresolved');
 
-    // Realms and other kinds carry no completeness.
+    // Every Guide kind now has completeness, including previously untracked realm details.
     await guideRun(store, [{ kind: 'realm', payload: { id: 1200, name: 'Mountain Path' } }]);
-    assert.equal((await entity(db, 'realm', 1200)).completeness, null);
+    assert.equal((await entity(db, 'realm', 1200)).completeness, 'incomplete');
     // A failed detail after the retry limit is reported as such.
     await guide.recordIndexIds('item', [5]);
     for (let i = 0; i < GUIDE_POLICY.maxDetailAttempts; i++) await guide.markDetail('item', 5, { outcome: 'failed' }, GUIDE_POLICY);
     await guideRun(store, [{ kind: 'item', payload: { id: 5, name: 'Five' } }]);
-    assert.equal((await entity(db, 'item', 5)).incomplete_reason, 'guide_detail_failed');
-    // Item 5 itself, plus creature 7001, which still waits on an unresolved drop; the realm is skipped.
-    assert.equal(await store.refreshCompleteness([['item', '5'], ['realm', '1200']]), 2);
+    assert.equal((await entity(db, 'item', 5)).incomplete_reason, 'guide_detail_failed,required_field_missing');
+    // Item 5, the explicitly requested realm, and creature 7001 waiting on its unresolved drop.
+    assert.equal(await store.refreshCompleteness([['item', '5'], ['realm', '1200']]), 3);
 });

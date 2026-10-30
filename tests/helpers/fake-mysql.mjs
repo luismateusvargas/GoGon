@@ -40,6 +40,7 @@ export function resetFakeMysql() {
 function database(name) {
     if (!databases.has(name)) {
         const db = new DatabaseSync(':memory:');
+        db.function('CONCAT', { varargs: true }, (...values) => values.some(value => value === null) ? null : values.join(''));
         db.exec(`CREATE TABLE ${FAKE_CONSTRAINTS} (CONSTRAINT_SCHEMA TEXT NOT NULL DEFAULT 'fake', TABLE_NAME TEXT NOT NULL,
             CONSTRAINT_NAME TEXT NOT NULL, CONSTRAINT_TYPE TEXT NOT NULL DEFAULT 'FOREIGN KEY', PRIMARY KEY (TABLE_NAME, CONSTRAINT_NAME))`);
         db.exec(`CREATE TABLE ${FAKE_CHECKS} (CONSTRAINT_SCHEMA TEXT NOT NULL, CONSTRAINT_NAME TEXT NOT NULL, CHECK_CLAUSE TEXT NOT NULL)`);
@@ -178,6 +179,35 @@ function execute(db, sql, params = []) {
         throw Object.assign(new Error(`connect ${fakeMysql.unavailable}`), { code: fakeMysql.unavailable });
     }
     if (!Array.isArray(params)) throw untranslatable(sql, 'non-array parameters');
+    // SQLite cannot ALTER a CHECK. Rebuild the three independent Guide tables, preserving rows
+    // and indexes, so expansion is actually enforced by the fake as well as by MySQL CI.
+    const guideCheck = sql.match(/^ALTER TABLE (catalog_guide_state|catalog_guide_ids|catalog_guide_leases) (?:(?:DROP CHECK `([^`]+)`, )?)ADD CONSTRAINT (\w+) CHECK \(([\s\S]+)\)$/i);
+    if (guideCheck) {
+        const [, table, oldName, newName, clause] = guideCheck;
+        const original = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table).sql;
+        const old = oldName ? db.prepare(`SELECT CHECK_CLAUSE AS clause FROM ${FAKE_CHECKS} WHERE CONSTRAINT_NAME = ?`).get(oldName) : null;
+        const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL").all(table);
+        const temporary = `${table}_check_update`;
+        let create = original.replace(/^(CREATE TABLE\s+)(?:IF NOT EXISTS\s+)?(?:"[^"]+"|`[^`]+`|\w+)/i, `$1${temporary}`);
+        if (old) create = create.replace(old.clause, clause);
+        else create = create.replace(/\)\s*$/, `, CONSTRAINT ${newName} CHECK (${clause}))`);
+        db.exec('SAVEPOINT guide_check_update');
+        try {
+            db.exec(create);
+            db.exec(`INSERT INTO ${temporary} SELECT * FROM ${table}`);
+            db.exec(`DROP TABLE ${table}`);
+            db.exec(`ALTER TABLE ${temporary} RENAME TO ${table}`);
+            for (const index of indexes) db.exec(index.sql);
+            if (oldName) {
+                db.prepare(`DELETE FROM ${FAKE_CONSTRAINTS} WHERE TABLE_NAME = ? AND CONSTRAINT_NAME = ?`).run(table, oldName);
+                db.prepare(`DELETE FROM ${FAKE_CHECKS} WHERE CONSTRAINT_NAME = ?`).run(oldName);
+            }
+            db.prepare(`INSERT INTO ${FAKE_CONSTRAINTS} (TABLE_NAME, CONSTRAINT_NAME, CONSTRAINT_TYPE) VALUES (?, ?, 'CHECK')`).run(table, newName);
+            db.prepare(`INSERT INTO ${FAKE_CHECKS} (CONSTRAINT_SCHEMA, CONSTRAINT_NAME, CHECK_CLAUSE) VALUES ('fake', ?, ?)`).run(newName, clause);
+            db.exec('RELEASE guide_check_update');
+            return [{ affectedRows: 0, insertId: 0 }, undefined];
+        } catch (error) { db.exec('ROLLBACK TO guide_check_update'); db.exec('RELEASE guide_check_update'); throw error; }
+    }
     const statements = translate(sql);
     let result = statements.length ? undefined : [{ affectedRows: 0, insertId: 0 }, undefined];
     for (const [i, statement] of statements.entries()) {

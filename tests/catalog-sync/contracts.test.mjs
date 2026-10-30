@@ -21,6 +21,7 @@ test('CAT-TASK-001: guide URLs match the supplied scrapers and accept only bound
     const scrapers = ['fallen_sword_item_scraper.js', 'fallen_sword_creature_scraper.js', 'fallen_sword_realm_scraper.js']
         .map(f => fs.readFileSync(path.resolve('reconciliation/scrappers', f), 'utf8')).join('\n');
     for (const [kind, spec] of Object.entries(GUIDE_URLS)) {
+        if (kind === 'relic' || kind === 'quest') continue; // added by the all-entity Guide workflow
         for (const phase of ['index', 'detail']) {
             const shape = spec[phase].split('{')[0];
             assert.ok(scrapers.includes(shape), `${kind} ${phase} URL shape comes from a supplied scraper`);
@@ -28,6 +29,8 @@ test('CAT-TASK-001: guide URLs match the supplied scrapers and accept only bound
     }
     assert.equal(guideUrl('item', 'index', 0), 'https://guide.fallensword.com/index.php?cmd=items&index=0');
     assert.equal(guideUrl('master_realm', 'detail', 5), 'https://guide.fallensword.com/index.php?cmd=masterrealms&subcmd=view&masterrealm_id=5');
+    assert.equal(guideUrl('relic', 'detail', 8), 'https://guide.fallensword.com/index.php?cmd=relics&subcmd=view&relic_id=8');
+    assert.equal(guideUrl('quest', 'detail', 501), 'https://guide.fallensword.com/index.php?cmd=quests&subcmd=view&quest_id=501');
     for (const bad of [-1, 1.5, '3', NaN, 10_001]) assert.throws(() => guideUrl('item', 'index', bad));
     for (const bad of [0, -2, '7', 2 ** 53]) assert.throws(() => guideUrl('creature', 'detail', bad));
     assert.throws(() => guideUrl('shop', 'index', 0));
@@ -123,7 +126,7 @@ test('CAT-TASK-001: detail parsers read the scraper fields', () => {
     assert.equal(realm.name, 'MOUNTAIN PATH');
     assert.equal(realm.minLevel, 1);
     assert.deepEqual(realm.shops, [{ shopId: 33, shopName: 'Pathside Trader' }]);
-    assert.deepEqual(realm.relics, ['Stone of Echoes']);
+    assert.deepEqual(realm.relics, [{ relicId: 8, relicName: 'Stone of Echoes' }]);
     assert.deepEqual(realm.quests, [{ questId: 501, questName: "The Golem's Heart" }]);
     assert.deepEqual(realm.creatures, [{ creatureId: 7001, creatureName: 'Montmarr the Dragon Golem' }, { creatureId: 7003, creatureName: 'Ridge Hawk' }]);
     assert.deepEqual(realm.stairways, [{ targetRealmId: 1201, targetRealmName: 'Summit' }]);

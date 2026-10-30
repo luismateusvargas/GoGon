@@ -7,14 +7,14 @@
 // observations under the owner-enabled guide_discovery job, and only then moves the checkpoints.
 //
 // Every due sweep starts at page 0 and reads until the repeated final page.
-// Index IDs enter detail tracking only once; detail pages are fetched when newly found or due for
-// refresh. Only a sweep that covered every required index page moves
+// Index IDs enter detail tracking only once; detail pages are fetched only while unfulfilled.
+// Only a sweep that covered every required index page moves
 // last_successful_check_at and last_seen_id (AC-CAT-015). A challenge, invalid page, or failed request
 // stops the lease and leaves the cursor at that page.
 import crypto from 'node:crypto';
 import { CatalogError, canonicalJson } from '../_gg_data/handler/catalogStore.js';
 import { GUIDE_KINDS } from '../_gg_data/handler/guideDiscoveryStore.js';
-import { GUIDE_POLICY } from './contracts/policy.js';
+import { getGuidePolicy } from './guidePolicy.js';
 import { isRepeatedIndexPage } from './contracts/guide.js';
 import { normalizeGuideRecord, indexEntry } from './guideNormalizers.js';
 
@@ -27,9 +27,9 @@ export const MAX_RELAY_BODY = 512 * 1024;
 const INDEX_OUTCOMES = ['ok', 'empty', 'challenge', 'invalid', 'error', 'too_large'];
 const DETAIL_OUTCOMES = ['ok', 'missing', 'challenge', 'invalid', 'error', 'too_large'];
 const STOPPING_DETAIL = ['challenge', 'invalid', 'error', 'too_large'];   // 'missing' is a confirmed 404; the relay goes on
-const LEASE_ORDER = ['master_realm', 'realm', 'creature', 'item'];   // small indexes first
-const DETAIL_ORDER = ['creature', 'item', 'master_realm', 'realm'];   // what Discord announcements read first
-const SERVING_TABLE = { item: 'items', creature: 'creatures', realm: 'realms', master_realm: 'master_realms' };
+const LEASE_ORDER = ['master_realm', 'realm', 'creature', 'item', 'relic', 'quest'];
+const DETAIL_ORDER = ['creature', 'item', 'master_realm', 'realm', 'relic', 'quest'];
+const SERVING_TABLE = { item: 'items', creature: 'creatures', realm: 'realms', master_realm: 'master_realms', relic: 'relics', quest: 'quests' };
 const DAY = 24 * 3600_000;
 
 const invalid = (message, field) => new CatalogError('invalid', message, field ? { field } : {});
@@ -42,27 +42,34 @@ export const hashToken = token => crypto.createHash('sha256').update(String(toke
  * @param {object} deps.store - catalogStore
  * @param {object} deps.guideStore - guideDiscoveryStore
  */
-export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY, now = Date.now }) {
+export function createGuideRelay({ db, store, guideStore, policy = null, getPolicy = getGuidePolicy, now = Date.now }) {
     const iso = (t = now()) => new Date(t).toISOString();
 
     async function activeGuideJob() {
         return (await store.listJobs()).find(j => j.kind === 'guide_discovery' && ['queued', 'running', 'paused'].includes(j.state)) ?? null;
     }
 
-    function due(s, t) {
-        return !s.lastSuccessfulCheckAt || t - Date.parse(s.lastSuccessfulCheckAt) >= policy.checkIntervalMs;
+    function due(s, t, currentPolicy) {
+        return !s.lastSuccessfulCheckAt || t - Date.parse(s.lastSuccessfulCheckAt) >= currentPolicy.checkIntervalMs;
     }
 
     /** The lease carries the previous page across boundaries for terminal-page detection. */
-    const leaseOut = (row, s) => {
+    const leaseOut = (row, s, currentPolicy = policy ?? getPolicy()) => {
         const work = JSON.parse(row.work);
         return {
-            leaseId: row.id, kind: row.entity_kind, work, minDelayMs: policy.minDelayMs, expiresAt: row.expires_at, maxBodyBytes: MAX_RELAY_BODY,
+            leaseId: row.id, kind: row.entity_kind, work, minDelayMs: currentPolicy.minDelayMs, expiresAt: row.expires_at, maxBodyBytes: MAX_RELAY_BODY,
             previousPageIds: work[0]?.type === 'index' ? s?.sweepPrevPageIds ?? null : null,
         };
     };
 
     async function exists(kind, id) {
+        if (kind === 'relic' || kind === 'quest') {
+            const state = await guideStore.getIdState(kind, id);
+            if (!state?.entityKey) return false;
+            const separator = state.entityKey.indexOf(':');
+            return (await db.query(`SELECT 1 AS present FROM ${SERVING_TABLE[kind]} WHERE realm_id = ? AND name = ? LIMIT 1`,
+                [Number(state.entityKey.slice(0, separator)), state.entityKey.slice(separator + 1)])).length > 0;
+        }
         return (await db.query(`SELECT 1 AS present FROM ${SERVING_TABLE[kind]} WHERE id = ?`, [id])).length > 0;
     }
 
@@ -107,12 +114,13 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
 
     /** nextLease() under the guide state lock (see there). */
     async function issueLease(tx, tokenId, job) {
+        const currentPolicy = policy ?? getPolicy();
         await tx.query('SELECT entity_kind FROM catalog_guide_state ORDER BY entity_kind FOR UPDATE');
         const t = now();
         // A claimed lease stays open while its submission is applied, for at most one lease TTL.
         const [open] = await tx.query(
             'SELECT * FROM catalog_guide_leases WHERE completed_at IS NULL AND (expires_at > ? OR claimed_at > ?) ORDER BY issued_at DESC LIMIT 1',
-            [iso(t), iso(t - policy.leaseTtlMs)]);
+            [iso(t), iso(t - currentPolicy.leaseTtlMs)]);
         if (open) {
             const mine = open.token_id === tokenId && !open.claimed_at && Date.parse(open.expires_at) > t;
             if (!mine) return { status: 'busy' };
@@ -124,20 +132,33 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             return { status: 'lease', lease: leaseOut(open, await guideStore.getState(open.entity_kind, tx)) };
         }
         // Reserve possible requests on each UTC day the lease can span for accurate usage counts.
-        const days = leaseDays(t, t + policy.leaseTtlMs);
-        const budget = Math.min(job.requestBudget, policy.maxRequestsPerExecution);
+        const days = leaseDays(t, t + currentPolicy.leaseTtlMs);
+        const budget = Math.min(job.requestBudget, currentPolicy.maxRequestsPerExecution);
 
         let kind = null;
         let work = [];
         const states = new Map((await guideStore.listStates(tx)).map(s => [s.entityKind, s]));
-        for (const k of LEASE_ORDER) {
+        // Capture newly indexed event creatures before continuing other index pages. Seeded IDs
+        // without an index sighting keep the normal detail order, avoiding a baseline backlog here.
+        const urgent = await tx.query(
+            `SELECT entity_id FROM catalog_guide_ids WHERE entity_kind = 'creature'
+             AND detail_status = 'pending' AND last_index_seen_at IS NOT NULL AND next_detail_at <= ?
+             ORDER BY next_detail_at, entity_id LIMIT ${budget}`, [iso(t)]);
+        if (urgent.length) {
+            kind = 'creature';
+            work = urgent.map(row => ({ type: 'detail', id: Number(row.entity_id) }));
+        }
+        for (const k of kind ? [] : LEASE_ORDER) {
             const s = states.get(k);
             // A sweep stopped at a bad or failed page is retried later, not in a tight loop.
-            if (s.sweepMode && s.status === 'partial' && t - Date.parse(s.updatedAt) < policy.partialRetryMs) continue;
+            if (s.sweepMode && s.status === 'partial' && t - Date.parse(s.updatedAt) < currentPolicy.partialRetryMs) continue;
             if (!s.sweepMode) {
-                if (!due(s, t)) continue;
-                // DEC-CAT-023: a weekly check reads every known detail of the kind, not a rolling share.
-                await tx.query('UPDATE catalog_guide_ids SET next_detail_at = ? WHERE entity_kind = ? AND next_detail_at > ?', [iso(t), k, iso(t)]);
+                if (!due(s, t, currentPolicy)) continue;
+                // Retry exhausted/missing data on this scan, while preserving pending-attempt
+                // backoff and fulfilled records. This also honors a shortened live interval.
+                await tx.query(
+                    `UPDATE catalog_guide_ids SET next_detail_at = ? WHERE entity_kind = ?
+                     AND detail_status IN ('failed', 'missing') AND next_detail_at > ?`, [iso(t), k, iso(t)]);
                 await guideStore.updateState(k, {
                     sweepMode: 'full', sweepStartedAt: iso(t), nextPage: 0, sweepPagesChecked: 0,
                     sweepMaxId: 0, sweepPrevMinId: null, sweepPrevPageIds: null,
@@ -151,18 +172,15 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
         }
         if (!kind) {
             for (const k of DETAIL_ORDER) {
-                work = (await tx.query(
-                    `SELECT entity_id FROM catalog_guide_ids WHERE entity_kind = ? AND next_detail_at <= ?
-                     ORDER BY CASE WHEN detail_status = 'pending' THEN 0 ELSE 1 END, next_detail_at, entity_id LIMIT ${budget}`, [k, iso(t)]))
-                    .map(r => ({ type: 'detail', id: Number(r.entity_id) }));
+                work = (await guideStore.dueDetails(k, budget, tx)).map(id => ({ type: 'detail', id }));
                 if (work.length) { kind = k; break; }
             }
         }
         if (!kind) {
-            const next = [...states.values()].filter(s => s.lastSuccessfulCheckAt).map(s => Date.parse(s.lastSuccessfulCheckAt) + policy.checkIntervalMs);
+            const next = [...states.values()].filter(s => s.lastSuccessfulCheckAt).map(s => Date.parse(s.lastSuccessfulCheckAt) + currentPolicy.checkIntervalMs);
             return { status: 'idle', nextCheckAt: next.length ? iso(Math.min(...next)) : null };
         }
-        const row = { id: crypto.randomUUID(), entity_kind: kind, work: JSON.stringify(work), expires_at: iso(t + policy.leaseTtlMs) };
+        const row = { id: crypto.randomUUID(), entity_kind: kind, work: JSON.stringify(work), expires_at: iso(t + currentPolicy.leaseTtlMs) };
         await tx.query('INSERT INTO catalog_guide_leases (id, token_id, job_id, entity_kind, work, issued_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
             [row.id, tokenId, job.id, kind, row.work, iso(t), row.expires_at]);
         // AC-CAT-015: reserve every request the lease allows; an unanswered lease keeps its reservation.
@@ -173,6 +191,7 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
     /** submit() after validation and the claim: stage, then move checkpoints and complete the lease. */
     async function applyResults(lease, work, results, requests) {
         const kind = lease.entity_kind;
+        const currentPolicy = policy ?? getPolicy();
 
         // 0. A lease that already staged a run can only be checkpointed with the results that run was
         // built from, and only while that run is still applied. Otherwise the lease is closed without
@@ -203,6 +222,9 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             if (r.outcome === 'challenge') { stopReason = 'cloudflare challenge'; break; }
             if (r.type === 'index') {
                 if (r.outcome !== 'ok') break;
+                // Their serving identity is realm/name, not the Guide's ID. Track index IDs now;
+                // the detail supplies the realm needed for a valid catalog observation.
+                if (kind === 'relic' || kind === 'quest') continue;
                 // AC-CAT-011: a new ID gets a minimal (incomplete) record until its detail is read.
                 const entriesWithNames = r.entries.filter(entry => entry.name && !named.has(`${kind}|${entry.id}`));
                 if (!entriesWithNames.length) continue;
@@ -224,10 +246,9 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             if (r.outcome !== 'ok') { detailMarks.push([r.id, r.outcome === 'missing' ? 'missing' : 'failed', null]); continue; }
             const n = normalizeGuideRecord(kind, r.record, r.id);
             if (!n) { detailMarks.push([r.id, 'failed', null]); continue; }
-            const prev = await guideStore.getIdState(kind, r.id);
-            detailMarks.push([r.id, 'ok', n.hash]);
-            if (prev?.hash === n.hash && await exists(kind, r.id)) continue;   // unchanged since the last read
+            detailMarks.push([r.id, 'ok', n.hash, n.entityKey]);
             observations.push(...n.observations);
+            staged.add(`${kind}|${r.id}`);
             for (const o of n.observations) {
                 if (o.payload.id === undefined) continue;
                 staged.add(`${o.kind}|${o.payload.id}`);
@@ -239,9 +260,14 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
         // Linked entities the catalog does not have yet: a named minimal record and a pending detail.
         for (const ref of references) {
             const key = `${ref.kind}|${ref.id}`;
+            register.push([ref.kind, ref.id, ref.entityKey ?? null]);
             if (named.has(key) || (await exists(ref.kind, ref.id))) continue;
-            register.push([ref.kind, ref.id]);
-            if (ref.name) { observations.push({ kind: ref.kind, payload: { id: ref.id, name: ref.name } }); staged.add(key); named.add(key); }
+            const natural = ref.kind === 'relic' || ref.kind === 'quest';
+            if (natural && (!ref.realmId || !ref.name)) continue;
+            observations.push({ kind: ref.kind, payload: natural ? { realm_id: ref.realmId, name: ref.name }
+                : { id: ref.id, ...(ref.name ? { name: ref.name } : {}) } });
+            staged.add(key);
+            if (ref.name) named.add(key);
         }
         const present = async (k, id) => staged.has(`${k}|${id}`) || exists(k, id);
         for (const rel of relations) {
@@ -278,7 +304,14 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
                         await complete(r.page - 1);
                         break;
                     }
-                    summary.newIds += (await guideStore.recordIndexIds(kind, ids, tx)).length;
+                    const keys = kind === 'relic' || kind === 'quest'
+                        ? (await tx.query(`SELECT entity_key FROM catalog_guide_ids WHERE entity_kind = ? AND entity_id IN (${ids.map(() => '?').join(', ')}) AND entity_key IS NOT NULL`, [kind, ...ids])).map(row => row.entity_key)
+                        : ids.map(String);
+                    const entities = keys.map(key => [kind, key]);
+                    // Validate stored fields and links before trusting a previous complete flag.
+                    await store.refreshCompleteness(entities, tx);
+                    summary.newIds += (await guideStore.recordIndexIds(kind, ids, tx, { scanStartedAt: s.sweepStartedAt })).length;
+                    await store.refreshCompleteness(entities, tx);
                     const fields = { sweepMaxId: Math.max(s.sweepMaxId, ...ids),
                         sweepPrevPageIds: ids, nextPage: r.page + 1, sweepPagesChecked: s.sweepPagesChecked + 1,
                         status: 'running', statusReason: null };
@@ -295,9 +328,20 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             const detailLease = results.some(r => r.type === 'detail');
             if (stopReason && detailLease) await set({ status: 'challenged', statusReason: stopReason });
             else if (detailLease && !s.sweepMode && s.status === 'challenged') await set({ status: 'idle', statusReason: null });
-            for (const [id, out, hash] of detailMarks) { await guideStore.markDetail(kind, id, { outcome: out, hash }, policy, tx); summary.details++; }
-            for (const [k, id] of register) await guideStore.registerIds(k, [id], tx);
-            if (kind === 'item' || kind === 'creature') await store.refreshCompleteness(detailMarks.map(([id]) => [kind, String(id)]), tx);
+            const touched = [];
+            for (const [id, out, hash, key] of detailMarks) {
+                const entityKey = key ?? (await guideStore.getIdState(kind, id, tx))?.entityKey ?? String(id);
+                await guideStore.markDetail(kind, id, { outcome: out, hash }, currentPolicy, tx);
+                if (key) await guideStore.setEntityKey(kind, id, key, tx);
+                touched.push([kind, entityKey]);
+                summary.details++;
+            }
+            for (const [k, id, key] of register) {
+                await guideStore.registerIds(k, [id], tx);
+                if (key) await guideStore.setEntityKey(k, id, key, tx);
+                touched.push([k, key ?? String(id)]);
+            }
+            await store.refreshCompleteness(touched, tx);
             // Give back the reserved requests the relay did not make.
             // Requests that were made stay charged to every day the lease spanned.
             for (const day of leaseDays(Date.parse(lease.issued_at), Date.parse(lease.expires_at))) await guideStore.refundUsage(work.length - requests, tx, day);
@@ -336,6 +380,20 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
     }
 
     return {
+        /** Makes all index kinds due on the existing worker, preserving any active sweep and lease.
+         * @returns {Promise<void>} Resolves after scheduling; rejects if the Guide job is inactive.
+         */
+        async requestScan() {
+            const job = await activeGuideJob();
+            if (!job || job.state === 'paused') throw new CatalogError('conflict', 'Create or resume the guide_discovery job first.');
+            await db.transaction(async tx => {
+                await tx.query('SELECT entity_kind FROM catalog_guide_state ORDER BY entity_kind FOR UPDATE');
+                for (const kind of GUIDE_KINDS) {
+                    const state = await guideStore.getState(kind, tx);
+                    if (!state.sweepMode) await guideStore.updateState(kind, { lastSuccessfulCheckAt: null }, tx);
+                }
+            });
+        },
         // --- tokens (issued and revoked through the owner session only) ---
 
         async issueToken({ label, ttlDays }) {
@@ -375,7 +433,7 @@ export function createGuideRelay({ db, store, guideStore, policy = GUIDE_POLICY,
             return SERVER_WORKER_ID;
         },
 
-        /** Spread existing snapshot item and creature detail reads over the next month. */
+        /** Registers existing snapshot item and creature IDs as pending, due immediately. */
         scheduleSeededDetails: () => guideStore.scheduleSeededDetails(),
 
         /** The token row for a bearer value, or null (unknown, revoked, expired, or wrong scope). */

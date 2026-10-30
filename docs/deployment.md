@@ -139,17 +139,37 @@ came from, and every change it makes to the tables Discord reads can be rolled b
   the worker process and never appear in logs or the dashboard.
 
   The server uses the existing guide lease planner and parsers: one page at a time, 3 s apart, at most
-  50 per lease, with no daily request cap. A kind is checked once a week: the check scans every index
-  page until the guide repeats its final page, then reads every known detail of that kind (creatures
-  first, then items, master realms and realms). Existing snapshot item and creature IDs are tracked as
-  pending and due at once, like new IDs. A full weekly pass is roughly 33,000 requests, about 28 hours
-  at 3 s apart; the worker is then idle until the next week. If browser verification fails after a
+  50 per lease, with no daily request cap. One configurable schedule covers every kind: by default,
+  every 24 hours it scans every index page until the guide repeats its final page and fills only new
+  or incomplete details. Every ID is checked against required stored fields and completeness, even
+  when the ID is old, its detail was read before, or it reappears on an existing page. This applies
+  to creatures, items, realms/maps, master realms, relics and quests. A parsed detail alone is not
+  enough to mark missing data complete. Fulfilled detail pages are skipped. Incomplete creature details take
+  priority over remaining indexes so short-lived event entries can be saved promptly. Saved records
+  remain when an entry disappears from the Guide. Existing snapshot item and creature IDs without
+  verified Guide details are pending and due at once, like new IDs.
+
+  Migration 016 extends Guide state to relics/quests and retains their existing realm/name serving
+  identities while tracking Guide IDs separately. Their recognized detail sections are stored as
+  structured text. Unknown layouts stay incomplete. These parsers are fixture-tested; live layout
+  verification is pending because public Guide detail requests returned HTTP 403.
+
+  Set **Guide scan interval (hours)** under Settings → Guide catalog (`GG_GUIDE_SCAN_INTERVAL_HOURS`,
+  1–720 whole hours, default 24). Changes apply to the existing worker without restarting. **Scan Guide
+  now** in Catalog → Sync schedules all index kinds immediately and preserves any active sweep and
+  lease. The CatalogSync module must be enabled and the guide_discovery job resumed. The module's
+  interval controls when the worker takes its next batch; the Guide scan interval controls when a
+  completed index scan becomes due again. Scan duration depends on page counts, incomplete data,
+  configured module interval, and Guide availability; scans run serially without overlap.
+
+  If browser verification fails after a
   challenged request, the lease stops without moving the successful checkpoint and the worker retries
   in five minutes. A page that remains challenged after verification retains the one-hour partial retry.
   A successful renewal continues the same leased page, so pending details can advance automatically.
 
   The earlier Tampermonkey relay and its stage-only tokens remain available for manual recovery; the
   scheduled server reader does not need an extension or a relay token.
+  Manual relays should use the regenerated userscript version 1.0.3 for relic/quest detail support.
 - **Game jobs.** `observe_realm` needs one captured `fetchLocation` response before it can be enabled
   (DEC-CAT-019), so it is shown disabled with that reason. `item_frontier` needs a game item-detail read,
   which does not exist yet. The *CatalogSync* module on the Modules tab is off by default.

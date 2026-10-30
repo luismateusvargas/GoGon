@@ -4,7 +4,8 @@
 // sweep planner that decides what to read next is catalog/guideRelay.js; this module only persists.
 // Every statement is parameterized; column names come only from STATE_COLUMNS.
 
-export const GUIDE_KINDS = Object.freeze(['item', 'creature', 'realm', 'master_realm']);
+import { GUIDE_KINDS } from '../../catalog/contracts/guide.js';
+export { GUIDE_KINDS };
 export const DETAIL_OUTCOMES = Object.freeze(['ok', 'failed', 'missing']);
 
 // camelCase field -> column, for the checkpoint row.
@@ -96,7 +97,7 @@ export function createGuideDiscoveryStore(db, { now = Date.now } = {}) {
          * Records IDs seen on a validated index page. New IDs become pending details (due now).
          * @returns {Promise<number[]>} the IDs that were not known before
          */
-        async recordIndexIds(kind, ids, q = db) {
+        async recordIndexIds(kind, ids, q = db, { scanStartedAt = iso() } = {}) {
             kindOk(kind);
             const uniqueIds = [...new Set(ids)];
             uniqueIds.forEach(idOk);
@@ -118,6 +119,22 @@ export function createGuideDiscoveryStore(db, { now = Date.now } = {}) {
             if (knownIds.size) await q.query(
                 `UPDATE catalog_guide_ids SET last_index_seen_at = ? WHERE entity_kind = ? AND entity_id IN (${placeholders})`,
                 [at, kind, ...uniqueIds]);
+            // An event entry can return after its detail previously answered 404. Capture it now.
+            await q.query(
+                `UPDATE catalog_guide_ids SET detail_status = 'pending', next_detail_at = ?
+                 WHERE entity_kind = ? AND entity_id IN (${placeholders}) AND detail_status = 'missing'`,
+                [at, kind, ...uniqueIds]);
+            // A previously fetched page is not proof that the stored entity is fulfilled. Check
+            // each ID against catalog completeness, even if its ID is old or was already tracked.
+            const tracked = await q.query(
+                `SELECT g.entity_id, g.detail_checked_at, e.completeness FROM catalog_guide_ids g
+                 LEFT JOIN catalog_entities e ON e.entity_kind = g.entity_kind
+                 AND e.entity_key = COALESCE(g.entity_key, CAST(g.entity_id AS CHAR))
+                 WHERE g.entity_kind = ? AND g.entity_id IN (${placeholders}) AND g.detail_status = 'ok'`, [kind, ...uniqueIds]);
+            for (const row of tracked) {
+                if (row.completeness === 'complete' || row.detail_checked_at && row.detail_checked_at >= scanStartedAt) continue;
+                await q.query("UPDATE catalog_guide_ids SET detail_status = 'pending', next_detail_at = ? WHERE entity_kind = ? AND entity_id = ?", [at, kind, row.entity_id]);
+            }
             return fresh;
         },
 
@@ -131,27 +148,54 @@ export function createGuideDiscoveryStore(db, { now = Date.now } = {}) {
             }
         },
 
-        /** Details due by now: never-read first, then the oldest refresh. */
+        /** Incomplete details due by now: never-read first. Completed details are never re-read. */
         async dueDetails(kind, limit, q = db) {
             kindOk(kind);
             const l = Math.min(Math.max(0, limit | 0), 500);
             if (!l) return [];
             const rows = await q.query(
-                `SELECT entity_id FROM catalog_guide_ids WHERE entity_kind = ? AND next_detail_at <= ?
-                 ORDER BY CASE WHEN detail_status = 'pending' THEN 0 ELSE 1 END, next_detail_at, entity_id LIMIT ${l}`, [kind, iso()]);
+                `SELECT g.entity_id FROM catalog_guide_ids g LEFT JOIN catalog_entities e
+                 ON e.entity_kind = g.entity_kind AND e.entity_key = COALESCE(g.entity_key, CAST(g.entity_id AS CHAR))
+                 WHERE g.entity_kind = ? AND (g.detail_status <> 'ok' OR e.completeness IS NULL OR e.completeness <> 'complete') AND g.next_detail_at <= ?
+                 ORDER BY CASE WHEN g.detail_status = 'pending' THEN 0 ELSE 1 END, g.next_detail_at, g.entity_id LIMIT ${l}`, [kind, iso()]);
             return rows.map(r => Number(r.entity_id));
         },
 
         async getIdState(kind, id, q = db) {
             const [r] = await q.query('SELECT * FROM catalog_guide_ids WHERE entity_kind = ? AND entity_id = ?', [kind, id]);
             return r ? {
-                status: r.detail_status, hash: r.detail_hash, checkedAt: r.detail_checked_at,
+                status: r.detail_status, hash: r.detail_hash, checkedAt: r.detail_checked_at, entityKey: r.entity_key ?? null,
                 attempts: Number(r.detail_attempts), nextDetailAt: r.next_detail_at, lastIndexSeenAt: r.last_index_seen_at,
             } : null;
         },
 
+        /** Finds Guide tracking for a natural catalog key.
+         * @param {string} kind Guide kind.
+         * @param {string} key Catalog realm/name key.
+         * @returns {Promise<object|null>} Detail state or null if never linked to a Guide ID.
+         */
+        async getStateForEntityKey(kind, key) {
+            kindOk(kind);
+            const [row] = await db.query('SELECT entity_id FROM catalog_guide_ids WHERE entity_kind = ? AND entity_key = ? LIMIT 1', [kind, key]);
+            return row ? this.getIdState(kind, Number(row.entity_id)) : null;
+        },
+
+        /** Links a Guide ID to the catalog key (relics/quests retain their realm/name identity).
+         * @param {string} kind Entity kind.
+         * @param {number} id Guide ID.
+         * @param {string} key Catalog key.
+         * @param {object} [q] Transaction connection.
+         * @returns {Promise<void>}
+         */
+        async setEntityKey(kind, id, key, q = db) {
+            kindOk(kind);
+            idOk(id);
+            await q.query('UPDATE catalog_guide_ids SET entity_key = ? WHERE entity_kind = ? AND entity_id = ?', [key, kind, id]);
+        },
+
         /**
-         * Records one detail read. ok/missing reschedule a refresh after policy.detailRefreshAfterMs.
+         * Records one detail read. Missing pages are retried after policy.detailRefreshAfterMs;
+         * A successful page read is retried only if the stored catalog record remains incomplete.
          * failed backs off (1 h, 2 h, 4 h, ...) and becomes status 'failed' after maxDetailAttempts.
          * @returns {Promise<{ changed: boolean }>} changed: an ok page whose content hash differs
          */

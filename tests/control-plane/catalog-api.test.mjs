@@ -99,7 +99,7 @@ test('AC-CAT-007: browse is paginated, filtered by an allow-list, and returns ca
     assert.equal(page.json.total, 2);
     assert.deepEqual(page.json.items.map(i => i.id), [17049]);
     assert.equal(page.json.items[0].catalog.completeness, 'incomplete');
-    assert.deepEqual(page.json.items[0].catalog.incompleteReasons, ['guide_detail_missing']);
+    assert.deepEqual(page.json.items[0].catalog.incompleteReasons, ['guide_detail_missing', 'required_field_missing']);
     const q = await req('GET', '/api/catalog/entities?kind=item&q=helm', { cookie });
     assert.deepEqual(q.json.items.map(i => i.name), ['Montmarr Helm'], 'search ignores case on MySQL and SQLite alike');
     assert.deepEqual((await req('GET', '/api/catalog/entities?kind=item&q=50%25', { cookie })).json.items, [], '% is literal, not a wildcard');
@@ -108,7 +108,7 @@ test('AC-CAT-007: browse is paginated, filtered by an allow-list, and returns ca
     const c = await req('GET', '/api/catalog/entities?kind=creature', { cookie });
     assert.equal(c.json.items[0].name, '<img src=x onerror=alert(1)>Golem', 'text is returned as data; the UI renders it as text');
     for (const bad of ['kind=items', 'kind=item&pageSize=101', 'kind=item&page=0', 'kind=item&table=users', 'kind=item&q=' + 'x'.repeat(65),
-        'kind=realm&completeness=complete', 'kind=item&completeness=maybe', 'kind=item&page=1&page=2', "kind=item&q=%27%3B%20DROP%20TABLE%20items%3B--"]) {
+        'kind=realm&completeness=maybe', 'kind=item&completeness=maybe', 'kind=item&page=1&page=2', "kind=item&q=%27%3B%20DROP%20TABLE%20items%3B--"]) {
         const r = await req('GET', `/api/catalog/entities?${bad}`, { cookie });
         if (bad.startsWith('kind=item&q=%27')) { assert.equal(r.status, 200, 'SQL-looking text is only a search string'); continue; }
         assert.equal(r.status, 400, bad);
@@ -134,7 +134,7 @@ test('AC-CAT-007: entity detail carries provenance and relations; bad keys and u
     const summary = await req('GET', '/api/catalog/summary', { cookie });
     assert.equal(summary.json.kinds.item.rows >= 2, true);
     assert.equal(summary.json.policy.guide.minDelayMs, 3000);
-    assert.deepEqual(summary.json.guide.map(g => g.entityKind), ['creature', 'item', 'master_realm', 'realm']);
+    assert.deepEqual(summary.json.guide.map(g => g.entityKind), ['creature', 'item', 'master_realm', 'quest', 'realm', 'relic']);
     assert.equal(summary.json.guide[0].display, 'waiting_for_browser', 'never checked and no relay seen');
     assert.equal(summary.json.available.observe_realm, 'contract_unverified');
 });
@@ -182,6 +182,27 @@ test('AC-CAT-008: sync-now refuses to overlap a running catalog pass or an accou
     const ok = await req('POST', '/api/catalog/sync-now', { cookie, csrf });
     assert.equal(ok.status, 200);
     assert.deepEqual(ok.json.ran, []);
+});
+
+test('Scan Guide now is owner-only, validates input, and schedules the existing Guide job', async () => {
+    const route = '/api/catalog/guide-scan';
+    assert.equal((await req('POST', route, { body: {} })).status, 401);
+    const { cookie, csrf } = await session();
+    assert.equal((await req('POST', route, { cookie, body: {} })).status, 403);
+    assert.equal((await req('POST', route, { cookie, csrf, origin: 'https://example.com', body: {} })).status, 403);
+    assert.equal((await req('POST', route, { cookie, csrf, body: { url: 'https://example.com' } })).status, 400);
+    assert.equal((await req('POST', route, { cookie, csrf, body: {} })).status, 409, 'no active Guide job');
+    const created = await req('POST', '/api/catalog/jobs', { cookie, csrf, body: { kind: 'guide_discovery', requestBudget: 50 } });
+    const id = created.json.job.id;
+    paused = true;
+    assert.equal((await req('POST', route, { cookie, csrf, body: {} })).status, 409);
+    paused = false;
+    await db.query('UPDATE catalog_guide_state SET last_successful_check_at = ?', [new Date(clock.t).toISOString()]);
+    assert.equal((await req('POST', route, { cookie, csrf, body: {} })).status, 202);
+    assert.equal((await lastAudit()).action, 'catalog.guide.scan');
+    assert.ok((await db.query('SELECT last_successful_check_at FROM catalog_guide_state')).every(s => s.last_successful_check_at === null));
+    assert.equal((await catalogStore.getJob(id)).state, 'queued');
+    await catalogStore.transitionJob(id, 'cancelled');
 });
 
 test('AC-CAT-009 / AC-CAT-010: rollback is a previewed, confirmed, one-use plan; denials change nothing and are audited', async () => {
@@ -290,6 +311,6 @@ test('AC-CAT-008: dashboard state (SSE) carries catalog jobs and guide status', 
     const { cookie } = await session();
     const state = await req('GET', '/api/state', { cookie });
     assert.ok(Array.isArray(state.json.catalog.jobs));
-    assert.equal(state.json.catalog.guide.length, 4);
+    assert.equal(state.json.catalog.guide.length, 6);
     assert.equal(state.json.catalog.available.guide_discovery, null);
 });

@@ -25,7 +25,7 @@ export const RUN_MODES = Object.freeze(['observe_realm', 'item_frontier', 'guide
 export const JOB_KINDS = Object.freeze(['observe_realm', 'item_frontier', 'guide_discovery']);
 // AC-CAT-013: bounded, code-owned reasons (joined with ',' in catalog_entities.incomplete_reason).
 export const INCOMPLETE_REASONS = Object.freeze(['guide_detail_missing', 'guide_detail_failed', 'required_field_missing', 'known_drop_unresolved']);
-const COMPLETENESS_KINDS = ['item', 'creature'];
+const COMPLETENESS_KINDS = ['item', 'creature', 'realm', 'master_realm', 'relic', 'quest'];
 const DEPENDENT_RECHECK_LIMIT = 500;
 export const RELATION_TYPES = Object.freeze(['realm_creature', 'creature_drop']);
 export const MAX_PAYLOAD_BYTES = 16 * 1024;
@@ -112,7 +112,7 @@ const SCHEMAS = {
         columns: { id: field.id, name: field.text(256), rarity: field.text(64), imageUrl: field.text(512), stats: field.json, enhancements: field.json, droppedBy: field.json, setBonuses: field.json, setId: field.idOrNull, setName: field.text(256) },
         json: ['stats', 'enhancements', 'droppedBy', 'setBonuses'],
     },
-    relic: { natural: true, columns: { realm_id: field.id, name: field.name }, json: [] },
+    relic: { table: 'relics', natural: true, columns: { realm_id: field.id, name: field.name, details: field.json }, json: ['details'] },
     quest: { natural: true, columns: { realm_id: field.id, name: field.name, min_level: field.intOrNull, details: field.json }, json: ['details'] },
 };
 const RELATION_FIELDS = { realm_creature: ['realm_id', 'creature_id'], creature_drop: ['creature_id', 'item_id'] };
@@ -229,10 +229,6 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             return row ? { type: p.type, [a]: p[a], [b]: p[b] } : null;
         }
         const spec = SCHEMAS[kind];
-        if (kind === 'relic') {
-            const [row] = await tx.query('SELECT realm_id, name FROM relics WHERE realm_id = ? AND name = ? LIMIT 1', [p.realm_id, p.name]);
-            return row ? { realm_id: Number(row.realm_id), name: row.name } : null;
-        }
         const cols = Object.keys(spec.columns);
         const where = spec.natural ? 'realm_id = ? AND name = ?' : 'id = ?';
         const [row] = await tx.query(`SELECT ${cols.map(c => `\`${c}\``).join(', ')} FROM ${kind === 'quest' ? 'quests' : spec.table} WHERE ${where}`,
@@ -279,7 +275,9 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         }
         if (kind === 'relic') {
             const [row] = await tx.query('SELECT id FROM relics WHERE realm_id = ? AND name = ? LIMIT 1', [payload.realm_id, payload.name]);
-            if (!row) await tx.query('INSERT INTO relics (name, realm_id) VALUES (?, ?)', [payload.name, payload.realm_id]);
+            const details = Object.hasOwn(payload, 'details') ? serialize('details', payload.details, SCHEMAS.relic, payload.$raw?.includes('details')) : null;
+            if (!row) await tx.query('INSERT INTO relics (name, realm_id, details) VALUES (?, ?, ?)', [payload.name, payload.realm_id, details]);
+            else if (Object.hasOwn(payload, 'details') || !merge) await tx.query('UPDATE relics SET details = ? WHERE id = ?', [details, row.id]);
             return;
         }
         const spec = SCHEMAS[kind];
@@ -476,11 +474,12 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         if (run?.mode !== 'guide_discovery') return;
         const rows = await tx.query(
             `SELECT DISTINCT o.entity_kind, o.entity_key FROM catalog_run_observations ro JOIN catalog_observations o ON o.id = ro.observation_id
-             WHERE ro.run_id = ? AND o.entity_kind IN ('item', 'creature', 'realm', 'master_realm')`, [runId]);
+             WHERE ro.run_id = ? AND o.entity_kind IN ('item', 'creature', 'realm', 'master_realm', 'relic', 'quest')`, [runId]);
         const next = new Date(now() + GUIDE_POLICY.detailRefreshAfterMs).toISOString();
         for (const r of rows) {
-            await tx.query("UPDATE catalog_guide_ids SET detail_status = 'pending', detail_hash = NULL, detail_attempts = 0, next_detail_at = ? WHERE entity_kind = ? AND entity_id = ?",
-                [next, r.entity_kind, Number(r.entity_key)]);
+            const natural = r.entity_kind === 'relic' || r.entity_kind === 'quest';
+            await tx.query(`UPDATE catalog_guide_ids SET detail_status = 'pending', detail_hash = NULL, detail_attempts = 0, next_detail_at = ? WHERE entity_kind = ? AND ${natural ? 'entity_key' : 'entity_id'} = ?`,
+                [next, r.entity_kind, natural ? r.entity_key : Number(r.entity_key)]);
         }
     }
 
@@ -543,22 +542,39 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
      * Complete means: a validated guide detail, the required serving fields, and every currently
      * known drop link resolving to an existing row. It never claims that no other drop exists.
      */
-    async function completenessOf(q, kind, id) {
+    async function completenessOf(q, kind, key) {
         const reasons = [];
-        const [g] = await q.query('SELECT detail_status, detail_checked_at FROM catalog_guide_ids WHERE entity_kind = ? AND entity_id = ?', [kind, id]);
+        const natural = kind === 'relic' || kind === 'quest';
+        const [g] = await q.query(`SELECT detail_status, detail_checked_at FROM catalog_guide_ids WHERE entity_kind = ? AND ${natural ? 'entity_key' : 'entity_id'} = ?`, [kind, natural ? key : Number(key)]);
         if (!g || g.detail_status === 'pending' || g.detail_status === 'missing') reasons.push('guide_detail_missing');
         else if (g.detail_status === 'failed') reasons.push('guide_detail_failed');
-        const [row] = kind === 'item'
-            ? await q.query('SELECT name, droppedBy AS drops FROM items WHERE id = ?', [id])
-            : await q.query('SELECT name, stats, droppedItems AS drops FROM creatures WHERE id = ?', [id]);
-        if (!row || !row.name || (kind === 'creature' && row.stats == null)) reasons.push('required_field_missing');
-        const drops = parseJsonColumn(row?.drops);
+        const table = { item: 'items', creature: 'creatures', realm: 'realms', master_realm: 'master_realms', relic: 'relics', quest: 'quests' }[kind];
+        const separator = String(key).indexOf(':');
+        const [row] = natural
+            ? await q.query(`SELECT * FROM ${table} WHERE realm_id = ? AND name = ? LIMIT 1`, [Number(String(key).slice(0, separator)), String(key).slice(separator + 1)])
+            : await q.query(`SELECT * FROM ${table} WHERE id = ?`, [Number(key)]);
+        let requiredMissing = !row || !row.name;
+        if (row && (kind === 'item' || kind === 'creature')) {
+            const stats = parseJsonColumn(row.stats);
+            requiredMissing ||= !stats || typeof stats !== 'object' || Array.isArray(stats) || !Object.values(stats).some(value => value !== null);
+            requiredMissing ||= !Array.isArray(parseJsonColumn(row.enhancements))
+                || !Array.isArray(parseJsonColumn(kind === 'item' ? row.droppedBy : row.droppedItems));
+        }
+        if (row && kind === 'realm') requiredMissing ||= row.min_level == null
+            || !Array.isArray(parseJsonColumn(row.shops)) || !Array.isArray(parseJsonColumn(row.connections));
+        if (row && kind === 'master_realm') requiredMissing ||= !Array.isArray(parseJsonColumn(row.connected_realms));
+        if (row && natural) {
+            const details = parseJsonColumn(row.details);
+            requiredMissing ||= !details || typeof details !== 'object' || !Object.keys(details).length;
+        }
+        if (requiredMissing) reasons.push('required_field_missing');
+        const drops = parseJsonColumn(kind === 'item' ? row?.droppedBy : row?.droppedItems);
         let unresolved = false;
         if (kind === 'creature') {
             for (const itemId of idsFrom(drops)) {
                 if (!(await q.query('SELECT 1 AS present FROM items WHERE id = ?', [itemId])).length) { unresolved = true; break; }
             }
-        } else if (Array.isArray(drops)) {
+        } else if (kind === 'item' && Array.isArray(drops)) {
             for (const d of drops) {
                 const name = typeof d === 'string' ? d : (d?.creatureName ?? d?.name);
                 if (typeof name !== 'string' || !name.trim()) continue;
@@ -576,9 +592,9 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
     }
 
     /**
-     * Recomputes completeness for the given item/creature entities (keys are game IDs), plus up to
+     * Recomputes completeness for all Guide entities, plus up to
      * DEPENDENT_RECHECK_LIMIT entities of the other kind still waiting on an unresolved drop.
-     * @param {Array<[string, string]>} entities - [kind, key] pairs; other kinds are ignored
+     * @param {Array<[string, string]>} entities - [kind, catalog key] pairs; relation kinds are ignored
      * @param {Array<{ kind: string, payload: object }>} [removed] - items/creatures just removed: the
      *   entities whose drop lists name them may have lost a resolved drop, so they are rechecked too
      */
@@ -597,7 +613,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
             for (const f of found) targets.set(`${other}|${f.id}`, [other, String(f.id)]);
         }
         const touchedKinds = new Set([...targets.values()].map(([k]) => k));
-        for (const other of COMPLETENESS_KINDS) {
+        for (const other of ['item', 'creature']) {
             if (!touchedKinds.has(other === 'item' ? 'creature' : 'item')) continue;
             const waiting = await q.query(`SELECT entity_key FROM catalog_entities WHERE entity_kind = ? AND incomplete_reason LIKE ? ORDER BY entity_key LIMIT ${DEPENDENT_RECHECK_LIMIT}`,
                 [other, '%known_drop_unresolved%']);
@@ -607,7 +623,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         for (const [kind, key] of targets.values()) {
             const [state] = await q.query('SELECT 1 AS present FROM catalog_entities WHERE entity_kind = ? AND entity_key = ?', [kind, key]);
             if (!state) continue;
-            const c = await completenessOf(q, kind, Number(key));
+            const c = await completenessOf(q, kind, key);
             await q.query('UPDATE catalog_entities SET completeness = ?, incomplete_reason = ?, verified_at = ? WHERE entity_kind = ? AND entity_key = ?',
                 [c.completeness, c.reason, c.verifiedAt, kind, key]);
             updated++;
@@ -622,7 +638,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
      */
     async function performProjection(tx, runId) {
         // Recheck under the lock: a reload may have discarded the run since any earlier check.
-        const [current] = await tx.query('SELECT status, summary FROM catalog_runs WHERE id = ? FOR UPDATE', [runId]);
+        const [current] = await tx.query('SELECT status, summary, mode FROM catalog_runs WHERE id = ? FOR UPDATE', [runId]);
         if (!current) throw new CatalogError('not_found', 'Unknown catalog run.');
         if (current.status !== 'running') throw new CatalogError('conflict', `A ${current.status} run cannot be projected.`);
         const rows = await tx.query(
@@ -635,7 +651,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         for (const row of rows) {
             const kind = row.entity_kind;
             const payload = parse(row.payload);
-            const [state] = await tx.query('SELECT observation_id, first_seen_at FROM catalog_entities WHERE entity_kind = ? AND entity_key = ? FOR UPDATE', [kind, row.entity_key]);
+            const [state] = await tx.query('SELECT observation_id, first_seen_at, completeness FROM catalog_entities WHERE entity_kind = ? AND entity_key = ? FOR UPDATE', [kind, row.entity_key]);
             let firstSeen = state?.first_seen_at ?? row.observed_at;
             if (!state) {
                 const baseline = await snapshotServing(tx, kind, payload);
@@ -651,7 +667,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
                     counts.baselines++;
                     firstSeen = at;
                 }
-            } else if (state.observation_id === row.id) {
+            } else if (state.observation_id === row.id && (current.mode !== 'guide_discovery' || !COMPLETENESS_KINDS.includes(kind) || state.completeness === 'complete')) {
                 counts.unchanged++;
                 await tx.query('UPDATE catalog_entities SET last_run_id = ?, last_seen_at = ? WHERE entity_kind = ? AND entity_key = ?', [runId, row.observed_at, kind, row.entity_key]);
                 continue;
@@ -927,7 +943,7 @@ export function createCatalogStore(db, { now = Date.now, invalidateCaches = clea
         },
 
         /**
-         * AC-CAT-013: recomputes completeness of [kind, key] item/creature entities (and entities
+         * AC-CAT-013: recomputes completeness of [kind, key] Guide entities (and entities
          * waiting on an unresolved drop), inside the caller's transaction when q is given.
          */
         async refreshCompleteness(entities, q) {

@@ -1,7 +1,8 @@
 // catalog/contracts/policy.js - CAT-TASK-001 / AC-CAT-002, AC-CAT-015 (catalog-sync-v1 1.2.x)
 // Request policies for the two catalog sources. They are separate on purpose: the guide never
-// inherits the game budget by accident, and neither policy is editable from the dashboard. A change
-// here is an owner decision recorded in docs/catalog-sync-control-plane-plan.md.
+// inherits the game budget by accident. A change to fixed request limits
+// here is an owner decision recorded in docs/catalog-sync-control-plane-plan.md. The Guide scan
+// interval is configurable through the registry; request limits remain code-owned.
 
 /** Game-session reads through the existing authenticated cookie jar (AC-CAT-002). */
 export const GAME_POLICY = Object.freeze({
@@ -24,8 +25,8 @@ export const GUIDE_POLICY = Object.freeze({
     minDelayMs: 3_000,                    // between two guide requests
     maxRequestsPerExecution: 50,          // one relay work lease (catalog_jobs.request_budget <= 50)
     dailyRequestCap: null,                // owner disabled the daily cap; usage is still counted
-    checkIntervalMs: 7 * 24 * 3600_000,   // a kind becomes due a week after its last successful check (DEC-CAT-023)
-    detailRefreshAfterMs: 7 * 24 * 3600_000, // every detail is re-read weekly; a weekly sweep start also makes all due
+    checkIntervalMs: 24 * 3600_000,        // default daily index scan (owner-configurable)
+    detailRefreshAfterMs: 24 * 3600_000,   // retry interval for missing/exhausted details; completed details are skipped
     maxDetailAttempts: 5,                 // then the ID stays incomplete with reason detail_failed
     leaseTtlMs: 10 * 60_000,              // an unanswered work lease expires and is re-issued
     partialRetryMs: 60 * 60_000,          // a sweep stopped by a bad or failed page waits this long before retrying

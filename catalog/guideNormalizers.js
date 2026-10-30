@@ -28,8 +28,13 @@ const S = {
 const range = S.obj({ min: S.int, max: S.int }, ['min', 'max']);
 const itemStats = { type: S.opt(S.str(64)), level: S.opt(S.int), attack: S.opt(S.int), defense: S.opt(S.int), armor: S.opt(S.int), damage: S.opt(S.int), hp: S.opt(S.int), xpGain: S.opt(S.int), stamina: S.opt(S.int), staminaGain: S.opt(S.int), goldGain: S.opt(S.int) };
 const enhancement = S.obj({ name: S.str(191), value: S.num(0, 100000) }, ['name', 'value']);
+const locatedDetail = S.obj({ id: S.id, name: S.str(191), minLevel: S.opt(S.int), realmId: S.id, realmName: S.opt(S.str(191)),
+    sections: v => Array.isArray(v) && v.length > 0 && S.arr(S.obj({ heading: S.str(191), text: S.str(8192) }, ['heading', 'text']), 64)(v),
+}, ['id', 'name', 'realmId', 'sections']);
 
 export const RECORD_SCHEMAS = Object.freeze({
+    relic: locatedDetail,
+    quest: locatedDetail,
     item: S.obj({
         id: S.id, name: S.str(191), rarity: S.opt(S.str(64)), imageUrl: S.opt(S.url),
         stats: S.obj(itemStats), enhancements: S.arr(enhancement, 64),
@@ -47,7 +52,7 @@ export const RECORD_SCHEMAS = Object.freeze({
     realm: S.obj({
         id: S.id, name: S.str(191), minLevel: S.opt(S.int),
         shops: S.arr(S.obj({ shopId: S.id, shopName: S.opt(S.str(191)) }, ['shopId']), 200),
-        relics: S.arr(S.str(191), 200),
+        relics: S.arr(v => S.str(191)(v) || S.obj({ relicId: S.id, relicName: S.str(191) }, ['relicId', 'relicName'])(v), 200),
         quests: S.arr(S.obj({ questId: S.id, questName: S.str(191) }, ['questId', 'questName']), 200),
         creatures: S.arr(S.obj({ creatureId: S.id, creatureName: S.opt(S.str(191)) }, ['creatureId']), 200),
         stairways: S.arr(S.obj({ targetRealmId: S.id, targetRealmName: S.opt(S.str(191)) }, ['targetRealmId']), 200),
@@ -97,13 +102,21 @@ export function normalizeGuideRecord(kind, record, expectedId) {
         observations.push({ kind: 'realm', payload: compact({
             id: record.id, name: record.name, min_level: record.minLevel, shops: record.shops, connections: record.stairways,
         }) });
-        for (const relic of record.relics) observations.push({ kind: 'relic', payload: { realm_id: record.id, name: relic } });
-        for (const q of record.quests) observations.push({ kind: 'quest', payload: { realm_id: record.id, name: q.questName } });
+        for (const relic of record.relics) {
+            const name = typeof relic === 'string' ? relic : relic.relicName;
+            observations.push({ kind: 'relic', payload: { realm_id: record.id, name } });
+            if (typeof relic !== 'string') references.push({ kind: 'relic', id: relic.relicId, name, entityKey: `${record.id}:${name}`, realmId: record.id });
+        }
+        for (const q of record.quests) {
+            observations.push({ kind: 'quest', payload: { realm_id: record.id, name: q.questName } });
+            references.push({ kind: 'quest', id: q.questId, name: q.questName, entityKey: `${record.id}:${q.questName}`, realmId: record.id });
+        }
         for (const c of record.creatures) {
             references.push({ kind: 'creature', id: c.creatureId, name: c.creatureName ?? null });
             relations.push({ type: 'realm_creature', realm_id: record.id, creature_id: c.creatureId });
         }
-    } else {
+        for (const target of record.stairways) references.push({ kind: 'realm', id: target.targetRealmId, name: target.targetRealmName ?? null });
+    } else if (kind === 'master_realm') {
         observations.push({ kind: 'master_realm', payload: {
             id: record.id, name: record.name, connected_realms: record.realms,
         } });
@@ -111,6 +124,11 @@ export function normalizeGuideRecord(kind, record, expectedId) {
             observations.push({ kind: 'realm', payload: { id: r.realmId, master_realm_id: record.id } });
             references.push({ kind: 'realm', id: r.realmId, name: r.realmName ?? null });
         }
+    } else {
+        observations.push({ kind, payload: compact({ realm_id: record.realmId, name: record.name,
+            ...(kind === 'quest' ? { min_level: record.minLevel } : {}), details: { sections: record.sections } }) });
+        references.push({ kind: 'realm', id: record.realmId, name: record.realmName ?? null });
     }
-    return { hash, observations, references, relations };
+    const entityKey = kind === 'relic' || kind === 'quest' ? `${record.realmId}:${record.name}` : String(record.id);
+    return { hash, observations, references, relations, entityKey };
 }

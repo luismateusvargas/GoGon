@@ -330,7 +330,7 @@ async function loadCatalogSummary() {
     document.getElementById('guide-policy').textContent =
         `Checked every ${g.checkIntervalMs % 86_400_000 ? `${Math.round(g.checkIntervalMs / 3600_000)} h` : `${g.checkIntervalMs / 86_400_000} days`}; ` +
         `${g.minDelayMs / 1000} s between requests, ${g.maxRequestsPerExecution} per batch, ${s.guideRequestsToday} requests today; no daily limit. ` +
-        `Each check scans all index pages, then reads every known detail.`;
+        `Each check scans all index pages and checks every listed ID for missing stored data. Completed details are skipped; incomplete creature details take priority.`;
     renderRelayTokens(s.relayTokens ?? []);
     renderCatalogState();
 }
@@ -629,6 +629,13 @@ document.getElementById('sync-now').addEventListener('click', async () => {
     catch (e) { showBanner(fieldMessage(e)); }
 });
 
+document.getElementById('guide-scan-now').addEventListener('click', async () => {
+    try {
+        await api('POST', '/api/catalog/guide-scan', {});
+        showBanner('Guide scan scheduled on CatalogSync. Active scans continue; completed details are skipped.', 'ok');
+        await loadCatalogSummary();
+    } catch (e) { showBanner(fieldMessage(e)); }
+});
 document.getElementById('outbox-refresh').addEventListener('click', loadOutbox);
 
 document.getElementById('logout').addEventListener('click', async () => {
